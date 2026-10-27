@@ -1,0 +1,8 @@
+# Secrets — never commit
+.env
+
+# Private real school data — never commit, never demo (see README privacy rule)
+data/sample-newsletter.txt
+
+# Dependencies / runtime output
+node_modules/

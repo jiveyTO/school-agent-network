@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maple Grove Elementary — Your school week, sorted</title>
+<style>
+  :root {
+    --ink: #24312b;
+    --muted: #68766d;
+    --line: #e7dccd;
+    --paper: #fffdf9;
+    --card: #ffffff;
+    --wash: #f6f1e7;
+    --pine: #1e4d3b;
+    --pine-dark: #173d2f;
+    --pine-soft: #e6f2ea;
+    --amber: #f2a541;
+    --amber-dark: #9a5b12;
+    --amber-soft: #fff3df;
+    --red: #a83226;
+    --red-soft: #fdecea;
+    --grey-chip: #eef0ec;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--wash);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 16.5px;
+    line-height: 1.5;
+  }
+  .phone {
+    max-width: 430px;
+    margin: 0 auto;
+    min-height: 100vh;
+    background: var(--paper);
+    padding-bottom: 44px;
+    box-shadow: 0 0 0 1px var(--line);
+  }
+  header {
+    background: var(--pine);
+    color: #fff;
+    padding: 26px 20px 22px;
+    border-radius: 0 0 24px 24px;
+  }
+  .demo-badge {
+    display: inline-block;
+    background: #ffffff;
+    color: var(--pine-dark);
+    font-size: 12.5px;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 4px 10px;
+    margin-bottom: 12px;
+  }
+  header h1 {
+    font-size: 29px;
+    line-height: 1.15;
+    margin: 0 0 6px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+  }
+  header .tagline {
+    margin: 0;
+    font-size: 17px;
+    color: #dcefe3;
+  }
+  main { padding: 20px 16px 8px; display: grid; gap: 26px; }
+  section h2 {
+    font-size: 19px;
+    font-weight: 800;
+    color: var(--pine-dark);
+    margin: 0 0 10px;
+    letter-spacing: -0.01em;
+  }
+  .card {
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: var(--card);
+    padding: 16px;
+  }
+  .news-summary {
+    margin: 0;
+    font-size: 16.5px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .toggle-btn {
+    margin-top: 12px;
+    border: 1px solid var(--line);
+    background: var(--wash);
+    color: var(--pine-dark);
+    font: inherit;
+    font-size: 14.5px;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+  .newsletter {
+    margin-top: 12px;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: #fffaf1;
+    padding: 14px;
+    max-height: 340px;
+    overflow: auto;
+  }
+  .newsletter pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: inherit;
+    font-size: 14.5px;
+    line-height: 1.6;
+  }
+  #runBtn, #parentRunBtn {
+    width: 100%;
+    border: 0;
+    border-radius: 16px;
+    font: inherit;
+    font-weight: 800;
+    font-size: 17px;
+    padding: 15px 16px;
+    cursor: pointer;
+  }
+  #runBtn { background: var(--amber); color: #2b1a02; }
+  #parentRunBtn { background: var(--pine); color: #fff; }
+  #runBtn:disabled, #parentRunBtn:disabled { opacity: 0.55; cursor: wait; }
+  .hint { font-size: 14.5px; color: var(--muted); margin: 9px 2px 0; }
+  .error-card {
+    margin-top: 12px;
+    border: 1px solid #f2c4bd;
+    border-radius: 16px;
+    background: var(--red-soft);
+    color: var(--red);
+    padding: 14px 16px;
+    font-size: 15px;
+  }
+  .error-card p { margin: 0 0 10px; }
+  .retry-btn {
+    border: 0;
+    border-radius: 999px;
+    background: var(--red);
+    color: #fff;
+    font: inherit;
+    font-size: 14.5px;
+    font-weight: 700;
+    padding: 8px 16px;
+    cursor: pointer;
+  }
+  #log, #parentLog {
+    list-style: none;
+    margin: 0;
+    padding: 2px 0 2px 6px;
+    display: grid;
+    gap: 0;
+  }
+  #log li, #parentLog li {
+    position: relative;
+    padding: 7px 0 7px 18px;
+    font-size: 15px;
+    border-left: 2px solid var(--line);
+    margin-left: 5px;
+    word-break: break-word;
+  }
+  #log li::before, #parentLog li::before {
+    content: "";
+    position: absolute;
+    left: -6px;
+    top: 15px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--paper);
+    border: 2px solid var(--pine);
+  }
+  #log li .at, #parentLog li .at {
+    color: var(--muted);
+    font-size: 12.5px;
+    display: block;
+  }
+  #log li.is-error, #parentLog li.is-error {
+    color: var(--red);
+    font-weight: 600;
+  }
+  #log li.is-privacy, #parentLog li.is-privacy {
+    border: 1px solid var(--pine);
+    border-left: 1px solid var(--pine);
+    border-radius: 16px;
+    background: var(--pine-soft);
+    color: var(--pine-dark);
+    font-weight: 700;
+    padding: 12px 14px 12px 42px;
+    margin: 8px 0 4px;
+  }
+  #log li.is-privacy::before, #parentLog li.is-privacy::before {
+    content: "✓";
+    left: 12px;
+    top: 11px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--pine);
+    border: 0;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 800;
+    display: grid;
+    place-items: center;
+  }
+  #log .empty, .facts-empty {
+    color: var(--muted);
+    font-size: 15px;
+    border: 1px dashed var(--line);
+    border-radius: 16px;
+    padding: 14px;
+    text-align: center;
+    background: var(--card);
+  }
+  #log li.empty::before, #parentLog li.empty::before { display: none; }
+  #log li.empty, #parentLog li.empty { border-left: 0; margin-left: 0; }
+  #facts, #parentResults { display: grid; gap: 12px; }
+  .fact, .family-card, .nudge-card {
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 16px;
+    background: var(--card);
+  }
+  .fact h3, .family-card h3, .nudge-card h3 { margin: 0; font-size: 17.5px; line-height: 1.3; }
+  .fact .detail {
+    margin: 5px 0 0;
+    font-size: 15.5px;
+    color: #43524a;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip {
+    font-size: 13px;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 4px 10px;
+    background: var(--grey-chip);
+    color: #4c5a51;
+  }
+  .chip.date-chip { background: var(--pine-soft); color: var(--pine-dark); }
+  .chip.action-chip { background: var(--amber-soft); color: var(--amber-dark); }
+  .chip.calm-chip { background: var(--grey-chip); color: #5d6c62; }
+  .source-line {
+    margin: 11px 0 0;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .source-line .quote {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-style: italic;
+    font-size: 12.5px;
+    color: #55645a;
+  }
+  .family-card p { margin: 5px 0; font-size: 15.5px; }
+  .family-card ul { margin: 6px 0 4px; padding-left: 20px; font-size: 15.5px; }
+  .state-grid { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+  .pill {
+    font-size: 13.5px;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 6px 11px;
+    background: var(--grey-chip);
+    color: #46554b;
+  }
+  .pill.open { background: var(--amber-soft); color: var(--amber-dark); }
+  .nudge-card { background: #fffaf1; border-color: #f0d9ae; }
+  .nudge-card p { margin: 6px 0; font-size: 15.5px; }
+  .deadline-chip {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 14px;
+    font-weight: 800;
+    border-radius: 999px;
+    padding: 6px 12px;
+    background: var(--amber);
+    color: #2b1a02;
+  }
+  .hold-card {
+    display: flex;
+    gap: 14px;
+    align-items: stretch;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: var(--card);
+    padding: 14px;
+  }
+  .cal-block {
+    flex: none;
+    width: 68px;
+    border-radius: 12px;
+    background: var(--pine);
+    color: #fff;
+    text-align: center;
+    padding: 8px 4px;
+    align-self: flex-start;
+  }
+  .cal-block .cal-month { display: block; font-size: 12px; font-weight: 800; letter-spacing: 0.08em; }
+  .cal-block .cal-day { display: block; font-size: 28px; font-weight: 800; line-height: 1.1; }
+  .hold-card h3 { margin: 0 0 4px; font-size: 17px; }
+  .hold-card p { margin: 3px 0; font-size: 15px; }
+  .parent-divider { border: 0; border-top: 1px solid var(--line); margin: 2px 0 0; }
+  footer {
+    padding: 6px 20px 0;
+    font-size: 13.5px;
+    color: var(--muted);
+    text-align: center;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="phone">
+  <header>
+    <span class="demo-badge">Demo — fictional school &amp; family</span>
+    <h1>Maple Grove Elementary</h1>
+    <p class="tagline">Your school week, sorted.</p>
+  </header>
+  <main>
+    <section aria-labelledby="newsletter-h">
+      <h2 id="newsletter-h">This week’s newsletter</h2>
+      <div class="card">
+        <p class="news-summary">Pizza orders and the uniform survey are due Friday. Picture Re-Take Day is Thursday, and the Fall Festival is Friday.</p>
+        <button class="toggle-btn" id="newsletterToggle" type="button" aria-expanded="false">Read the original</button>
+        <div class="newsletter" id="newsletterOriginal" hidden><pre id="newsletterText">Loading your newsletter…</pre></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="run-h">
+      <h2 id="run-h">School updates</h2>
+      <button id="runBtn" type="button">Check for school updates</button>
+      <p class="hint" id="runStatus">Reads the newest newsletter and pulls out what matters.</p>
+      <div class="error-card" id="schoolError" hidden>
+        <p><b>That didn’t work.</b> <span id="schoolErrorText"></span></p>
+        <button class="retry-btn" id="schoolRetry" type="button">Try again</button>
+      </div>
+    </section>
+
+    <section aria-labelledby="log-h">
+      <h2 id="log-h">Activity</h2>
+      <ol id="log"><li class="empty">Nothing here yet — check for school updates to get started.</li></ol>
+    </section>
+
+    <section aria-labelledby="facts-h">
+      <h2 id="facts-h">What the school announced <span id="factCount"></span></h2>
+      <div id="facts"><p class="facts-empty">Nothing announced yet.</p></div>
+    </section>
+
+    <hr class="parent-divider">
+
+    <section aria-labelledby="parent-h">
+      <h2 id="parent-h">Your family</h2>
+      <div class="family-card" id="familyCard">
+        <h3>Loading your family…</h3>
+      </div>
+    </section>
+
+    <section aria-labelledby="parent-run-h">
+      <h2 id="parent-run-h">Evening check</h2>
+      <button id="parentRunBtn" type="button">Run my evening check</button>
+      <p class="hint" id="parentStatus">One calm summary of what’s still open for Maya tonight.</p>
+      <div class="error-card" id="parentError" hidden>
+        <p><b>That didn’t work.</b> <span id="parentErrorText"></span></p>
+        <button class="retry-btn" id="parentRetry" type="button">Try again</button>
+      </div>
+    </section>
+
+    <section aria-labelledby="parent-results-h">
+      <h2 id="parent-results-h">Needs your attention tonight</h2>
+      <div id="parentResults"><p class="facts-empty">All calm — run your evening check to see tonight’s list.</p></div>
+    </section>
+
+    <section aria-labelledby="parent-log-h">
+      <h2 id="parent-log-h">Activity</h2>
+      <ol id="parentLog"><li class="empty">Nothing here yet — run your evening check tonight.</li></ol>
+    </section>
+  </main>
+  <footer>
+    <p>A friendly little helper for Maple Grove families.</p>
+  </footer>
+</div>
+<script>
+  const newsletterEl = document.getElementById('newsletterText');
+  const logEl = document.getElementById('log');
+  const factsEl = document.getElementById('facts');
+  const factCountEl = document.getElementById('factCount');
+  const runBtn = document.getElementById('runBtn');
+  const runStatus = document.getElementById('runStatus');
+  const familyCardEl = document.getElementById('familyCard');
+  const parentRunBtn = document.getElementById('parentRunBtn');
+  const parentStatus = document.getElementById('parentStatus');
+  const parentResultsEl = document.getElementById('parentResults');
+  const parentLogEl = document.getElementById('parentLog');
+  const newsletterToggle = document.getElementById('newsletterToggle');
+  const newsletterOriginal = document.getElementById('newsletterOriginal');
+  const schoolError = document.getElementById('schoolError');
+  const schoolErrorText = document.getElementById('schoolErrorText');
+  const schoolRetry = document.getElementById('schoolRetry');
+  const parentError = document.getElementById('parentError');
+  const parentErrorText = document.getElementById('parentErrorText');
+  const parentRetry = document.getElementById('parentRetry');
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function humanDate(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+    if (!m) return String(iso || '');
+    const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+    return d.toLocaleDateString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC',
+    });
+  }
+
+  function friendlyApplies(value) {
+    const v = String(value || '').trim();
+    if (!v) return 'All students';
+    const lower = v.toLowerCase();
+    if (lower === 'students' || lower === 'all students') return 'All students';
+    if (lower === 'all grades') return 'All grades';
+    return v.charAt(0).toUpperCase() + v.slice(1);
+  }
+
+  function friendlyTime(at) {
+    const d = new Date(at);
+    if (isNaN(d.getTime())) return String(at || '');
+    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function logClass(msg) {
+    if (/^error:/i.test(msg)) return 'is-error';
+    if (msg.indexOf('PRIVACY CHECK:') === 0) return 'is-privacy';
+    return '';
+  }
+
+  function renderLogs(logs) {
+    if (!logs || !logs.length) {
+      logEl.innerHTML = '<li class="empty">No activity yet.</li>';
+      return;
+    }
+    logEl.innerHTML = logs.map(function (entry) {
+      const msg = entry.message || '';
+      return '<li class="' + logClass(msg) + '">' +
+        '<span class="at">' + esc(friendlyTime(entry.at)) + '</span>' +
+        esc(msg) + '</li>';
+    }).join('');
+  }
+
+  function renderFacts(facts) {
+    factCountEl.textContent = facts && facts.length ? '(' + facts.length + ')' : '';
+    if (!facts || !facts.length) {
+      factsEl.innerHTML = '<p class="facts-empty">Nothing announced yet.</p>';
+      return;
+    }
+    const sorted = facts.slice().sort(function (a, b) {
+      const da = a.date ? a.date : '9999-12-31';
+      const db = b.date ? b.date : '9999-12-31';
+      if (da < db) return -1;
+      if (da > db) return 1;
+      return 0;
+    });
+    factsEl.innerHTML = sorted.map(function (f) {
+      const chips = [];
+      if (f.date) chips.push('<span class="chip date-chip">' + esc(humanDate(f.date)) + '</span>');
+      chips.push('<span class="chip">' + esc(friendlyApplies(f.applies_to)) + '</span>');
+      chips.push(f.action_required
+        ? '<span class="chip action-chip">Action needed</span>'
+        : '<span class="chip calm-chip">Good to know</span>');
+      return '<article class="fact">' +
+        '<h3>' + esc(f.title) + '</h3>' +
+        (f.detail ? '<p class="detail">' + esc(f.detail) + '</p>' : '') +
+        '<div class="chips">' + chips.join('') + '</div>' +
+        (f.source_text ? '<p class="source-line">From the newsletter: <span class="quote">“' + esc(f.source_text) + '”</span></p>' : '') +
+        '</article>';
+    }).join('');
+  }
+
+  function renderParentLogs(logs) {
+    if (!logs || !logs.length) {
+      parentLogEl.innerHTML = '<li class="empty">No activity yet.</li>';
+      return;
+    }
+    parentLogEl.innerHTML = logs.map(function (entry) {
+      const msg = entry.message || '';
+      return '<li class="' + logClass(msg) + '">' +
+        '<span class="at">' + esc(friendlyTime(entry.at)) + '</span>' +
+        esc(msg) + '</li>';
+    }).join('');
+  }
+
+  function renderFamily(profile) {
+    if (!profile) {
+      familyCardEl.innerHTML = '<h3>The Rivera Family</h3><p>Family details are unavailable right now.</p>';
+      return;
+    }
+    const labels = {
+      pizza_order: 'Pizza order',
+      uniform_survey: 'Uniform survey',
+      picture_retake: 'Picture retake',
+      fall_festival: 'Fall festival',
+    };
+    const stateWords = {
+      not_ordered: 'not ordered yet',
+      not_done: 'not done',
+      scheduled: 'scheduled',
+      planning_to_attend: 'planning to attend',
+    };
+    const states = Object.keys(profile.actions || {}).map(function (k) {
+      const raw = profile.actions[k];
+      const word = stateWords[raw] || String(raw).replace(/_/g, ' ');
+      const open = raw === 'not_ordered' || raw === 'not_done';
+      return '<span class="pill' + (open ? ' open' : '') + '">' +
+        esc(labels[k] || k) + ': ' + esc(word) + '</span>';
+    }).join('');
+    const priorities = ((profile.soul && profile.soul.priorities) || []).map(function (p) {
+      const text = String(p).trim();
+      return '<li>' + esc(text.charAt(0).toUpperCase() + text.slice(1)) + '.</li>';
+    }).join('');
+    familyCardEl.innerHTML =
+      '<h3>The Rivera Family</h3>' +
+      '<p>' + esc(profile.child.name.split(' ')[0]) + ' · ' + esc(profile.child.grade) + ' · Class ' + esc(profile.child.class) + '</p>' +
+      '<p><b>What matters most</b></p><ul>' + priorities + '</ul>' +
+      '<p>Evening notes: ' + esc((profile.soul && profile.soul.nudge_style) || '') + '.</p>' +
+      '<div class="state-grid">' + states + '</div>';
+  }
+
+  function renderParentResult(data) {
+    const result = (data && data.result) || data || {};
+    const nudges = result.nudges || [];
+    const hold = result.calendar_hold;
+    let html = '';
+    html += '<p class="hint">We checked ' + esc(result.checked_count != null ? result.checked_count : '') +
+      ' school notes · ' + esc(result.relevant_count != null ? result.relevant_count : '') + ' matter for Maya · ' +
+      esc(result.filtered_out_count != null ? result.filtered_out_count : '') + ' set aside. ' +
+      esc(result.filtering_summary || result.summary || '') + '</p>';
+    if (nudges.length) {
+      html += nudges.map(function (n) {
+        return '<article class="nudge-card"><h3>' + esc(n.title) + '</h3>' +
+          '<p>' + esc(n.action) + '</p>' +
+          (n.deadline ? '<span class="deadline-chip">Due ' + esc(humanDate(n.deadline)) + '</span>' : '') +
+          (n.source ? '<p class="source-line">From: ' + esc(n.source) + '</p>' : '') +
+          '</article>';
+      }).join('');
+    } else {
+      html += '<p class="facts-empty">Nothing needs you tonight.</p>';
+    }
+    if (hold) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(hold.date || ''));
+      let month = '';
+      let day = '';
+      let when = esc(hold.date || '');
+      if (m) {
+        const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+        month = d.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }).toUpperCase();
+        day = String(Number(m[3]));
+        when = esc(humanDate(hold.date)) + ', 2026';
+      }
+      html += '<article class="hold-card"><div class="cal-block">' +
+        '<span class="cal-month">' + esc(month) + '</span>' +
+        '<span class="cal-day">' + esc(day) + '</span></div>' +
+        '<div><h3>' + esc(hold.title) + '</h3>' +
+        '<p><b>' + when + '</b></p>' +
+        '<p>' + esc(hold.note) + '</p></div></article>';
+    }
+    parentResultsEl.innerHTML = html;
+  }
+
+  async function loadInitial() {
+    try {
+      const nRes = await fetch('/api/newsletter');
+      const nData = await nRes.json();
+      newsletterEl.textContent = nData.text || '(newsletter empty)';
+    } catch (e) {
+      newsletterEl.textContent = 'Failed to load newsletter: ' + e.message;
+    }
+    try {
+      const fRes = await fetch('/api/facts');
+      const fData = await fRes.json();
+      renderFacts(fData.facts || []);
+    } catch (e) {
+      // Leave the empty state; the run flow will surface errors.
+    }
+    try {
+      const pRes = await fetch('/api/family-profile');
+      const pData = await pRes.json();
+      renderFamily(pData.profile || null);
+    } catch (e) {
+      renderFamily(null);
+    }
+  }
+
+  newsletterToggle.addEventListener('click', function () {
+    const willShow = newsletterOriginal.hidden;
+    newsletterOriginal.hidden = !willShow;
+    newsletterToggle.setAttribute('aria-expanded', String(willShow));
+    newsletterToggle.textContent = willShow ? 'Hide the original' : 'Read the original';
+  });
+
+  schoolRetry.addEventListener('click', function () {
+    if (!runBtn.disabled) runBtn.click();
+  });
+
+  parentRetry.addEventListener('click', function () {
+    if (!parentRunBtn.disabled) parentRunBtn.click();
+  });
+
+  runBtn.addEventListener('click', async function () {
+    runBtn.disabled = true;
+    runBtn.textContent = 'Checking…';
+    runStatus.textContent = 'Checking the newest newsletter for you…';
+    schoolError.hidden = true;
+    renderLogs([{ at: new Date().toISOString(), message: 'run started (browser → server)' }]);
+    try {
+      const res = await fetch('/api/run', { method: 'POST' });
+      const data = await res.json();
+      renderLogs(data.logs || []);
+      if (!data.ok) {
+        const msg = data.error || 'Something went wrong while checking.';
+        schoolErrorText.textContent = msg;
+        schoolError.hidden = false;
+        runStatus.textContent = 'That check didn’t work — here’s what happened.';
+        renderFacts([]);
+        return;
+      }
+      renderFacts(data.facts || []);
+      runStatus.textContent = 'All sorted — here’s what the school announced.';
+    } catch (e) {
+      renderLogs([
+        { at: new Date().toISOString(), message: 'run started (browser → server)' },
+        { at: new Date().toISOString(), message: 'error: ' + e.message },
+      ]);
+      schoolErrorText.textContent = e.message;
+      schoolError.hidden = false;
+      runStatus.textContent = 'That check didn’t work — here’s what happened.';
+    } finally {
+      runBtn.disabled = false;
+      runBtn.textContent = 'Check for school updates';
+    }
+  });
+
+  parentRunBtn.addEventListener('click', async function () {
+    parentRunBtn.disabled = true;
+    parentRunBtn.textContent = 'Checking…';
+    parentStatus.textContent = 'Pulling together Maya’s evening summary…';
+    parentError.hidden = true;
+    renderParentLogs([
+      { at: new Date().toISOString(), message: 'evening check started (browser → server)' },
+      { at: new Date().toISOString(), message: 'simulated time: Thursday, November 5, 2026, 7:30 PM' },
+    ]);
+    try {
+      const res = await fetch('/api/parent/run', { method: 'POST' });
+      const data = await res.json();
+      renderParentLogs(data.logs || []);
+      if (!data.ok) {
+        const msg = data.error || 'Something went wrong during your evening check.';
+        parentErrorText.textContent = msg;
+        parentError.hidden = false;
+        parentStatus.textContent = 'That check didn’t work — here’s what happened.';
+        parentResultsEl.innerHTML = '<p class="facts-empty">No summary yet — that check didn’t finish.</p>';
+        return;
+      }
+      renderParentResult(data);
+      parentStatus.textContent = 'Done — one calm summary for tonight.';
+    } catch (e) {
+      renderParentLogs([
+        { at: new Date().toISOString(), message: 'evening check started (browser → server)' },
+        { at: new Date().toISOString(), message: 'error: ' + e.message },
+      ]);
+      parentErrorText.textContent = e.message;
+      parentError.hidden = false;
+      parentStatus.textContent = 'That check didn’t work — here’s what happened.';
+    } finally {
+      parentRunBtn.disabled = false;
+      parentRunBtn.textContent = 'Run my evening check';
+    }
+  });
+
+  loadInitial();
+</script>
+</body>
+</html>

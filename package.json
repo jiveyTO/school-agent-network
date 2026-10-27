@@ -1,0 +1,12 @@
+{
+  "name": "school-agent-network",
+  "version": "0.1.0",
+  "private": true,
+  "description": "School Agent Network — Phase 1: School Agent on mock data",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

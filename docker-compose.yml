@@ -1,0 +1,11 @@
+services:
+  school-agent:
+    container_name: school-agent
+    image: node:20-alpine
+    working_dir: /app
+    command: node server.js
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+    restart: unless-stopped

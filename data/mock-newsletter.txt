@@ -1,0 +1,35 @@
+MOCK DATA — SAFE TO SHOW IN DEMOS
+Fictional school, people, and numbers. Structure and fact types are based on a real school newsletter, so the School Agent parser test is realistic. No real school data appears here.
+
+---
+
+Maple Grove Elementary — Parent Preview, The Week Ahead
+Date: November 2nd-6th
+From: Ms. D. Carter, Principal, Maple Grove Elementary
+
+Monday: P.A. Day — no school for students
+Thursday: Picture Re-Take Day
+Friday: Fall Festival Dance; Helping Hands Club will be selling Cookies and Popcorn ($2 each); Uniform Survey due to classroom teachers
+
+PIZZA DAY
+Pizza orders are due Friday. $3 per slice. Order form: [form link]
+
+FALL FUNDRAISER
+Our fall fundraiser raised $8,400. $400 will go toward new recess equipment. Thank you to every family who participated.
+Top sellers: Ava R. — 1st place; Liam S. — 2nd place; Sofia K. — 3rd place. (All names fictional.)
+
+COSTUME / DRESS-UP DAY REMINDERS
+1. Culture is not a costume: please do not wear costumes representing a cultural group or ethnicity.
+2. Masks that conceal identity are discouraged, for safety.
+3. Costumes should be appropriate for school.
+4. Avoid costumes that could frighten younger students.
+5. Please do not send food or snacks for sharing with classmates.
+
+HELPING HANDS CLUB
+Our Helping Hands Club is preparing winter care envelopes for 24 students in northern communities. Each homeroom class collects for 2 students, following a specific list of items. All 10 items must fit in one 8 x 12 envelope. A club rep will visit each homeroom daily until November 18 to collect donations. The cookie and popcorn sale helps pay for shipping.
+
+LOOKING AHEAD
+- November 25th — Remembrance Assembly, Grades 3-8
+- December 3rd (evening) — Parent/Teacher Interviews
+- December 4th (morning) — Parent/Teacher Interviews and P.A. Day
+- December 11th — Civvies Day
