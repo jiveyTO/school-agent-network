@@ -6,6 +6,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const store = require('./db');
 
 const ROOT = __dirname;
 const NEWSLETTER_PATH = path.join(ROOT, 'data', 'mock-newsletter.txt');
@@ -44,6 +45,10 @@ const MODEL = process.env.SCHOOL_AGENT_MODEL || 'muse-spark-1.3';
 const API_URL =
   process.env.SCHOOL_AGENT_API_URL || 'https://api.meta.ai/v1/chat/completions';
 const PORT = Number(process.env.PORT || 3000);
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
 const FACT_TYPES = ['deadline', 'event', 'requirement', 'change', 'announcement'];
 
@@ -231,8 +236,9 @@ function extractJsonObject(text) {
 
 function buildParentPrompt(profile, facts) {
   const soul = profile.soul || {};
+  const child = profile.child || {};
   const system = [
-    'You are the Parent Agent for ONE fictional demo family at Maple Grove Elementary.',
+    `You are the Parent Agent for ONE family at ${profile.school || 'their school'}. The child is ${child.name || 'the child'} (${child.grade || ''}${child.class ? ', Class ' + child.class : ''}).`,
     'Soul rules (shared core — obey exactly):',
     '- I work for this family alone.',
     "- I never share this family's private information anywhere (not to the school, not to any group, not to anyone).",
@@ -248,9 +254,9 @@ function buildParentPrompt(profile, facts) {
     'relevant_facts, nudges, calendar_hold, filtered_out_count, filtering_summary.',
     'Shapes:',
     '- relevant_facts: array of objects {id, title} copied from the input facts, ONLY facts that apply to this child/family (school-wide, all grades, all students, Grade 3, or Grades 3-8 count as applying; facts explicitly limited to other grades/groups do not).',
-    '- nudges: array of objects {fact_id, title, action, deadline, source}. Create a nudge ONLY for a fact with action_required=true whose tracked action state in profile.actions is still open (not done / not ordered). Tracked mapping: pizza_order -> the pizza orders fact; uniform_survey -> the uniform survey fact; picture_retake is already "scheduled" so NO nudge; fall_festival is "planning_to_attend" (not an open action) so NO nudge. Do NOT create nudges for untracked requirement facts in this evening check; keep them in relevant_facts only.',
+    '- nudges: array of objects {fact_id, title, action, deadline, source}. Create a nudge ONLY for a fact with action_required=true whose tracked action state in profile.actions is still open. Open states: not_ordered, not_done, pending, open. Closed states (NO nudge): ordered, done, scheduled, completed, planning_to_attend. Match each action key to its fact by meaning (for example pizza_order -> the pizza orders fact, uniform_survey -> the uniform survey fact, hot_lunch -> a hot lunch ordering fact). Do NOT create nudges for untracked requirement facts in this evening check; keep them in relevant_facts only.',
     '- Each nudge action must say what to do in plain language; deadline must be the fact date; source must name the school newsletter source (use the fact source_document).',
-    '- calendar_hold: ONE object {title, date, note} for the pizza order deadline only. date must be "2026-11-06" (Friday, November 6, 2026). note must be one short calm evening note mentioning the pizza order is not yet ordered.',
+    '- calendar_hold: ONE object {title, date, note} for the most urgent open deadline. If a pizza order fact is open, it must be the pizza order deadline (for the demo week, date "2026-11-06", Friday, November 6, 2026) and the note must mention the pizza order is not yet ordered. Otherwise use the earliest open action deadline, or null if there is none.',
     '- filtered_out_count: number of input facts NOT in relevant_facts.',
     '- filtering_summary: ONE line explaining why facts were filtered out.',
     'Keep nudge wording short and calm (evening, combined message). Do not invent facts, dates, or actions.',
@@ -355,14 +361,24 @@ async function runParentAgent(logs) {
   if (!fs.existsSync(FACTS_PATH)) {
     throw new Error('data/facts.json not found — run the School Agent first.');
   }
-  if (!fs.existsSync(FAMILY_PROFILE_PATH)) {
-    throw new Error('data/family-profile.json not found.');
-  }
   const facts = JSON.parse(fs.readFileSync(FACTS_PATH, 'utf8'));
   if (!Array.isArray(facts)) {
     throw new Error('data/facts.json is not a JSON array.');
   }
-  const profile = JSON.parse(fs.readFileSync(FAMILY_PROFILE_PATH, 'utf8'));
+  const profile = store.getProfileForRun();
+  if (!profile) {
+    throw new Error('No family profile found — finish setup or switch to the demo family.');
+  }
+  if (profile.is_demo && fs.existsSync(FAMILY_PROFILE_PATH)) {
+    try {
+      const seed = JSON.parse(fs.readFileSync(FAMILY_PROFILE_PATH, 'utf8'));
+      if (seed.soul && Array.isArray(seed.soul.wishes)) {
+        profile.soul.wishes = seed.soul.wishes;
+      }
+    } catch {
+      // Demo wishes are optional; the stored soul still drives the run.
+    }
+  }
   const childName = (profile.child && profile.child.name) || 'the child';
   push(`family profile loaded for ${childName} (private to this Parent Agent)`);
   push(`${facts.length} facts checked against the family profile`);
@@ -389,16 +405,8 @@ async function runParentAgent(logs) {
   return result;
 }
 
-async function runSchoolAgent(logs) {
+async function extractAndSaveFacts(newsletterText, logs) {
   const push = (message) => logs.push({ at: nowIso(), message });
-  push('run started');
-  if (!API_KEY) {
-    throw new Error(
-      'SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.'
-    );
-  }
-  push(`newsletter loaded: data/mock-newsletter.txt`);
-  const newsletterText = fs.readFileSync(NEWSLETTER_PATH, 'utf8');
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
   const content = await callMetaApi(newsletterText);
   push('API responded — parsing facts');
@@ -421,10 +429,199 @@ async function runSchoolAgent(logs) {
   return facts;
 }
 
+async function runSchoolAgent(logs) {
+  const push = (message) => logs.push({ at: nowIso(), message });
+  push('run started');
+  if (!API_KEY) {
+    throw new Error(
+      'SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.'
+    );
+  }
+  push(`newsletter loaded: data/mock-newsletter.txt`);
+  const newsletterText = fs.readFileSync(NEWSLETTER_PATH, 'utf8');
+  return extractAndSaveFacts(newsletterText, logs);
+}
+
 function sendJson(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(body);
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > 2 * 1024 * 1024) {
+        reject(new Error('Request is too large.'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8').trim();
+      if (!text) return resolve({});
+      try {
+        resolve(JSON.parse(text));
+      } catch {
+        reject(new Error('Request body was not valid JSON.'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function publicBaseUrl(req) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const proto =
+    (req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim() || 'http';
+  const host = req.headers.host || `127.0.0.1:${PORT}`;
+  return `${proto}://${host}`;
+}
+
+function gmailConfigured() {
+  return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+}
+
+function googleAuthUrl(req, profileId) {
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: `${publicBaseUrl(req)}/api/email/callback`,
+    response_type: 'code',
+    scope: GMAIL_SCOPE,
+    access_type: 'offline',
+    prompt: 'consent',
+    state: profileId,
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+async function googleTokenRequest(params) {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString(),
+  });
+  const text = await res.text();
+  let data = {};
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = {};
+  }
+  if (!res.ok || !data.access_token) {
+    const code = data.error ? ` (${data.error})` : '';
+    throw new Error(`Google sign-in failed${code}. Please try connecting again.`);
+  }
+  return data;
+}
+
+async function gmailFetch(accessToken, urlPath) {
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/${urlPath}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const text = await res.text();
+  let data = {};
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = {};
+  }
+  if (!res.ok) {
+    throw new Error(`Gmail request failed (${res.status}). Please reconnect Gmail.`);
+  }
+  return data;
+}
+
+async function getGmailAccessToken(profileId) {
+  const tokens = store.getGmailTokens(profileId);
+  if (!tokens || !tokens.access_token) {
+    throw new Error('Gmail is not connected yet.');
+  }
+  const expiresAt = Number(tokens.expires_at || 0);
+  if (expiresAt && expiresAt > Date.now() + 60000) return tokens.access_token;
+  if (!tokens.refresh_token) return tokens.access_token;
+  const refreshed = await googleTokenRequest({
+    client_id: GOOGLE_CLIENT_ID,
+    client_secret: GOOGLE_CLIENT_SECRET,
+    grant_type: 'refresh_token',
+    refresh_token: tokens.refresh_token,
+  });
+  const next = {
+    email: tokens.email || '',
+    access_token: refreshed.access_token,
+    refresh_token: refreshed.refresh_token || tokens.refresh_token,
+    expires_at: Date.now() + Number(refreshed.expires_in || 3600) * 1000,
+  };
+  store.saveGmailTokens(profileId, next);
+  return next.access_token;
+}
+
+function decodeBase64Url(data) {
+  const normalized = String(data || '').replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(normalized, 'base64').toString('utf8');
+}
+
+function stripHtml(html) {
+  return String(html || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+function gmailMessageText(payload) {
+  let plain = '';
+  let html = '';
+  const walk = (part) => {
+    if (!part) return;
+    if (part.body && part.body.data) {
+      if (part.mimeType === 'text/plain') plain += decodeBase64Url(part.body.data) + '\n';
+      if (part.mimeType === 'text/html') html += decodeBase64Url(part.body.data) + '\n';
+    }
+    (part.parts || []).forEach(walk);
+  };
+  walk(payload);
+  return (plain.trim() || stripHtml(html)).trim();
+}
+
+function gmailHeaders(payload) {
+  const out = {};
+  for (const h of (payload && payload.headers) || []) {
+    out[String(h.name || '').toLowerCase()] = h.value || '';
+  }
+  return out;
+}
+
+function classifyGmailMessage(headers, snippet, body) {
+  const hay = `${headers.from || ''} ${headers.subject || ''} ${snippet || ''} ${body.slice(0, 1200)}`.toLowerCase();
+  if (
+    hay.includes('healthy hunger') ||
+    hay.includes('hot lunch') ||
+    hay.includes('order confirmation') ||
+    hay.includes('order receipt') ||
+    (hay.includes('receipt') && hay.includes('lunch'))
+  ) {
+    return 'order';
+  }
+  if (
+    hay.includes('schoolmessenger') ||
+    hay.includes('newsletter') ||
+    hay.includes('parent preview') ||
+    hay.includes('notice')
+  ) {
+    return 'newsletter';
+  }
+  return 'other';
 }
 
 const server = http.createServer(async (req, res) => {
@@ -451,12 +648,291 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/family-profile') {
-      if (!fs.existsSync(FAMILY_PROFILE_PATH)) {
+      const profile = store.getProfileForRun();
+      if (!profile) {
         sendJson(res, 404, { error: 'family profile not found' });
         return;
       }
-      const profile = JSON.parse(fs.readFileSync(FAMILY_PROFILE_PATH, 'utf8'));
       sendJson(res, 200, { profile });
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/onboarding/status') {
+      const active = store.getActiveProfile();
+      sendJson(res, 200, {
+        hasActiveProfile: Boolean(active),
+        has_active_profile: Boolean(active),
+        isDemo: Boolean(active && active.is_demo),
+        is_demo: Boolean(active && active.is_demo),
+        needsOnboarding: !(active && !active.is_demo),
+        profile: active,
+      });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/profile') {
+      const body = await readJsonBody(req);
+      if (!String(body.parent_name || '').trim() || !String(body.child_name || '').trim()) {
+        sendJson(res, 400, { error: 'Please add a parent name and a child name.' });
+        return;
+      }
+      const profile = store.createProfile({
+        parent_name: body.parent_name,
+        child_name: body.child_name,
+        grade: body.grade,
+        class_name: body.class_name,
+        school_name: body.school_name,
+        priorities: body.priorities,
+        nudge_style: body.nudge_style,
+        actions: body.actions,
+      });
+      sendJson(res, 200, { ok: true, profile });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/profile/reset') {
+      store.clearActiveProfile();
+      sendJson(res, 200, { ok: true, hasActiveProfile: false, isDemo: false });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/profile/demo') {
+      const profile = store.activateDemoProfile();
+      if (!profile) {
+        sendJson(res, 404, { error: 'Demo family is not available.' });
+        return;
+      }
+      sendJson(res, 200, { ok: true, profile, isDemo: true });
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/sources') {
+      const active = store.getActiveProfile();
+      if (!active) {
+        sendJson(res, 200, { sources: [] });
+        return;
+      }
+      sendJson(res, 200, { sources: store.listSources(active.id) });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/sources') {
+      const active = store.getActiveProfile();
+      if (!active) {
+        sendJson(res, 400, { error: 'Save your family first, then save each source.' });
+        return;
+      }
+      const body = await readJsonBody(req);
+      if (!body.type) {
+        sendJson(res, 400, { error: 'Choose a source to save.' });
+        return;
+      }
+      const source = store.saveSource(active.id, {
+        type: body.type,
+        label: body.label,
+        url: body.url,
+        username: body.username,
+        secret: body.password != null ? body.password : body.secret,
+        status: 'saved',
+      });
+      sendJson(res, 200, { ok: true, source });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/newsletter/run') {
+      const logs = [];
+      try {
+        const body = await readJsonBody(req);
+        const text = String(body.text || '').trim();
+        logs.push({ at: nowIso(), message: 'run started' });
+        if (!API_KEY) throw new Error('SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.');
+        if (!text) throw new Error('Paste your newsletter or notice first.');
+        logs.push({ at: nowIso(), message: 'pasted newsletter received' });
+        const facts = await extractAndSaveFacts(text, logs);
+        sendJson(res, 200, { ok: true, facts, logs });
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        logs.push({ at: nowIso(), message: `error: ${message}` });
+        sendJson(res, 500, { ok: false, error: message, logs });
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/email/auth') {
+      if (!gmailConfigured()) {
+        sendJson(res, 400, {
+          error: 'Gmail setup is needed first. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to .env.',
+          setup_needed: true,
+        });
+        return;
+      }
+      const active = store.getActiveProfile();
+      if (!active) {
+        sendJson(res, 400, { error: 'Save your family first, then connect Gmail.' });
+        return;
+      }
+      res.writeHead(302, { Location: googleAuthUrl(req, active.id) });
+      res.end();
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/email/callback') {
+      try {
+        const code = url.searchParams.get('code');
+        const profileId = url.searchParams.get('state') || (store.getActiveProfile() || {}).id;
+        if (!code) throw new Error('Google did not return a sign-in code.');
+        if (!profileId) throw new Error('Save your family first, then connect Gmail.');
+        if (!gmailConfigured()) throw new Error('Gmail setup is needed first.');
+        const tokens = await googleTokenRequest({
+          code,
+          client_id: GOOGLE_CLIENT_ID,
+          client_secret: GOOGLE_CLIENT_SECRET,
+          redirect_uri: `${publicBaseUrl(req)}/api/email/callback`,
+          grant_type: 'authorization_code',
+        });
+        const gmailProfile = await gmailFetch(tokens.access_token, 'users/me/profile');
+        const email = gmailProfile.emailAddress || '';
+        store.saveGmailTokens(profileId, {
+          email,
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token || null,
+          expires_at: Date.now() + Number(tokens.expires_in || 3600) * 1000,
+        });
+        store.setSourceStatus(profileId, 'gmail', 'connected', email);
+        res.writeHead(302, { Location: '/?onboarding=1&email=connected' });
+        res.end();
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        res.writeHead(302, {
+          Location: `/?onboarding=1&email=error&message=${encodeURIComponent(message)}`,
+        });
+        res.end();
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/email/status') {
+      const active = store.getActiveProfile();
+      const tokens = active ? store.getGmailTokens(active.id) : null;
+      sendJson(res, 200, {
+        connected: Boolean(tokens && tokens.access_token),
+        email: tokens && tokens.access_token ? tokens.email || '' : '',
+        configured: gmailConfigured(),
+        setup_needed: !gmailConfigured(),
+        setupNeeded: !gmailConfigured(),
+      });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/email/scan') {
+      try {
+        const active = store.getActiveProfile();
+        if (!active) throw new Error('Save your family first, then connect Gmail.');
+        const accessToken = await getGmailAccessToken(active.id);
+        const school = (active.school || '').replace(/"/g, '');
+        const query =
+          `newer_than:30d (SchoolMessenger OR "${school}" OR newsletter OR "parent preview" ` +
+          'OR "Healthy Hunger" OR "hot lunch")';
+        const list = await gmailFetch(
+          accessToken,
+          `users/me/messages?maxResults=50&q=${encodeURIComponent(query)}`
+        );
+        const findings = [];
+        const changes = [];
+        let actions = { ...(active.actions || {}) };
+        let actionsChanged = false;
+        for (const item of list.messages || []) {
+          const msg = await gmailFetch(accessToken, `users/me/messages/${item.id}`);
+          const headers = gmailHeaders(msg.payload);
+          const body = gmailMessageText(msg.payload);
+          const kind = classifyGmailMessage(headers, msg.snippet, body);
+          const base = {
+            messageId: item.id,
+            id: item.id,
+            subject: headers.subject || '(no subject)',
+            from: headers.from || '',
+            date: headers.date || '',
+            snippet: msg.snippet || '',
+          };
+          if (kind === 'order') {
+            const before = actions.hot_lunch || '';
+            actions.hot_lunch = 'ordered';
+            actionsChanged = true;
+            const change = {
+              action: 'hot_lunch',
+              from: before,
+              to: 'ordered',
+              label: 'Hot lunch: ordered',
+              messageId: item.id,
+              subject: base.subject,
+            };
+            changes.push(change);
+            findings.push({ ...base, kind, type: 'order', change });
+          } else if (kind === 'newsletter') {
+            findings.push({
+              ...base,
+              kind,
+              type: 'newsletter',
+              preview: body.slice(0, 300),
+            });
+          } else {
+            findings.push({ ...base, kind: 'other', type: 'other' });
+          }
+        }
+        let updatedProfile = active;
+        if (actionsChanged) {
+          updatedProfile = store.updateProfileActions(active.id, actions) || active;
+        }
+        sendJson(res, 200, {
+          ok: true,
+          findings,
+          changes,
+          scanned: (list.messages || []).length,
+          profile: updatedProfile,
+        });
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        sendJson(res, 500, { ok: false, error: message });
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/email/use-newsletter') {
+      const logs = [];
+      try {
+        const active = store.getActiveProfile();
+        if (!active) throw new Error('Save your family first, then connect Gmail.');
+        const body = await readJsonBody(req);
+        if (!body.messageId) throw new Error('Choose a message to use.');
+        const accessToken = await getGmailAccessToken(active.id);
+        const msg = await gmailFetch(accessToken, `users/me/messages/${body.messageId}`);
+        const text = gmailMessageText(msg.payload);
+        if (!text) throw new Error('That message did not include readable text.');
+        logs.push({ at: nowIso(), message: 'run started' });
+        logs.push({ at: nowIso(), message: 'Gmail message loaded as the school newsletter' });
+        const facts = await extractAndSaveFacts(text, logs);
+        sendJson(res, 200, { ok: true, facts, logs });
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        logs.push({ at: nowIso(), message: `error: ${message}` });
+        sendJson(res, 500, { ok: false, error: message, logs });
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/email/disconnect') {
+      try {
+        const active = store.getActiveProfile();
+        if (active) {
+          const tokens = store.getGmailTokens(active.id);
+          if (tokens && (tokens.refresh_token || tokens.access_token)) {
+            try {
+              await fetch('https://oauth2.googleapis.com/revoke', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                  token: tokens.refresh_token || tokens.access_token,
+                }).toString(),
+              });
+            } catch {
+              // Revoke is best-effort; local tokens are still deleted below.
+            }
+          }
+          store.deleteGmailTokens(active.id);
+          store.setSourceStatus(active.id, 'gmail', 'disconnected', '');
+        }
+        sendJson(res, 200, { ok: true, connected: false, email: '' });
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        sendJson(res, 500, { ok: false, error: message });
+      }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/parent/run') {
@@ -495,12 +971,20 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`School Agent (Phase 1) listening at http://0.0.0.0:${PORT}`);
-  console.log(`Model: ${MODEL} via ${API_URL}`);
-  console.log(
-    API_KEY
-      ? 'SCHOOL_AGENT_API_KEY: present (configured)'
-      : 'SCHOOL_AGENT_API_KEY: MISSING — Run will show the error in the event log'
-  );
-});
+store
+  .initDb()
+  .then(() => {
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`School Agent Network listening at http://0.0.0.0:${PORT}`);
+      console.log(`Model: ${MODEL} via ${API_URL}`);
+      console.log(
+        API_KEY
+          ? 'SCHOOL_AGENT_API_KEY: present (configured)'
+          : 'SCHOOL_AGENT_API_KEY: MISSING — Run will show the error in the event log'
+      );
+    });
+  })
+  .catch((err) => {
+    console.error('Could not start the local database:', err.message);
+    process.exit(1);
+  });

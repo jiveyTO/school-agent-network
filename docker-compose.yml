@@ -3,7 +3,7 @@ services:
     container_name: school-agent
     image: node:20-alpine
     working_dir: /app
-    command: node server.js
+    command: sh -c "npm ci --omit=dev --no-audit --no-fund && exec node server.js"
     ports:
       - "3000:3000"
     volumes:

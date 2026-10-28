@@ -4,5 +4,8 @@
 # Private real school data — never commit, never demo (see README privacy rule)
 data/sample-newsletter.txt
 
+# Local database — everything a parent enters lives here, never commit
+data/app.db
+
 # Dependencies / runtime output
 node_modules/

@@ -312,6 +312,26 @@
   .hold-card h3 { margin: 0 0 4px; font-size: 17px; }
   .hold-card p { margin: 3px 0; font-size: 15px; }
   .parent-divider { border: 0; border-top: 1px solid var(--line); margin: 2px 0 0; }
+  .field { display: grid; gap: 6px; margin-bottom: 12px; font-size: 15px; font-weight: 700; }
+  .field input[type="text"], .field input[type="url"], .field input[type="password"], .field textarea {
+    width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px;
+    font: inherit; font-size: 16px; font-weight: 400; background: #fff; color: var(--ink);
+  }
+  .field textarea { min-height: 130px; resize: vertical; }
+  .check-line { display: flex; gap: 9px; align-items: flex-start; font-size: 15.5px; margin: 9px 0; }
+  .check-line input { margin-top: 4px; width: 18px; height: 18px; }
+  .source-card { border: 1px solid var(--line); border-radius: 16px; padding: 16px; background: var(--card); margin-bottom: 12px; }
+  .source-card h3 { margin: 0 0 6px; font-size: 17px; }
+  .small-btn {
+    border: 0; border-radius: 999px; background: var(--pine); color: #fff; font: inherit;
+    font-size: 14.5px; font-weight: 700; padding: 9px 15px; cursor: pointer;
+  }
+  .small-btn.secondary { background: var(--wash); color: var(--pine-dark); border: 1px solid var(--line); }
+  .small-btn:disabled { opacity: 0.55; cursor: wait; }
+  .saved-note { font-size: 13.5px; color: var(--muted); }
+  .setup-box { border: 1px dashed var(--amber-dark); border-radius: 16px; background: var(--amber-soft); padding: 14px; font-size: 14.5px; }
+  .quiet-controls { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .text-btn { border: 0; background: none; color: var(--muted); font: inherit; font-size: 14px; text-decoration: underline; cursor: pointer; padding: 6px; }
   footer {
     padding: 6px 20px 0;
     font-size: 13.5px;
@@ -331,6 +351,94 @@
     <p class="tagline">Your school week, sorted.</p>
   </header>
   <main>
+    <section id="onboardingView" aria-labelledby="welcome-h" hidden>
+      <h2 id="welcome-h">Welcome — let’s set up your family helper</h2>
+      <div class="card">
+        <p style="margin-top:0">A few friendly steps and your school week gets a lot calmer. Everything you add stays on this computer.</p>
+        <p><b>1. About your family</b></p>
+        <label class="field">Your name
+          <input type="text" id="obParentName" placeholder="e.g. Alex Rivera" autocomplete="name">
+        </label>
+        <label class="field">Your child’s name
+          <input type="text" id="obChildName" placeholder="e.g. Maya Rivera">
+        </label>
+        <label class="field">Grade
+          <input type="text" id="obGrade" placeholder="e.g. Grade 3">
+        </label>
+        <label class="field">Class <span style="font-weight:400;color:var(--muted)">(optional)</span>
+          <input type="text" id="obClassName" placeholder="e.g. 3B">
+        </label>
+        <label class="field">School name
+          <input type="text" id="obSchoolName" placeholder="e.g. Maple Grove Elementary">
+        </label>
+        <p><b>2. What matters to you</b></p>
+        <label class="check-line"><input type="checkbox" class="ob-priority" value="never miss a food-order deadline" checked><span>Never miss a food-order deadline</span></label>
+        <label class="check-line"><input type="checkbox" class="ob-priority" value="never miss a permission form or sign-up deadline"><span>Never miss a permission form or sign-up deadline</span></label>
+        <label class="check-line"><input type="checkbox" class="ob-priority" value="keep evenings calm — one combined nudge" checked><span>Keep evenings calm — one combined nudge</span></label>
+        <label class="check-line"><input type="radio" name="obNudge" value="one short message in the evening" checked><span>One short message in the evening</span></label>
+        <label class="check-line"><input type="radio" name="obNudge" value="tell me right away"><span>Tell me right away</span></label>
+        <button class="small-btn" id="createProfileBtn" type="button">Save my family and continue</button>
+        <p class="hint" id="obProfileStatus"></p>
+        <button class="text-btn" id="useDemoBtn" type="button">Use the demo family instead</button>
+      </div>
+
+      <h2 style="margin-top:22px">3. Your school’s sources</h2>
+      <p class="hint" style="margin-bottom:10px">Save the places your school already uses. You can skip any of these.</p>
+
+      <div class="source-card" data-source="schoolmessenger">
+        <h3>SchoolMessenger</h3>
+        <label class="field">Link<input type="url" data-source-url placeholder="https://…"></label>
+        <label class="field">Username<input type="text" data-source-username autocomplete="username"></label>
+        <label class="field">Password<input type="password" data-source-password autocomplete="current-password"></label>
+        <p class="saved-note">Saved only in this app’s database on this computer. Never shared, never uploaded.</p>
+        <button class="small-btn secondary" type="button" data-source-save="schoolmessenger" data-label="SchoolMessenger">Save</button>
+        <p class="hint" data-source-status></p>
+      </div>
+
+      <div class="source-card" data-source="healthyhunger">
+        <h3>Healthy Hunger</h3>
+        <label class="field">Link<input type="url" data-source-url placeholder="https://…"></label>
+        <label class="field">Username<input type="text" data-source-username autocomplete="username"></label>
+        <label class="field">Password<input type="password" data-source-password autocomplete="current-password"></label>
+        <p class="saved-note">Saved only in this app’s database on this computer. Never shared, never uploaded.</p>
+        <button class="small-btn secondary" type="button" data-source-save="healthyhunger" data-label="Healthy Hunger">Save</button>
+        <p class="hint" data-source-status></p>
+      </div>
+
+      <div class="source-card" data-source="schoolbus">
+        <h3>School bus site</h3>
+        <label class="field">Link<input type="url" data-source-url placeholder="https://…"></label>
+        <label class="field">Username<input type="text" data-source-username autocomplete="username"></label>
+        <label class="field">Password<input type="password" data-source-password autocomplete="current-password"></label>
+        <p class="saved-note">Saved only in this app’s database on this computer. Never shared, never uploaded.</p>
+        <button class="small-btn secondary" type="button" data-source-save="schoolbus" data-label="School bus site">Save</button>
+        <p class="hint" data-source-status></p>
+      </div>
+
+      <div class="source-card" id="gmailCard">
+        <h3>Gmail</h3>
+        <p id="gmailStatus">Checking Gmail…</p>
+        <div class="setup-box" id="gmailSetup" hidden>
+          <p style="margin-top:0"><b>A little setup is needed first.</b></p>
+          <p>In your Google Cloud project: enable the Gmail API, set the consent screen to Testing with your own Google account as a test user, create an OAuth client (Web application) with the redirect URI shown by this app, and put the client ID and secret in <span style="font-family:ui-monospace,monospace">.env</span>. Then restart the app.</p>
+          <p style="margin-bottom:0">Redirect URI: <span style="font-family:ui-monospace,monospace" id="gmailRedirectUri"></span></p>
+        </div>
+        <button class="small-btn" id="gmailConnectBtn" type="button">Connect Gmail</button>
+        <button class="small-btn secondary" id="gmailScanBtn" type="button" hidden>Look through my school email</button>
+        <button class="small-btn secondary" id="gmailDisconnectBtn" type="button" hidden>Disconnect Gmail</button>
+        <div id="gmailFindings" style="margin-top:12px"></div>
+      </div>
+
+      <h2 style="margin-top:22px">4. Your school’s latest newsletter</h2>
+      <div class="card">
+        <label class="field">Paste your school’s latest newsletter or notice.
+          <textarea id="pasteNewsletter" placeholder="Paste the newsletter text here…"></textarea>
+        </label>
+        <button class="small-btn" id="pasteBtn" type="button">Sort this newsletter</button>
+        <p class="hint" id="pasteStatus"></p>
+      </div>
+    </section>
+
     <section aria-labelledby="newsletter-h">
       <h2 id="newsletter-h">This week’s newsletter</h2>
       <div class="card">
@@ -387,6 +495,13 @@
     <section aria-labelledby="parent-log-h">
       <h2 id="parent-log-h">Activity</h2>
       <ol id="parentLog"><li class="empty">Nothing here yet — run your evening check tonight.</li></ol>
+    </section>
+
+    <section aria-label="Family controls">
+      <div class="quiet-controls">
+        <button class="text-btn" id="startOverBtn" type="button">Start over</button>
+        <button class="text-btn" id="demoBtn" type="button">Switch back to demo family</button>
+      </div>
     </section>
   </main>
   <footer>
@@ -507,11 +622,15 @@
     }).join('');
   }
 
+  let currentChildFirst = 'Maya';
+
   function renderFamily(profile) {
     if (!profile) {
-      familyCardEl.innerHTML = '<h3>The Rivera Family</h3><p>Family details are unavailable right now.</p>';
+      familyCardEl.innerHTML = '<h3>Your Family</h3><p>Family details are unavailable right now.</p>';
       return;
     }
+    currentChildFirst = (profile.child.name || 'your child').split(' ')[0];
+    parentStatus.textContent = 'One calm summary of what’s still open for ' + currentChildFirst + ' tonight.';
     const labels = {
       pizza_order: 'Pizza order',
       uniform_survey: 'Uniform survey',
@@ -535,8 +654,9 @@
       const text = String(p).trim();
       return '<li>' + esc(text.charAt(0).toUpperCase() + text.slice(1)) + '.</li>';
     }).join('');
+    const parentLast = (profile.parent.name || '').trim().split(' ').slice(-1)[0] || 'Your';
     familyCardEl.innerHTML =
-      '<h3>The Rivera Family</h3>' +
+      '<h3>The ' + esc(parentLast) + ' Family</h3>' +
       '<p>' + esc(profile.child.name.split(' ')[0]) + ' · ' + esc(profile.child.grade) + ' · Class ' + esc(profile.child.class) + '</p>' +
       '<p><b>What matters most</b></p><ul>' + priorities + '</ul>' +
       '<p>Evening notes: ' + esc((profile.soul && profile.soul.nudge_style) || '') + '.</p>' +
@@ -549,7 +669,7 @@
     const hold = result.calendar_hold;
     let html = '';
     html += '<p class="hint">We checked ' + esc(result.checked_count != null ? result.checked_count : '') +
-      ' school notes · ' + esc(result.relevant_count != null ? result.relevant_count : '') + ' matter for Maya · ' +
+      ' school notes · ' + esc(result.relevant_count != null ? result.relevant_count : '') + ' matter for ' + esc(currentChildFirst) + ' · ' +
       esc(result.filtered_out_count != null ? result.filtered_out_count : '') + ' set aside. ' +
       esc(result.filtering_summary || result.summary || '') + '</p>';
     if (nudges.length) {
@@ -584,7 +704,103 @@
     parentResultsEl.innerHTML = html;
   }
 
+  const onboardingView = document.getElementById('onboardingView');
+
+  function mainParts() {
+    return Array.prototype.slice.call(document.querySelectorAll('main > section, main > hr'))
+      .filter(function (el) { return el.id !== 'onboardingView'; });
+  }
+
+  function showOnboarding() {
+    onboardingView.hidden = false;
+    mainParts().forEach(function (el) { el.hidden = true; });
+  }
+
+  function showMain() {
+    onboardingView.hidden = true;
+    mainParts().forEach(function (el) { el.hidden = false; });
+  }
+
+  async function postJson(url, body) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const data = await res.json().catch(function () { return {}; });
+    if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.');
+    return data;
+  }
+
+  function fillProfileForm(profile) {
+    if (!profile) return;
+    document.getElementById('obParentName').value = profile.parent.name || '';
+    document.getElementById('obChildName').value = profile.child.name || '';
+    document.getElementById('obGrade').value = profile.child.grade || '';
+    document.getElementById('obClassName').value = profile.child.class || '';
+    document.getElementById('obSchoolName').value = profile.school || '';
+  }
+
+  async function loadSources() {
+    try {
+      const res = await fetch('/api/sources');
+      const data = await res.json();
+      (data.sources || []).forEach(function (s) {
+        const card = document.querySelector('[data-source="' + s.type + '"]');
+        if (!card) return;
+        card.querySelector('[data-source-url]').value = s.url || '';
+        card.querySelector('[data-source-username]').value = s.username || '';
+        card.querySelector('[data-source-status]').textContent = s.status === 'saved' ? 'Saved on this computer.' : '';
+      });
+    } catch (e) {
+      // Sources are optional; the cards still work.
+    }
+  }
+
+  async function loadEmailStatus() {
+    const statusEl = document.getElementById('gmailStatus');
+    const setupEl = document.getElementById('gmailSetup');
+    const connectBtn = document.getElementById('gmailConnectBtn');
+    const scanBtn = document.getElementById('gmailScanBtn');
+    const disconnectBtn = document.getElementById('gmailDisconnectBtn');
+    document.getElementById('gmailRedirectUri').textContent = window.location.origin + '/api/email/callback';
+    try {
+      const res = await fetch('/api/email/status');
+      const data = await res.json();
+      if (data.setup_needed || data.setupNeeded || !data.configured) {
+        setupEl.hidden = false;
+        connectBtn.hidden = true;
+        scanBtn.hidden = true;
+        disconnectBtn.hidden = true;
+        statusEl.textContent = 'Gmail needs a little setup before it can connect.';
+        return;
+      }
+      setupEl.hidden = true;
+      if (data.connected) {
+        statusEl.textContent = 'Connected as ' + data.email;
+        connectBtn.hidden = true;
+        scanBtn.hidden = false;
+        disconnectBtn.hidden = false;
+      } else {
+        statusEl.textContent = 'Not connected yet. Connect Gmail to let your helper look for school email.';
+        connectBtn.hidden = false;
+        scanBtn.hidden = true;
+        disconnectBtn.hidden = true;
+      }
+    } catch (e) {
+      statusEl.textContent = 'Gmail status is unavailable right now.';
+    }
+  }
+
   async function loadInitial() {
+    let status = { hasActiveProfile: false, isDemo: false, profile: null };
+    try {
+      const sRes = await fetch('/api/onboarding/status');
+      status = await sRes.json();
+    } catch (e) {
+      // Fall back to the main view below.
+    }
+    const wantsOnboarding = new URLSearchParams(window.location.search).get('onboarding') === '1';
     try {
       const nRes = await fetch('/api/newsletter');
       const nData = await nRes.json();
@@ -603,8 +819,18 @@
       const pRes = await fetch('/api/family-profile');
       const pData = await pRes.json();
       renderFamily(pData.profile || null);
+      if (status.profile) fillProfileForm(status.profile);
     } catch (e) {
       renderFamily(null);
+    }
+    await loadSources();
+    await loadEmailStatus();
+    if (status.hasActiveProfile && !wantsOnboarding) showMain();
+    else showOnboarding();
+    const emailResult = new URLSearchParams(window.location.search).get('email');
+    if (emailResult === 'connected') {
+      document.getElementById('gmailStatus').textContent = 'Gmail is connected. You can look through your school email below.';
+      await loadEmailStatus();
     }
   }
 
@@ -692,6 +918,171 @@
       parentRunBtn.disabled = false;
       parentRunBtn.textContent = 'Run my evening check';
     }
+  });
+
+  document.getElementById('createProfileBtn').addEventListener('click', async function () {
+    const btn = document.getElementById('createProfileBtn');
+    const statusEl = document.getElementById('obProfileStatus');
+    const priorities = Array.prototype.slice.call(document.querySelectorAll('.ob-priority:checked'))
+      .map(function (el) { return el.value; });
+    const nudge = document.querySelector('input[name="obNudge"]:checked');
+    btn.disabled = true;
+    statusEl.textContent = 'Saving your family…';
+    try {
+      const data = await postJson('/api/profile', {
+        parent_name: document.getElementById('obParentName').value,
+        child_name: document.getElementById('obChildName').value,
+        grade: document.getElementById('obGrade').value,
+        class_name: document.getElementById('obClassName').value,
+        school_name: document.getElementById('obSchoolName').value,
+        priorities: priorities,
+        nudge_style: nudge ? nudge.value : 'one short message in the evening',
+      });
+      renderFamily(data.profile);
+      statusEl.textContent = 'Saved. Next, add any school sources you use — or skip ahead to your newsletter.';
+      document.getElementById('gmailCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      await loadEmailStatus();
+    } catch (e) {
+      statusEl.textContent = e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.querySelectorAll('[data-source-save]').forEach(function (btn) {
+    btn.addEventListener('click', async function () {
+      const card = document.querySelector('[data-source="' + btn.getAttribute('data-source-save') + '"]');
+      const statusEl = card.querySelector('[data-source-status]');
+      btn.disabled = true;
+      statusEl.textContent = 'Saving…';
+      try {
+        await postJson('/api/sources', {
+          type: btn.getAttribute('data-source-save'),
+          label: btn.getAttribute('data-label'),
+          url: card.querySelector('[data-source-url]').value,
+          username: card.querySelector('[data-source-username]').value,
+          password: card.querySelector('[data-source-password]').value,
+        });
+        card.querySelector('[data-source-password]').value = '';
+        statusEl.textContent = 'Saved on this computer.';
+      } catch (e) {
+        statusEl.textContent = e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+
+  document.getElementById('gmailConnectBtn').addEventListener('click', function () {
+    window.location.href = '/api/email/auth';
+  });
+
+  document.getElementById('gmailDisconnectBtn').addEventListener('click', async function () {
+    const btn = document.getElementById('gmailDisconnectBtn');
+    btn.disabled = true;
+    try {
+      await postJson('/api/email/disconnect', {});
+      document.getElementById('gmailFindings').innerHTML = '';
+    } catch (e) {
+      document.getElementById('gmailStatus').textContent = e.message;
+    } finally {
+      btn.disabled = false;
+      loadEmailStatus();
+    }
+  });
+
+  document.getElementById('gmailScanBtn').addEventListener('click', async function () {
+    const btn = document.getElementById('gmailScanBtn');
+    const box = document.getElementById('gmailFindings');
+    btn.disabled = true;
+    box.innerHTML = '<p class="hint">Looking through the last 30 days of school email…</p>';
+    try {
+      const data = await postJson('/api/email/scan', {});
+      let html = '<p><b>Here’s what we found</b> (' + esc(data.scanned || 0) + ' messages checked)</p>';
+      (data.changes || []).forEach(function (c) {
+        html += '<p class="hint">Updated: ' + esc(c.label) + ' — from “' + esc(c.subject) + '”.</p>';
+      });
+      (data.findings || []).forEach(function (f) {
+        html += '<div class="card" style="margin-bottom:10px"><p style="margin:0"><b>' + esc(f.subject) + '</b></p>' +
+          '<p class="hint" style="margin:4px 0">' + esc(f.from) + '</p>' +
+          '<p style="margin:4px 0">' + esc(f.snippet || f.preview || '') + '</p>';
+        if (f.kind === 'newsletter' || f.type === 'newsletter') {
+          html += '<button class="small-btn" type="button" data-use-newsletter="' + esc(f.messageId) + '">Use this as the school newsletter</button>';
+        }
+        html += '</div>';
+      });
+      if (!(data.findings || []).length) html += '<p class="hint">No school email found in the last 30 days.</p>';
+      box.innerHTML = html;
+      if (data.profile) renderFamily(data.profile);
+      box.querySelectorAll('[data-use-newsletter]').forEach(function (useBtn) {
+        useBtn.addEventListener('click', async function () {
+          useBtn.disabled = true;
+          useBtn.textContent = 'Sorting…';
+          try {
+            const sorted = await postJson('/api/email/use-newsletter', { messageId: useBtn.getAttribute('data-use-newsletter') });
+            renderLogs(sorted.logs || []);
+            renderFacts(sorted.facts || []);
+            showMain();
+          } catch (e) {
+            useBtn.textContent = e.message;
+          }
+        });
+      });
+    } catch (e) {
+      box.innerHTML = '<p class="hint">' + esc(e.message) + '</p>';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('pasteBtn').addEventListener('click', async function () {
+    const btn = document.getElementById('pasteBtn');
+    const statusEl = document.getElementById('pasteStatus');
+    btn.disabled = true;
+    btn.textContent = 'Sorting…';
+    statusEl.textContent = 'Reading your newsletter…';
+    try {
+      const data = await postJson('/api/newsletter/run', {
+        text: document.getElementById('pasteNewsletter').value,
+      });
+      renderLogs(data.logs || []);
+      renderFacts(data.facts || []);
+      statusEl.textContent = 'All sorted — here’s your school week.';
+      showMain();
+    } catch (e) {
+      statusEl.textContent = e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Sort this newsletter';
+    }
+  });
+
+  async function switchToDemo() {
+    const data = await postJson('/api/profile/demo', {});
+    renderFamily(data.profile);
+    await loadSources();
+    await loadEmailStatus();
+    showMain();
+  }
+
+  document.getElementById('useDemoBtn').addEventListener('click', function () {
+    switchToDemo().catch(function (e) {
+      document.getElementById('obProfileStatus').textContent = e.message;
+    });
+  });
+
+  document.getElementById('demoBtn').addEventListener('click', function () {
+    switchToDemo().catch(function () {});
+  });
+
+  document.getElementById('startOverBtn').addEventListener('click', async function () {
+    try {
+      await postJson('/api/profile/reset', {});
+    } catch (e) {
+      // Show setup either way; the next save will set the new family.
+    }
+    showOnboarding();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
   loadInitial();

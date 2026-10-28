@@ -1,0 +1,8 @@
+.env
+data/app.db
+data/sample-newsletter.txt
+node_modules
+.git
+test
+docker-compose.yml
+BUILD-LOG.md

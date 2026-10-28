@@ -4,9 +4,13 @@
   "private": true,
   "description": "School Agent Network — Phase 1: School Agent on mock data",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/"
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "sql.js": "^1.13.0"
   }
 }
