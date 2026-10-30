@@ -294,16 +294,14 @@ async function extractIdentityFields(pageText, kind) {
   };
 }
 
-function buildParentPrompt(profile, facts, simulatedLabel) {
+function buildParentPrompt(profile, facts, simulatedLabel, placementLines) {
   const soul = profile.soul || {};
   const child = profile.child || {};
   const children = profile.children && profile.children.length ? profile.children : [child];
-  const childText = children
-    .map((c) => `${c.name || 'the child'} (${c.grade || ''}${c.class ? ', Class ' + c.class : ''})`)
-    .join('; ');
+  const childText = children.map((c) => c.name || 'the child').join('; ');
   const hubNames = [...new Set((facts || []).map((f) => f.hub_name || f.hub).filter(Boolean))];
   const system = [
-    `You are the Parent Agent for ONE family at ${profile.school || 'their school'}. Children: ${childText}. Facts come from the family's hubs; each fact names its hub.`,
+    `You are the Parent Agent for ONE family. Children: ${childText}. Facts come from the family's hubs; each fact names its hub.`,
     'Soul rules (shared core — obey exactly):',
     '- I work for this family alone.',
     "- I never share this family's private information anywhere (not to the school, not to any group, not to anyone).",
@@ -315,11 +313,15 @@ function buildParentPrompt(profile, facts, simulatedLabel) {
     `- Wishes: ${(soul.wishes || []).join('; ')}`,
     `Simulated current moment: ${simulatedLabel || SIMULATED_NOW_LABEL}. Tomorrow is Friday, November 6, 2026.`,
     `The family belongs to these hubs and takes part in each one: ${hubNames.join(', ') || 'none'}. Belonging to a hub means that hub's context applies to the family — for example, U9 Hockey facts apply to the child because the child plays U9 hockey. Never filter out a hub's facts only because they name the hub's team, activity, or cohort.`,
+    (placementLines && placementLines.length
+      ? 'Placements (each child’s grade and class inside each school hub — a grade- or class-scoped fact applies only when it matches that child’s placement in the hub the fact came from):\n' +
+        placementLines.map((line) => '- ' + line).join('\n')
+      : 'No school-hub placements yet: only school-wide facts apply to this family.'),
     'Task: filter the hub facts for this family\'s children only, then build the evening check. Include every dated event or deadline that applies to a child, across all of the family\'s hubs.',
     'Return ONLY a JSON object. No markdown fences, no commentary. Keys exactly:',
     'relevant_facts, nudges, calendar_hold, filtered_out_count, filtering_summary.',
     'Shapes:',
-    '- relevant_facts: array of objects {id, title} copied from the input facts, ONLY facts that apply to this family\'s children (school-wide, all grades, all students, the child\'s grade, or a hub activity the family joined count as applying — hub membership means the activity applies; facts explicitly limited to other grades/groups/teams do not).',
+    '- relevant_facts: array of objects {id, title} copied from the input facts, ONLY facts that apply to this family\'s children (school-wide, all grades, all students, the child\'s placement grade or class in the hub the fact came from, or a hub activity the family joined count as applying — hub membership means the activity applies; facts explicitly limited to other grades, groups, teams, places, or communities do not).',
     '- nudges: array of objects {fact_id, title, action, deadline, source}. Create a nudge ONLY for a fact with action_required=true whose tracked action state in profile.actions is still open. Open states: not_ordered, not_done, pending, open. Closed states (NO nudge): ordered, done, scheduled, completed, planning_to_attend. Match each action key to its fact by meaning (for example pizza_order -> the pizza orders fact, uniform_survey -> the uniform survey fact, hot_lunch -> a hot lunch ordering fact). Do NOT create nudges for untracked requirement facts in this evening check; keep them in relevant_facts only.',
     '- Each nudge action must say what to do in plain language; deadline must be the fact date; source must name the school newsletter source (use the fact source_document).',
     '- calendar_hold: ONE object {title, date, note} for the most urgent open deadline. If a pizza order fact is open, it must be the pizza order deadline (for the demo week, date "2026-11-06", Friday, November 6, 2026) and the note must mention the pizza order is not yet ordered. Otherwise use the earliest open action deadline, or null if there is none.',
@@ -458,9 +460,38 @@ function normalizeParentResult(raw, facts) {
   };
 }
 
-async function callParentMetaApi(profile, facts, simulatedLabel) {
-  const { system, user } = buildParentPrompt(profile, facts, simulatedLabel);
+async function callParentMetaApi(profile, facts, simulatedLabel, placementLines) {
+  const { system, user } = buildParentPrompt(profile, facts, simulatedLabel, placementLines);
   return postMetaChat(system, user, 8192);
+}
+
+// Structured placements for the prompt's profile JSON: each child's grade and
+// class in each school hub. Team hubs carry no placement.
+function placementRecordsForRun(profile) {
+  const records = [];
+  for (const hub of store.listHubsForProfile(profile.id)) {
+    if ((hub.kind || 'other') === 'team') continue;
+    for (const p of store.effectivePlacements(hub.id, profile.id)) {
+      records.push({ hub: hub.name, child: p.child_name, grade: p.grade || '', class: p.class || '' });
+    }
+  }
+  return records;
+}
+
+function placementLinesForRun(profile) {
+  const lines = [];
+  for (const hub of store.listHubsForProfile(profile.id)) {
+    if ((hub.kind || 'other') === 'team') {
+      lines.push(`${hub.name} is a team hub: no placement, its notes apply to the whole family.`);
+      continue;
+    }
+    const placed = store.effectivePlacements(hub.id, profile.id);
+    const parts = placed.map((p) =>
+      `${p.child_name} — ${p.grade || 'no grade yet'}${p.class ? ', Class ' + p.class : ''}`
+    );
+    lines.push(`${hub.name}: ${parts.join('; ') || 'no children placed yet'}`);
+  }
+  return lines;
 }
 
 async function runParentAgent(logs, simulatedLabel, viewer) {
@@ -497,7 +528,8 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
   push(`${hubs.length} ${hubs.length === 1 ? 'hub' : 'hubs'} checked: ${hubs.map((h) => h.name).join(', ') || 'none yet'}`);
   push(`${facts.length} facts checked against the family profile`);
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
-  const content = await callParentMetaApi(profile, facts, simulated);
+  const promptProfile = { ...profile, placements: placementRecordsForRun(profile) };
+  const content = await callParentMetaApi(promptProfile, facts, simulated, placementLinesForRun(profile));
   push('API responded — validating filtering result');
   const raw = extractJsonObject(content);
   const result = normalizeParentResult(raw, facts);
@@ -585,18 +617,20 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
   return deduped;
 }
 
-function resolveAudience(actor, audience) {
+function resolveAudience(actor, audience, hubId) {
   const mode = String(audience || 'auto').toLowerCase();
   if (mode === '' || mode === 'auto') return null;
   if (mode === 'school') return { scope: 'school', value: '' };
-  const child = (actor && actor.children && actor.children[0]) || (actor && actor.child) || {};
+  const placed = actor ? store.effectivePlacements(hubId, actor.id) : [];
   if (mode === 'grade') {
-    if (!child.grade) throw new Error('Add your child’s grade first, then choose that scope.');
-    return { scope: 'grade', value: String(child.grade) };
+    const grade = placed.map((p) => p.grade).find((g) => String(g || '').trim());
+    if (!grade) throw new Error('Add your child’s grade for this hub first, then choose that scope.');
+    return { scope: 'grade', value: String(grade) };
   }
   if (mode === 'class') {
-    if (!child.class) throw new Error('Add your child’s class first, then choose that scope.');
-    return { scope: 'class', value: String(child.class) };
+    const className = placed.map((p) => p.class).find((c) => String(c || '').trim());
+    if (!className) throw new Error('Add your child’s class for this hub first, then choose that scope.');
+    return { scope: 'class', value: String(className) };
   }
   throw new Error('Choose who this is for: automatic, whole school, grade, or class.');
 }
@@ -894,22 +928,51 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/profile') {
       const body = await readJsonBody(req);
-      if (!String(body.parent_name || '').trim() || !String(body.child_name || '').trim()) {
-        sendJson(res, 400, { error: 'Please add a parent name and a child name.' });
+      const parentName = String(body.parent_name || '').trim();
+      let kidNames = [];
+      if (Array.isArray(body.children)) {
+        kidNames = body.children
+          .map((k) => String((k && k.name) || '').trim())
+          .filter(Boolean);
+      }
+      if (!kidNames.length && String(body.child_name || '').trim()) {
+        kidNames = [String(body.child_name || '').trim()];
+      }
+      if (!parentName || !kidNames.length) {
+        sendJson(res, 400, { error: 'Please add a parent name and at least one child name.' });
         return;
       }
       const profile = store.createProfile({
-        parent_name: body.parent_name,
-        child_name: body.child_name,
-        grade: body.grade,
-        class_name: body.class_name,
-        school_name: body.school_name,
+        parent_name: parentName,
+        children: kidNames.map((name) => ({ name })),
         priorities: body.priorities,
         nudge_style: body.nudge_style,
         actions: body.actions,
       });
       store.setSessionProfile(session.id, profile.id);
       sendJson(res, 200, { ok: true, profile });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/profile/update') {
+      const active = store.getSessionViewer(session);
+      if (!active || active.is_demo) {
+        sendJson(res, 400, { error: 'Switch to your own family first, then edit it.' });
+        return;
+      }
+      try {
+        const body = await readJsonBody(req);
+        const profile = store.updateProfileNames(active.id, {
+          parent_name: body.parent_name,
+          children: body.children,
+        });
+        if (!profile) {
+          sendJson(res, 400, { error: 'Switch to your own family first, then edit it.' });
+          return;
+        }
+        sendJson(res, 200, { ok: true, profile });
+      } catch (err) {
+        sendJson(res, 400, { error: err && err.message ? err.message : String(err) });
+      }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/profile/reset') {
@@ -968,7 +1031,7 @@ const server = http.createServer(async (req, res) => {
         const hub = body.hub_id ? store.getHub(body.hub_id) : store.getDemoHub();
         if (!hub) throw new Error('Choose a hub first.');
         const actor = store.getSessionViewer(session);
-        const override = resolveAudience(actor, body.audience);
+        const override = resolveAudience(actor, body.audience, hub.id);
         material = store.createMaterial(hub.id, actor ? actor.id : '', 'paste', String(body.title || 'Pasted newsletter'), text, 'stored');
         logs.push({ at: nowIso(), message: 'pasted newsletter received' });
         const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override);
@@ -1056,9 +1119,8 @@ const server = http.createServer(async (req, res) => {
         const active = store.getSessionViewer(session);
         if (!active) throw new Error('Save your family first, then connect Gmail.');
         const accessToken = await getGmailAccessToken(active.id);
-        const school = (active.school || '').replace(/"/g, '');
         const query =
-          `newer_than:30d (SchoolMessenger OR "${school}" OR newsletter OR "parent preview" ` +
+          'newer_than:30d (SchoolMessenger OR newsletter OR "parent preview" ' +
           'OR "Healthy Hunger" OR "hot lunch")';
         const list = await gmailFetch(
           accessToken,
@@ -1140,7 +1202,7 @@ const server = http.createServer(async (req, res) => {
         const headers = gmailHeaders(msg.payload);
         const text = gmailMessageText(msg.payload);
         if (!text) throw new Error('That message did not include readable text.');
-        const override = resolveAudience(active, body.audience);
+        const override = resolveAudience(active, body.audience, hub.id);
         material = store.createMaterial(hub.id, active.id, 'email', headers.subject || 'Email newsletter', text, 'stored');
         logs.push({ at: nowIso(), message: 'run started' });
         logs.push({ at: nowIso(), message: 'Gmail message loaded as a hub newsletter' });
@@ -1234,6 +1296,7 @@ const server = http.createServer(async (req, res) => {
     }
     // Hubs, invites, joining, and materials.
     const hubMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)$/);
+    const hubPlacementsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/placements$/);
     const hubMaterialsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials$/);
     const hubMaterialTextMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)\/text$/);
     const hubInvitesMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/invites$/);
@@ -1346,12 +1409,30 @@ const server = http.createServer(async (req, res) => {
       const hub = store.getHub(hubMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can see this hub.' }); return; }
+      const placement = store.placementStatus(hub.id, actor.id);
       sendJson(res, 200, {
         hub: { ...hub, role: store.getMemberRole(hub.id, actor.id) },
         facts: store.listFacts(hub.id, actor.id),
         materials: store.listMaterials(hub.id, actor.id),
         member_count: hub.member_count,
+        children: actor.children || [],
+        placements: placement.placements,
+        needs_placement: placement.needs_placement,
       });
+      return;
+    }
+    if (req.method === 'POST' && hubPlacementsMatch) {
+      const actor = store.getSessionViewer(session);
+      const hub = store.getHub(hubPlacementsMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can update placements.' }); return; }
+      try {
+        const body = await readJsonBody(req);
+        const placement = store.setPlacements(hub.id, actor.id, body.placements);
+        sendJson(res, 200, { ok: true, placements: placement.placements, needs_placement: placement.needs_placement });
+      } catch (err) {
+        sendJson(res, 400, { error: err && err.message ? err.message : String(err) });
+      }
       return;
     }
     if (req.method === 'GET' && hubMaterialTextMatch) {
@@ -1385,7 +1466,7 @@ const server = http.createServer(async (req, res) => {
           text = String(body.text || '').trim();
           if (!text) throw new Error('Paste a newsletter or notice first.');
         }
-        const override = resolveAudience(actor, body.audience);
+        const override = resolveAudience(actor, body.audience, hub.id);
         material = store.createMaterial(hub.id, actor.id, kind, String(body.title || (kind === 'pdf' ? 'PDF notice' : 'Pasted notice')), text, 'stored');
         const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override);
         store.updateMaterialStatus(material.id, 'extracted');
@@ -1501,4 +1582,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { normalizeParentResult, normalizeFact };
+module.exports = { normalizeParentResult, normalizeFact, buildParentPrompt, placementLinesForRun };

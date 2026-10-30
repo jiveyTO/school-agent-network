@@ -22,7 +22,7 @@ Asking for everything up front kills signup. Onboarding is progressive:
 
 ### Layer 1 — Two minutes, no passwords (signup)
 - Pick school (or use invite link)
-- Add child/children: name (mock in demos), grade, class
+- Add child/children: names only (mock in demos) — one or more; grade and class are placed later, per child, inside each school hub
 - Phone number for messages (WhatsApp)
 - Priorities: tap what matters — deadlines, lunch orders, bus delays, forms, events
 - Done. The agent is already useful from School Agent announcements alone. No login is requested at this layer.

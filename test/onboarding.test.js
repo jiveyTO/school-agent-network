@@ -99,20 +99,21 @@ test('onboarding, sources, Gmail safety, and demo flow', async (t) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         parent_name: 'Jordan Lee',
-        child_name: 'Sam Lee',
-        grade: 'Grade 3',
-        class_name: '3A',
-        school_name: 'Maple Grove Elementary',
+        children: [{ name: 'Sam Lee' }, { name: 'Robin Lee' }],
         priorities: ['never miss a food-order deadline'],
         nudge_style: 'one short message in the evening',
       }),
     });
     assert.equal(created.res.status, 200);
     assert.equal(created.data.profile.parent.name, 'Jordan Lee');
+    assert.deepEqual(created.data.profile.children.map((c) => c.name), ['Sam Lee', 'Robin Lee']);
     const readBack = await jsonFetch('/api/family-profile');
     assert.equal(readBack.data.profile.parent.name, 'Jordan Lee');
     assert.equal(readBack.data.profile.child.name, 'Sam Lee');
-    assert.equal(readBack.data.profile.child.grade, 'Grade 3');
+    assert.equal(readBack.data.profile.school, '');
+    for (const c of readBack.data.profile.children) {
+      assert.deepEqual(Object.keys(c).sort(), ['id', 'name']);
+    }
     const status = await jsonFetch('/api/onboarding/status');
     assert.equal(status.data.hasActiveProfile, true);
     assert.equal(status.data.isDemo, false);
@@ -181,6 +182,10 @@ test('onboarding, sources, Gmail safety, and demo flow', async (t) => {
     const titles = (run.data.nudges || []).map((n) => n.title.toLowerCase());
     assert.ok(titles.some((x) => x.includes('pizza')), titles.join(', '));
     assert.ok(titles.some((x) => x.includes('uniform')), titles.join(', '));
+    assert.equal(run.data.nudges.length, 2, JSON.stringify(run.data.nudges));
+    assert.equal(run.data.conflicts.length, 3, JSON.stringify((run.data.conflicts || []).map((c) => c.message)));
+    assert.equal(run.data.relevant_count, 28, `relevant: ${run.data.relevant_count} filtered: ${run.data.filtered_out_count}`);
+    assert.equal(run.data.filtered_out_count, 1);
     assert.equal(run.data.calendar_hold.date, '2026-11-06');
     assert.match(run.data.calendar_hold.title.toLowerCase(), /pizza/);
     const lastLog = run.data.logs[run.data.logs.length - 1].message;

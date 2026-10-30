@@ -268,6 +268,29 @@ test('page uses three tabbed views and a name-only family card', () => {
   assert.ok(PAGE.includes('@media (min-width: 900px)') && PAGE.includes('max-width: 960px'));
 });
 
+test('onboarding is names-only: one or more children, no grade/class/school, blank for new families', () => {
+  for (const token of ['id="obChildrenList"', 'id="obAddChildBtn"', 'ob-child-row', 'obRemoveChild',
+    'clearObForm', 'fillObForm', 'openOnboarding', '+ Add another child', 'names only. Grades come later']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  for (const token of ['id="obChildName"', 'id="obGrade"', 'id="obClassName"', 'id="obSchoolName"',
+    'fillProfileForm', 'profile.child.grade']) {
+    assert.ok(!PAGE.includes(token), `${token} must not appear on the page`);
+  }
+  assert.ok(PAGE.includes("openOnboarding('new')"), 'new-family paths open blank');
+  assert.ok(PAGE.includes("openOnboarding('edit')"), 'editing the existing family may pre-fill');
+  assert.ok(PAGE.includes("document.getElementById('obParentName').value = ''"), 'blank means blank');
+});
+
+test('grade and class live in hub placements, editable from the hub view or My family', () => {
+  for (const token of ['id="placementCard"', 'id="placementFields"', 'id="placementSaveBtn"',
+    'id="placementSkipBtn"', 'id="placementStatus"', 'Place your children in this hub', 'Skip for now',
+    'needs_placement', 'id="placementsList"', 'id="place-h"', 'School placements',
+    'id="editFamilyBtn"', 'Edit family names', '/placements', 'team hub, no placement needed']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+});
+
 test('demo viewers get a demo bar with a path to their own family', () => {
   for (const token of ['id="demoBar"', 'id="demoBarBtn"', 'demoViewing', 'paintDemoBar',
     'You’re exploring as the demo family.', 'Start with your own family']) {

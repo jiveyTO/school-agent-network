@@ -353,13 +353,16 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     await post('/api/profile', {
       parent_name: 'Text Scope Sam',
       child_name: 'Sam Kid',
-      grade: 'Grade 9',
-      class_name: '9C',
       school_name: 'Maple Grove Elementary',
       priorities: [],
       nudge_style: 'one short message in the evening',
     });
     await post(`/api/join/${samInvite.data.token}/accept`, {});
+    const samKid = (await jf('/api/family-profile')).data.profile.children[0].id;
+    const samPlaced = await post(`/api/hubs/${hubA.id}/placements`, {
+      placements: [{ child_id: samKid, grade: 'Grade 9', class: '9C' }],
+    });
+    assert.equal(samPlaced.res.status, 200);
     const scopedOut = await jf(`/api/hubs/${hubA.id}/materials/${mid}/text`);
     assert.equal(scopedOut.res.status, 404, 'out-of-scope profiles cannot read the text');
     await post('/api/profile', {
@@ -487,13 +490,16 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     await post('/api/profile', {
       parent_name: 'Scope Sam',
       child_name: 'Sam Kid',
-      grade: 'Grade 9',
-      class_name: '9C',
       school_name: 'Maple Grove Elementary',
       priorities: [],
       nudge_style: 'one short message in the evening',
     });
     await post(`/api/join/${invite.data.token}/accept`, {});
+    const scopeKid = (await jf('/api/family-profile')).data.profile.children[0].id;
+    const scopePlaced = await post(`/api/hubs/${hubA.id}/placements`, {
+      placements: [{ child_id: scopeKid, grade: 'Grade 9', class: '9C' }],
+    });
+    assert.equal(scopePlaced.res.status, 200);
     const scopedDetail = await jf(`/api/hubs/${hubA.id}`);
     assert.ok(scopedDetail.data.facts.length > 0, 'school-wide facts stay visible');
     assert.ok(

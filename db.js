@@ -87,22 +87,18 @@ function getChildren(profileId) {
 
 function rowToProfile(row) {
   if (!row) return null;
-  const children = getChildren(row.id);
+  const children = getChildren(row.id).map((c) => ({ id: c.id, name: c.name || '' }));
+  if (!children.length && (row.child_name || '')) children.push({ name: row.child_name || '' });
+  const firstName = (children[0] && children[0].name) || row.child_name || '';
   return {
     profile_id: row.id,
     id: row.id,
     is_demo: Boolean(row.is_demo),
     is_fictional_demo: Boolean(row.is_demo),
-    school: row.school_name || '',
+    school: '',
     parent: { name: row.parent_name || '' },
-    child: {
-      name: row.child_name || '',
-      grade: row.grade || '',
-      class: row.class_name || '',
-    },
-    children: children.length
-      ? children
-      : [{ name: row.child_name || '', grade: row.grade || '', class: row.class_name || '' }],
+    child: { name: firstName },
+    children,
     soul: {
       shared_core: SHARED_CORE.slice(),
       priorities: parseJson(row.priorities, []),
@@ -223,6 +219,14 @@ async function initDb() {
     grade TEXT,
     class_name TEXT,
     created_at TEXT
+  )`);
+  run(`CREATE TABLE IF NOT EXISTS placements (
+    hub_id TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    grade TEXT DEFAULT '',
+    class_name TEXT DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (hub_id, child_id)
   )`);
   run(`CREATE TABLE IF NOT EXISTS hubs (
     id TEXT PRIMARY KEY,
@@ -495,11 +499,116 @@ function gradeMatchesScope(scopeValue, childGrade) {
   return normalizeGrade(a) === childNum;
 }
 
-function profileScopeSets(profileId) {
+// Placements: per-child grade + optional class inside one hub. School (and
+// activity/other) hubs use them; team hubs carry their own level and take none.
+// Pre-redesign children rows may still carry a legacy grade/class: the first
+// touch of a hub migrates those values into placement rows (deterministic —
+// the same legacy values always seed the same placements, and existing rows
+// are never overwritten).
+function ensurePlacements(hubId, profileId) {
+  const hub = hubId ? getHubRow(hubId) : null;
+  if (!hub || (hub.kind || 'other') === 'team') return [];
   const kids = getChildren(profileId);
+  if (!kids.length) return [];
+  const have = all('SELECT child_id FROM placements WHERE hub_id = ?', [hubId]).map(
+    (r) => r.child_id
+  );
+  const mine = new Set(kids.map((k) => k.id));
+  if (have.some((id) => mine.has(id))) {
+    return listPlacements(hubId, profileId);
+  }
+  const now = new Date().toISOString();
+  for (const kid of kids) {
+    run(
+      'INSERT OR IGNORE INTO placements (hub_id, child_id, grade, class_name, updated_at) VALUES (?, ?, ?, ?, ?)',
+      [hubId, kid.id, kid.grade || '', kid.class || '', now]
+    );
+  }
+  persist();
+  return listPlacements(hubId, profileId);
+}
+
+function listPlacements(hubId, profileId) {
+  if (!db || !hubId || !profileId) return [];
+  try {
+    return all(
+      `SELECT p.child_id AS child_id, c.name AS child_name, p.grade AS grade, p.class_name AS class
+       FROM placements p JOIN children c ON c.id = p.child_id
+       WHERE p.hub_id = ? AND c.profile_id = ?`,
+      [hubId, profileId]
+    ).map((r) => ({
+      child_id: r.child_id,
+      child_name: r.child_name || '',
+      grade: r.grade || '',
+      class: r.class || '',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// Every child of the profile, with its placement row when one exists and
+// blank grade/class otherwise (a missing row means "not placed yet").
+function effectivePlacements(hubId, profileId) {
+  const hub = hubId ? getHubRow(hubId) : null;
+  if (!hub || (hub.kind || 'other') === 'team') return [];
+  const kids = getChildren(profileId);
+  const rows = new Map(listPlacements(hubId, profileId).map((p) => [p.child_id, p]));
+  return kids.map((k) => {
+    const row = rows.get(k.id);
+    return row || { child_id: k.id, child_name: k.name || '', grade: '', class: '' };
+  });
+}
+
+function placementStatus(hubId, profileId) {
+  const hub = hubId ? getHubRow(hubId) : null;
+  if (!hub || (hub.kind || 'other') === 'team') {
+    return { placements: [], needs_placement: false };
+  }
+  ensurePlacements(hubId, profileId);
+  const placements = effectivePlacements(hubId, profileId);
   return {
-    grades: kids.map((k) => k.grade || '').filter(Boolean),
-    classes: kids.map((k) => normalizeClass(k.class)).filter(Boolean),
+    placements,
+    needs_placement: placements.some((p) => !String(p.grade || '').trim()),
+  };
+}
+
+function setPlacements(hubId, profileId, list) {
+  const hub = hubId ? getHubRow(hubId) : null;
+  if (!hub) throw new Error('That hub could not be found.');
+  if ((hub.kind || 'other') === 'team') {
+    throw new Error("Team hubs don't use grade or class placements — the hub's own level already covers it.");
+  }
+  const kids = getChildren(profileId);
+  const byId = new Map(kids.map((k) => [k.id, k]));
+  const submitted = new Map();
+  for (const item of list || []) {
+    const id = item && item.child_id ? String(item.child_id) : '';
+    if (!id || !byId.has(id)) throw new Error('That child is not in your family.');
+    submitted.set(id, {
+      grade: String((item && item.grade) || '').trim(),
+      class: String((item && (item.class || item.class_name)) || '').trim(),
+    });
+  }
+  const now = new Date().toISOString();
+  for (const kid of kids) run('DELETE FROM placements WHERE hub_id = ? AND child_id = ?', [hubId, kid.id]);
+  for (const kid of kids) {
+    const v = submitted.get(kid.id) || { grade: '', class: '' };
+    run(
+      'INSERT INTO placements (hub_id, child_id, grade, class_name, updated_at) VALUES (?, ?, ?, ?, ?)',
+      [hubId, kid.id, v.grade, v.class, now]
+    );
+  }
+  persist();
+  return placementStatus(hubId, profileId);
+}
+
+function placementScopeSets(profileId, hubId) {
+  ensurePlacements(hubId, profileId);
+  const rows = listPlacements(hubId, profileId);
+  return {
+    grades: rows.map((p) => p.grade || '').filter(Boolean),
+    classes: rows.map((p) => normalizeClass(p.class)).filter(Boolean),
   };
 }
 
@@ -606,34 +715,94 @@ function getSessionViewer(session) {
 function createProfile(input) {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
+  const raw = Array.isArray(input.children) && input.children.length
+    ? input.children
+    : [{ name: input.child_name }];
+  // Family profile is names only: grade/class/school sent by older clients are
+  // ignored, never stored.
+  const names = raw
+    .map((kid) => String((kid && kid.name) || '').trim())
+    .filter(Boolean);
+  if (!names.length) names.push('');
   run(
     `INSERT INTO profiles
        (id, parent_name, child_name, grade, class_name, school_name, priorities, nudge_style, actions, is_demo, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+     VALUES (?, ?, ?, '', '', '', ?, ?, ?, 0, ?)`,
     [
       id,
       String(input.parent_name || '').trim(),
-      String(input.child_name || '').trim(),
-      String(input.grade || '').trim(),
-      String(input.class_name || '').trim(),
-      String(input.school_name || '').trim(),
+      names[0],
       JSON.stringify(Array.isArray(input.priorities) ? input.priorities : []),
       String(input.nudge_style || 'one short message in the evening').trim(),
       JSON.stringify(input.actions && typeof input.actions === 'object' ? input.actions : {}),
       now,
     ]
   );
-  const kids = Array.isArray(input.children) && input.children.length
-    ? input.children
-    : [{ name: input.child_name, grade: input.grade, class: input.class_name }];
-  for (const kid of kids) {
+  for (const name of names) {
     run(
       'INSERT INTO children (id, profile_id, name, grade, class_name, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [crypto.randomUUID(), id, String(kid.name || ''), String(kid.grade || ''), String(kid.class || kid.class_name || ''), now]
+      [crypto.randomUUID(), id, name, '', '', now]
     );
   }
   persist();
   return rowToProfile(getProfileRowById(id));
+}
+
+// Rename/add/remove children by name. The demo family is not editable.
+// Returns the updated profile, or null when there is nothing to update.
+function updateProfileNames(profileId, input) {
+  const row = getProfileRowById(profileId);
+  if (!row || row.is_demo) return null;
+  const parentName = String((input && input.parent_name) || '').trim();
+  const raw = input && Array.isArray(input.children) ? input.children : [];
+  const wanted = raw
+    .map((kid) => ({
+      id: kid && kid.id ? String(kid.id) : '',
+      name: String((kid && kid.name) || '').trim(),
+    }))
+    .filter((kid) => kid.name);
+  if (!wanted.length) throw new Error('Please add at least one child name.');
+  const existing = new Map(getChildren(profileId).map((k) => [k.id, k]));
+  const now = new Date().toISOString();
+  if (parentName) run('UPDATE profiles SET parent_name = ? WHERE id = ?', [parentName, profileId]);
+  const keptIds = new Set();
+  const finalNames = [];
+  for (const kid of wanted) {
+    if (kid.id && existing.has(kid.id)) {
+      run('UPDATE children SET name = ? WHERE id = ?', [kid.name, kid.id]);
+      keptIds.add(kid.id);
+      finalNames.push(kid.name);
+    } else {
+      const newId = crypto.randomUUID();
+      run(
+        'INSERT INTO children (id, profile_id, name, grade, class_name, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [newId, profileId, kid.name, '', '', now]
+      );
+      keptIds.add(newId);
+      finalNames.push(kid.name);
+    }
+  }
+  for (const id of existing.keys()) {
+    if (!keptIds.has(id)) {
+      run('DELETE FROM placements WHERE child_id = ?', [id]);
+      run('DELETE FROM children WHERE id = ?', [id]);
+    }
+  }
+  run('UPDATE profiles SET child_name = ? WHERE id = ?', [finalNames[0] || '', profileId]);
+  persist();
+  return rowToProfile(getProfileRowById(profileId));
+}
+
+// Test and migration-simulation only: stamps legacy grade/class onto a child
+// row so tests can prove the first-hub-touch migration. Production code never
+// writes these columns for new data.
+function __testSetChildLegacy(childId, grade, className) {
+  run('UPDATE children SET grade = ?, class_name = ? WHERE id = ?', [
+    String(grade || ''),
+    String(className || ''),
+    String(childId),
+  ]);
+  persist();
 }
 
 function updateProfileActions(profileId, actions) {
@@ -782,7 +951,7 @@ function getHub(id) {
 function getMaterialText(materialId, profileId) {
   const row = materialId ? one('SELECT * FROM materials WHERE id = ?', [materialId]) : null;
   if (!row) return null;
-  if (profileId && !rowInScope(row, profileScopeSets(profileId))) return null;
+  if (profileId && !rowInScope(row, placementScopeSets(profileId, row.hub_id))) return null;
   return { id: row.id, hub_id: row.hub_id, kind: row.kind, title: row.title, text: row.raw_text || '' };
 }
 
@@ -1065,7 +1234,7 @@ function updateMaterialStatus(id, status) {
 function listMaterials(hubId, profileId) {
   const rows = all('SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value FROM materials WHERE hub_id = ? ORDER BY created_at ASC', [hubId]).map(scopedMaterialRow);
   if (!profileId) return rows;
-  return rows.filter((m) => rowInScope(m, profileScopeSets(profileId)));
+  return rows.filter((m) => rowInScope(m, placementScopeSets(profileId, hubId)));
 }
 
 function restampDemoFactScopes() {
@@ -1227,11 +1396,16 @@ function deriveScope(fact) {
 function listFacts(hubId, profileId) {
   const rows = all('SELECT * FROM facts WHERE hub_id = ? ORDER BY date ASC, title ASC', [hubId]).map(factRowToObject);
   if (!profileId) return rows;
-  return rows.filter((f) => rowInScope(f, profileScopeSets(profileId)));
+  return rows.filter((f) => rowInScope(f, placementScopeSets(profileId, hubId)));
 }
 
 function listFactsForProfile(profileId) {
   if (!profileId) return [];
+  const setsByHub = new Map();
+  const setsFor = (hubId) => {
+    if (!setsByHub.has(hubId)) setsByHub.set(hubId, placementScopeSets(profileId, hubId));
+    return setsByHub.get(hubId);
+  };
   return all(
     `SELECT f.*, h.name AS hub_name FROM facts f
      JOIN hubs h ON h.id = f.hub_id
@@ -1240,7 +1414,7 @@ function listFactsForProfile(profileId) {
     [profileId]
   )
     .map((r) => ({ ...factRowToObject(r), hub_name: r.hub_name, hub: r.hub_name }))
-    .filter((f) => rowInScope(f, profileScopeSets(profileId)));
+    .filter((f) => rowInScope(f, setsFor(f.hub_id)));
 }
 
 function ensureHub(name, kind, createdBy, isDemo) {
@@ -1332,7 +1506,14 @@ module.exports = {
   setSessionProfile,
   getSessionViewer,
   createProfile,
+  updateProfileNames,
+  __testSetChildLegacy,
   updateProfileActions,
+  ensurePlacements,
+  listPlacements,
+  effectivePlacements,
+  placementStatus,
+  setPlacements,
   listSources,
   saveSource,
   setSourceStatus,

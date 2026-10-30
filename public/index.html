@@ -488,18 +488,11 @@
         <label class="field">Your name
           <input type="text" id="obParentName" placeholder="e.g. Alex Rivera" autocomplete="name">
         </label>
-        <label class="field">Your child’s name
-          <input type="text" id="obChildName" placeholder="e.g. Maya Rivera">
-        </label>
-        <label class="field">Grade
-          <input type="text" id="obGrade" placeholder="e.g. Grade 3">
-        </label>
-        <label class="field">Class <span style="font-weight:400;color:var(--muted)">(optional)</span>
-          <input type="text" id="obClassName" placeholder="e.g. 3B">
-        </label>
-        <label class="field">School name
-          <input type="text" id="obSchoolName" placeholder="e.g. Maple Grove Elementary">
-        </label>
+        <div id="obChildrenWrap">
+          <p class="hint" style="margin:8px 2px 0">Your children — names only. Grades come later, inside each school hub.</p>
+          <div id="obChildrenList"></div>
+          <button class="small-btn secondary" id="obAddChildBtn" type="button">+ Add another child</button>
+        </div>
         <button class="small-btn" id="createProfileBtn" type="button">Save my family and continue</button>
         <p class="hint" id="obProfileStatus"></p>
         <button class="text-btn" id="useDemoBtn" type="button">Use the demo family instead</button>
@@ -634,6 +627,16 @@
         <h3 id="hubTitle" style="margin:0 0 4px">Choose a hub</h3>
         <p>Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.</p>
         <p class="hint" id="hubMeta"></p>
+        <div class="card" id="placementCard" hidden style="margin-bottom:12px">
+          <p style="margin:0"><b>Place your children in this hub</b></p>
+          <p class="hint">Which grade is each child in at this school? Class is optional. Skip it if you like — you’ll only see whole-school notes until it’s set.</p>
+          <div id="placementFields"></div>
+          <p style="margin-top:8px">
+            <button class="small-btn" id="placementSaveBtn" type="button">Save placements</button>
+            <button class="small-btn secondary" id="placementSkipBtn" type="button">Skip for now</button>
+          </p>
+          <p class="hint" id="placementStatus"></p>
+        </div>
         <div class="hub-grid">
           <div>
             <p><b>Shared notes</b></p>
@@ -727,6 +730,13 @@
       <div class="family-card" id="familyCard">
         <h3>Loading your family…</h3>
       </div>
+      <p style="margin-top:8px"><button class="text-btn" id="editFamilyBtn" type="button" hidden>Edit family names</button></p>
+    </section>
+
+    <section aria-labelledby="place-h" id="placementSection">
+      <h2 id="place-h">School placements</h2>
+      <p class="hint">Each child’s grade and class, per school hub. Team hubs need none — the hub’s level covers it.</p>
+      <div id="placementsList"><p class="facts-empty">Loading your hubs…</p></div>
     </section>
 
     <section aria-labelledby="parent-log-h">
@@ -1167,19 +1177,24 @@
 
   let currentChildFirst = 'Maya';
 
+  var currentProfile = null;
+
   function renderFamily(profile) {
+    currentProfile = profile || null;
+    document.getElementById('editFamilyBtn').hidden = !(profile && !profile.is_demo);
     if (!profile) {
       familyCardEl.innerHTML = '<h3>Your Family</h3><p>Family details are unavailable right now.</p>';
       return;
     }
-    currentChildFirst = (profile.child.name || 'your child').split(' ')[0];
+    const kids = (profile.children && profile.children.length ? profile.children : [profile.child || {}]);
+    const firstName = (kids[0] && kids[0].name) || 'your child';
+    currentChildFirst = firstName.split(' ')[0];
     parentStatus.textContent = 'One calm summary of what’s still open for ' + currentChildFirst + ' tonight.';
     const parentLast = (profile.parent.name || '').trim().split(' ').slice(-1)[0] || 'Your';
     familyCardEl.innerHTML =
       '<h3>The ' + esc(parentLast) + ' Family</h3>' +
       '<p><b>' + esc(profile.parent.name || '') + '</b></p>' +
-      '<p>' + esc(profile.child.name || '') + ' · ' + esc(profile.child.grade) + ' · Class ' + esc(profile.child.class) + '</p>' +
-      '<p>' + esc(profile.school || '') + '</p>';
+      kids.map(function (k) { return '<p>' + esc(k.name || '') + '</p>'; }).join('');
   }
 
   var eveningUid = { count: 0 };
@@ -1302,7 +1317,72 @@
     window.scrollTo(0, 0);
   }
 
-  function showOnboarding() {
+  var onboardingMode = 'new';
+
+  function addObChildRow(name) {
+    const list = document.getElementById('obChildrenList');
+    const row = document.createElement('div');
+    row.className = 'ob-child-row';
+    const label = document.createElement('label');
+    label.className = 'field';
+    label.appendChild(document.createTextNode('Child’s name'));
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'obChildName';
+    input.placeholder = 'e.g. Maya Rivera';
+    input.value = name || '';
+    label.appendChild(input);
+    const remove = document.createElement('button');
+    remove.className = 'text-btn obRemoveChild';
+    remove.type = 'button';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', function () {
+      const rows = document.querySelectorAll('#obChildrenList .ob-child-row');
+      if (rows.length > 1) row.remove();
+      else input.value = '';
+    });
+    row.appendChild(label);
+    row.appendChild(remove);
+    list.appendChild(row);
+  }
+
+  function obChildEntries() {
+    return Array.prototype.map.call(
+      document.querySelectorAll('#obChildrenList .ob-child-row'),
+      function (row) {
+        const input = row.querySelector('.obChildName');
+        const id = row.getAttribute('data-child-id') || '';
+        return { id: id, name: input ? input.value.trim() : '' };
+      }
+    ).filter(function (entry) { return entry.name; });
+  }
+
+  function clearObForm() {
+    document.getElementById('obParentName').value = '';
+    document.getElementById('obChildrenList').innerHTML = '';
+    addObChildRow('');
+    document.getElementById('obProfileStatus').textContent = '';
+  }
+
+  function fillObForm(profile) {
+    clearObForm();
+    if (!profile) return;
+    document.getElementById('obParentName').value = (profile.parent && profile.parent.name) || '';
+    const kids = (profile.children && profile.children.length ? profile.children : [profile.child || {}]);
+    document.getElementById('obChildrenList').innerHTML = '';
+    kids.forEach(function (k) { addObChildRow(k.name || ''); });
+    const rows = document.querySelectorAll('#obChildrenList .ob-child-row');
+    kids.forEach(function (k, i) {
+      if (k && k.id && rows[i]) rows[i].setAttribute('data-child-id', k.id);
+    });
+  }
+
+  function openOnboarding(mode) {
+    onboardingMode = mode === 'edit' ? 'edit' : 'new';
+    if (onboardingMode === 'edit') fillObForm(currentProfile);
+    else clearObForm();
+    document.getElementById('createProfileBtn').textContent =
+      onboardingMode === 'edit' ? 'Save changes' : 'Save my family and continue';
     onboardingView.hidden = false;
     document.getElementById('joinView').hidden = true;
     tabBar.hidden = true;
@@ -1370,8 +1450,40 @@
 
   document.querySelectorAll('#tabBar .tab').forEach(function (btn) {
     btn.addEventListener('click', function () {
-      showView(btn.getAttribute('data-view'));
+      const view = btn.getAttribute('data-view');
+      showView(view);
+      if (view === 'family') loadFamilyPlacements();
     });
+  });
+
+  document.getElementById('placementSaveBtn').addEventListener('click', async function () {
+    const statusEl = document.getElementById('placementStatus');
+    const fields = document.getElementById('placementFields');
+    if (!currentHubId) return;
+    statusEl.textContent = 'Saving…';
+    try {
+      const data = await postJson('/api/hubs/' + encodeURIComponent(currentHubId) + '/placements', {
+        placements: collectPlacements(fields),
+      });
+      statusEl.textContent = 'Saved.';
+      await loadHubDetail(currentHubId);
+    } catch (e) {
+      statusEl.textContent = e.message;
+    }
+  });
+
+  document.getElementById('placementSkipBtn').addEventListener('click', function () {
+    if (currentHubId) skippedPlacementHubs[currentHubId] = true;
+    document.getElementById('placementCard').hidden = true;
+  });
+
+  document.getElementById('obAddChildBtn').addEventListener('click', function () {
+    addObChildRow('');
+  });
+
+  document.getElementById('editFamilyBtn').addEventListener('click', function () {
+    openOnboarding('edit');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
   async function postJson(url, body) {
@@ -1390,13 +1502,119 @@
     return data;
   }
 
-  function fillProfileForm(profile) {
-    if (!profile) return;
-    document.getElementById('obParentName').value = profile.parent.name || '';
-    document.getElementById('obChildName').value = profile.child.name || '';
-    document.getElementById('obGrade').value = profile.child.grade || '';
-    document.getElementById('obClassName').value = profile.child.class || '';
-    document.getElementById('obSchoolName').value = profile.school || '';
+  var skippedPlacementHubs = {};
+
+  function placementRowHtml(p) {
+    return '<div class="place-row" data-child-id="' + esc(p.child_id || '') + '">' +
+      '<p style="margin:6px 0 0"><b>' + esc(p.child_name || '') + '</b></p>' +
+      '<label class="field">Grade' +
+      '<input type="text" class="placeGrade" placeholder="e.g. Grade 3" value="' + esc(p.grade || '') + '">' +
+      '</label>' +
+      '<label class="field">Class <span style="font-weight:400;color:var(--muted)">(optional)</span>' +
+      '<input type="text" class="placeClass" placeholder="e.g. 3B" value="' + esc(p.class || '') + '">' +
+      '</label></div>';
+  }
+
+  function collectPlacements(container) {
+    return Array.prototype.map.call(
+      container.querySelectorAll('.place-row'),
+      function (row) {
+        const grade = row.querySelector('.placeGrade');
+        const classEl = row.querySelector('.placeClass');
+        return {
+          child_id: row.getAttribute('data-child-id') || '',
+          grade: grade ? grade.value : '',
+          class: classEl ? classEl.value : '',
+        };
+      }
+    );
+  }
+
+  function renderPlacementCard(data) {
+    const card = document.getElementById('placementCard');
+    const schoolLike = data && data.hub && data.hub.kind !== 'team';
+    const demoLocked = currentProfile && currentProfile.is_demo;
+    if (demoLocked || !schoolLike || !data.needs_placement || skippedPlacementHubs[data.hub.id]) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    document.getElementById('placementStatus').textContent = '';
+    document.getElementById('placementFields').innerHTML =
+      (data.placements || []).map(placementRowHtml).join('') ||
+      '<p class="facts-empty">No children on your family yet.</p>';
+  }
+
+  async function loadFamilyPlacements() {
+    const box = document.getElementById('placementsList');
+    const profile = currentProfile;
+    if (!profile) {
+      box.innerHTML = '<p class="facts-empty">Your family isn’t set up yet.</p>';
+      return;
+    }
+    const kids = (profile.children && profile.children.length ? profile.children : [profile.child || {}]);
+    if (profile.is_demo) {
+      box.innerHTML = '<p class="facts-empty">You’re exploring as the demo family — start your own family to place your children.</p>';
+      return;
+    }
+    let hubs = [];
+    try {
+      const res = await fetch('/api/hubs');
+      const data = await res.json();
+      hubs = data.hubs || [];
+    } catch (e) {
+      box.innerHTML = '<p class="facts-empty">Couldn’t load your hubs.</p>';
+      return;
+    }
+    const schoolLike = hubs.filter(function (h) { return h.kind !== 'team'; });
+    const teamHubs = hubs.filter(function (h) { return h.kind === 'team'; });
+    if (!schoolLike.length) {
+      box.innerHTML = '<p class="facts-empty">No school hubs yet — start or join one, then place each child.</p>' +
+        teamHubs.map(function (h) {
+          return '<p class="hint">• ' + esc(h.name) + ' — team hub, no placement needed.</p>';
+        }).join('');
+      return;
+    }
+    box.innerHTML = '<p class="facts-empty">Loading placements…</p>';
+    const cards = [];
+    for (const hub of schoolLike) {
+      let detail = null;
+      try {
+        const res = await fetch('/api/hubs/' + encodeURIComponent(hub.id));
+        detail = await res.json();
+        if (!res.ok) continue;
+      } catch (e) {
+        continue;
+      }
+      const rows = (detail.placements && detail.placements.length ? detail.placements : kids.map(function (k) {
+        return { child_id: k.id || '', child_name: k.name || '', grade: '', class: '' };
+      }));
+      cards.push('<div class="card place-hub" data-hub-id="' + esc(hub.id) + '" style="margin-bottom:10px">' +
+        '<p style="margin:0"><b>' + esc(hub.name) + '</b></p>' +
+        '<div class="place-fields">' + rows.map(placementRowHtml).join('') + '</div>' +
+        '<p style="margin-top:8px"><button class="small-btn placeSaveBtn" type="button">Save placements</button></p>' +
+        '<p class="hint placeStatus"></p></div>');
+    }
+    box.innerHTML = cards.join('') +
+      teamHubs.map(function (h) {
+        return '<p class="hint">• ' + esc(h.name) + ' — team hub, no placement needed.</p>';
+      }).join('') ||
+      '<p class="facts-empty">No school hubs yet.</p>';
+    box.querySelectorAll('.placeSaveBtn').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        const card = btn.closest('.place-hub');
+        const statusEl = card.querySelector('.placeStatus');
+        statusEl.textContent = 'Saving…';
+        try {
+          await postJson('/api/hubs/' + encodeURIComponent(card.getAttribute('data-hub-id')) + '/placements', {
+            placements: collectPlacements(card),
+          });
+          statusEl.textContent = 'Saved.';
+        } catch (e) {
+          statusEl.textContent = e.message;
+        }
+      });
+    });
   }
 
   let currentHubs = [];
@@ -1490,6 +1708,7 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'That hub is unavailable.');
       document.getElementById('hubTitle').textContent = data.hub.name;
+      renderPlacementCard(data);
       const detailTeam = teamLine(data.hub);
       document.getElementById('hubMeta').textContent = data.member_count + ' families in this hub · you are ' +
         (data.hub.role === 'admin' ? 'an admin' : 'a member') +
@@ -1604,7 +1823,7 @@
       const pRes = await fetch('/api/family-profile');
       const pData = await pRes.json();
       renderFamily(pData.profile || null);
-      if (status.profile) fillProfileForm(status.profile);
+      await loadFamilyPlacements();
     } catch (e) {
       renderFamily(null);
     }
@@ -1612,7 +1831,7 @@
     const isJoin = await loadJoinView();
     if (isJoin) return;
     if (status.hasActiveProfile && !wantsOnboarding) showMain();
-    else showOnboarding();
+    else openOnboarding('new');
   }
 
   newsletterToggle.addEventListener('click', function () {
@@ -1714,12 +1933,21 @@
     btn.disabled = true;
     statusEl.textContent = 'Saving your family…';
     try {
+      if (onboardingMode === 'edit') {
+        const data = await postJson('/api/profile/update', {
+          parent_name: document.getElementById('obParentName').value,
+          children: obChildEntries(),
+        });
+        renderFamily(data.profile);
+        await loadFamilyPlacements();
+        statusEl.textContent = 'Saved.';
+        showMain();
+        showView('family');
+        return;
+      }
       const data = await postJson('/api/profile', {
         parent_name: document.getElementById('obParentName').value,
-        child_name: document.getElementById('obChildName').value,
-        grade: document.getElementById('obGrade').value,
-        class_name: document.getElementById('obClassName').value,
-        school_name: document.getElementById('obSchoolName').value,
+        children: obChildEntries(),
         priorities: ['never miss a food-order deadline', 'keep evenings calm — one combined nudge'],
         nudge_style: 'one short message in the evening',
       });
@@ -1757,6 +1985,7 @@
     const showDemo = await applySchoolAudience({ profile: data.profile });
     if (showDemo) await loadSchoolDemo();
     await loadHubs();
+    await loadFamilyPlacements();
     showMain();
   }
 
@@ -1780,7 +2009,7 @@
     } catch (e) {
       // Show setup either way; the next save will set the new family.
     }
-    showOnboarding();
+    openOnboarding('new');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
@@ -2122,7 +2351,7 @@
       if (e.message && e.message.indexOf('Set up your family') !== -1) {
         sessionStorage.setItem('pendingJoinToken', joinToken);
         statusEl.textContent = 'First, a quick family setup — then we’ll bring you back here.';
-        showOnboarding();
+        openOnboarding('new');
       } else {
         statusEl.textContent = e.message;
       }
