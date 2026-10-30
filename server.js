@@ -175,53 +175,87 @@ function extractJsonArray(text) {
   }
 }
 
+function metaChoiceOf(data) {
+  return (data && data.choices && data.choices[0]) || null;
+}
+
+function metaContentOf(data) {
+  const choice = metaChoiceOf(data);
+  return (choice && choice.message && choice.message.content) || null;
+}
+
+function metaFinishReasonOf(data) {
+  const choice = metaChoiceOf(data);
+  return (choice && choice.finish_reason) || null;
+}
+
+function metaContentUsable(content) {
+  return typeof content === 'string' && !!content.trim();
+}
+
 async function postMetaChat(system, user, maxTokens) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90000);
-  let res;
+  async function attempt() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90000);
+    let res;
+    try {
+      res = await fetch(API_URL, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          temperature: 0.1,
+          max_tokens: maxTokens,
+        }),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    const bodyText = await res.text();
+    if (!res.ok) {
+      throw new Error(`Meta Model API error ${res.status}: ${bodyText.slice(0, 1000)}`);
+    }
+    let data;
+    try {
+      data = JSON.parse(bodyText);
+    } catch {
+      throw new Error('Meta Model API returned non-JSON: ' + bodyText.slice(0, 500));
+    }
+    return { data, bodyText };
+  }
+  // First attempt. A blank reply usually means the model spent its token
+  // budget on reasoning and hit finish_reason "length" with content: null;
+  // a non-blank reply with finish_reason "length" may be truncated JSON.
+  // Retry ONCE in either case so every caller (identity extraction, the
+  // evening check, newsletter extraction) benefits.
+  const first = await attempt();
+  const firstContent = metaContentOf(first.data);
+  const firstLength = metaFinishReasonOf(first.data) === 'length';
+  if (metaContentUsable(firstContent) && !firstLength) return firstContent;
+  let second = null;
   try {
-    res = await fetch(API_URL, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        temperature: 0.1,
-        max_tokens: maxTokens,
-      }),
-    });
-  } finally {
-    clearTimeout(timeout);
+    second = await attempt();
+  } catch (err) {
+    // A failed retry must not hide a usable first response.
+    if (metaContentUsable(firstContent)) return firstContent;
+    throw err;
   }
-  const bodyText = await res.text();
-  if (!res.ok) {
-    throw new Error(`Meta Model API error ${res.status}: ${bodyText.slice(0, 1000)}`);
-  }
-  let data;
-  try {
-    data = JSON.parse(bodyText);
-  } catch {
-    throw new Error('Meta Model API returned non-JSON: ' + bodyText.slice(0, 500));
-  }
-  const content =
-    data &&
-    data.choices &&
-    data.choices[0] &&
-    data.choices[0].message &&
-    data.choices[0].message.content;
-  if (typeof content !== 'string' || !content.trim()) {
-    throw new Error(
-      'Meta Model API returned no message content: ' + bodyText.slice(0, 500)
-    );
-  }
-  return content;
+  const secondContent = metaContentOf(second.data);
+  if (metaContentUsable(secondContent)) return secondContent;
+  // The retry was no better: keep a usable first response (newsletter
+  // extraction can salvage a truncated array), otherwise give up.
+  if (metaContentUsable(firstContent)) return firstContent;
+  throw new Error(
+    'Meta Model API returned no message content: ' + second.bodyText.slice(0, 500)
+  );
 }
 
 async function callMetaApi(newsletterText) {
@@ -272,16 +306,78 @@ async function fetchPageText(pageUrl) {
   return htmlToText(await res.text());
 }
 
+function extractPageTitle(html) {
+  const t = String(html || '');
+  const ogAfter = t.match(/<meta[^>]+property=["']og:title["'][^>]*>/i);
+  if (ogAfter) {
+    const c = ogAfter[0].match(/content=["']([^"']+)["']/i);
+    if (c && c[1].trim()) return c[1].trim().slice(0, 200);
+  }
+  const ogBefore = t.match(/<meta[^>]+content=["']([^"']+)["'][^>]*property=["']og:title["'][^>]*>/i);
+  if (ogBefore && ogBefore[1].trim()) return ogBefore[1].trim().slice(0, 200);
+  const m = t.match(/<title[^>]*>([\s\S]*?)<\/title\s*>/i);
+  if (m) return m[1].replace(/\s+/g, ' ').trim().slice(0, 200);
+  return '';
+}
+
+async function fetchPageParts(pageUrl) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  let res;
+  try {
+    res = await fetch(pageUrl, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': 'ParentLoop/1.0', Accept: 'text/html' },
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!res.ok) throw new Error('Page returned status ' + res.status + '.');
+  const html = await res.text();
+  return { pageText: htmlToText(html), pageTitle: extractPageTitle(html) };
+}
+
+// Best-effort school/team name from a page title such as
+// "St. Richard Catholic School | Toronto Catholic District School Board".
+function deriveNameFromTitle(title) {
+  const t = String(title || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  const segments = t
+    .split(/\s*\|\s*|\s+::\s+|\s+[—–-]\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const generic = /^(home|homepage|welcome|main page)$/i;
+  const pick = segments.find((s) => !generic.test(s)) || segments[0] || '';
+  return pick.slice(0, 200);
+}
+
+function withTitleFallback(fields, kind, pageTitle) {
+  const name = deriveNameFromTitle(pageTitle);
+  if (!name || !fields) return fields;
+  if (kind === 'team') {
+    if (!fields.name) return { ...fields, name };
+  } else if (!fields.school_name) {
+    return { ...fields, school_name: name };
+  }
+  return fields;
+}
+
 function cleanField(value) {
   return value ? String(value).trim() : '';
 }
 
-async function extractIdentityFields(pageText, kind) {
+async function extractIdentityFields(pageText, kind, opts) {
   if (!API_KEY) throw new Error('SCHOOL_AGENT_API_KEY is missing or empty in .env.');
+  const pageTitle = (opts && opts.pageTitle) || '';
+  const pageUrl = (opts && opts.pageUrl) || '';
   const system = kind === 'team'
-    ? 'You read a team or league web page and return the team identity as JSON. Return ONLY a JSON object, no markdown fences. Keys: name (team or organization name), sport (one of: Hockey, Soccer, Baseball, Softball, Basketball, Volleyball, Lacrosse, Swimming, Other), level (House League, Select, Rep, A, AA, AAA, or "" if unclear). Use "" for anything you cannot find.'
-    : 'You read a school web page and return the school identity as JSON. Return ONLY a JSON object, no markdown fences. Keys: school_name, city, province, country. Use "" for anything you cannot find.';
-  const content = await postMetaChat(system, 'Web page text:\n\n' + pageText, 1024);
+    ? 'You read a team or league web page and return the team identity as JSON. Return ONLY a JSON object, no markdown fences. Keys: name (team or organization name), sport (one of: Hockey, Soccer, Baseball, Softball, Basketball, Volleyball, Lacrosse, Swimming, Other), level (House League, Select, Rep, A, AA, AAA, or "" if unclear). The page URL and page title are given along with the page text; the title often names the team. Use "" for anything you cannot find.'
+    : 'You read a school web page and return the school identity as JSON. Return ONLY a JSON object, no markdown fences. Keys: school_name, city, province, country. The page URL and page title are given along with the page text; the title often names the school. Fill in province and country whenever they are reasonably inferable instead of leaving them blank: infer them from the city when you know it (for example Toronto means Toronto, Ontario, Canada) or from a school board or district named on the page (for example a Toronto Catholic District School Board page means Toronto, Ontario, Canada). Use "" only for what you cannot find or reasonably infer.';
+  const user =
+    'Page URL:\n' + pageUrl + '\n\nPage title:\n' + pageTitle +
+    '\n\nWeb page text:\n\n' + pageText;
+  const content = await postMetaChat(system, user, 4096);
   const parsed = extractJsonObject(content);
   if (kind === 'team') {
     return { name: cleanField(parsed.name), sport: cleanField(parsed.sport), level: cleanField(parsed.level) };
@@ -1336,20 +1432,39 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       let pageText = '';
+      let pageTitle = '';
+      let fetchFailed = false;
       try {
-        pageText = await fetchPageText(parsedUrl.toString());
+        const parts = await fetchPageParts(parsedUrl.toString());
+        pageText = parts.pageText;
+        pageTitle = parts.pageTitle;
       } catch (err) {
-        pageText = '';
+        fetchFailed = true;
       }
-      if (!pageText) {
+      if (fetchFailed || (!pageText && !pageTitle)) {
         sendJson(res, 500, { error: 'That page didn’t load — check the link and try again, or just type the details in.' });
         return;
       }
+      const blankFields = kind === 'team'
+        ? { name: '', sport: '', level: '' }
+        : { school_name: '', city: '', province: '', country: '' };
       try {
-        const fields = await extractIdentityFields(pageText, kind);
+        const fields = withTitleFallback(
+          await extractIdentityFields(pageText, kind, { pageTitle, pageUrl: parsedUrl.toString() }),
+          kind,
+          pageTitle
+        );
         sendJson(res, 200, { ok: true, kind, domain: parsedUrl.hostname, fields });
       } catch (err) {
-        sendJson(res, 500, { error: 'The page loaded but the details couldn’t be read — just type them in.' });
+        // Degrade instead of dead-ending: the page loaded, so return 200
+        // with whatever the title yields. The hard error above stays for
+        // genuine fetch failures (bad URL, page did not load).
+        sendJson(res, 200, {
+          ok: true,
+          kind,
+          domain: parsedUrl.hostname,
+          fields: withTitleFallback(blankFields, kind, pageTitle),
+        });
       }
       return;
     }
