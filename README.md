@@ -1,71 +1,68 @@
-# School Agent Network
+# ParentLoop
+
+**You're always in the loop.**
 
 Meta Global AI Developer Hackathon · Oct 26 – Nov 4, 2026
 Track: Indie · Theme: Build for Your World
 
-## The concept
+**Live demo:** https://parentloop-964717527488.northamerica-northeast2.run.app
+*(Public demo copy — use "Use the demo family instead" on the welcome screen. The hosted copy is an anonymous shared sandbox; see "Known limits.")*
 
-Schools, parents, and parent groups each get their own agent. The agents cooperate and share context — but each one works on its own if it's the only one set up. The more agents in the network, the smarter each one gets. Nobody has to wait for everyone else to join before it works.
+## The problem
 
-## The three agents
+Every school parent lives in the same flood: PDF newsletters behind portal logins, notices in a class WhatsApp group, a hockey schedule on a league site. The information exists — it's just scattered, unsearchable, and impossible to check against your own family's life. Existing tools ask parents to hand over portal credentials or wait for the school to adopt new software. Neither happens.
 
-**School Agent — the source of truth**
-Ingests newsletters, notices, and forms; publishes structured facts: deadlines, events, requirements, changes. Every fact carries provenance: what document it came from, when it was published.
+## What ParentLoop is
 
-**Parent Agent — the personal secretary**
-Knows one family: the kid's grade and class, activities, the family calendar. Subscribes to School Agent facts and filters to what's relevant for your kid. Nudges like a secretary: "Pizza order form is due Friday — you haven't ordered yet." Creates calendar holds.
+A **shared repository of context that parents maintain together**, organized into **hubs** — one hub per school, class, or team.
 
-**Group Agent — the parent-group member**
-Lives in the parent WhatsApp group (simulated group UI for the demo). Answers the repeated questions ("When is the form due? What do they wear for spirit day?") straight from School Agent facts, with the source named. Coordinates: who's volunteering, who's ordered, ride shares. Rolls a summary up, never individual family details.
+- A parent **founds** a hub (structured identity: school name + city + province + country, or team + sport + level) and **invites** other parents with a link shared through channels that already carry trust — the class WhatsApp group, email. Anyone else can request to join; a hub admin approves.
+- Members **add material** — paste a newsletter, upload the PDF, or quick-add an event. An extraction agent (Meta Model API) turns material into **verified facts**: every fact carries its source quote, its hub, and an **audience scope** (whole school / a grade / a class).
+- Each family keeps a **private profile** (their children, grades, classes). Their **Parent Agent** reads across all of the family's hubs, keeps only the facts that match their children, and produces one calm evening check: what's due, what's coming — and **conflicts across hubs**, like a school Fall Festival colliding with a hockey game the same Friday night.
 
-## How they cooperate
+## The rules the product is built on
 
-- **Shared fact layer.** All three agents read and write one fact store. The School Agent outranks everyone: if group chatter conflicts with a school fact, the school fact wins and the Group Agent corrects the thread with a citation. See `docs/fact-schema.md`.
-- **Consent boundaries.** Family-specific information (your kid's order status, your calendar) lives in the Parent Agent and never flows up to the Group or School Agent. The Group Agent only ever shares aggregates: "14 of 22 families have ordered."
-- **Standalone modes.** Each agent runs alone. Joining the network upgrades each one.
+- **Hubs hold shared context only** — newsletters, notices, schedules. A family's private details never enter a hub and are never visible to other members.
+- **Scope is enforced on the server, not hidden in the UI.** A Grade 9 parent in a K–8 school hub never *receives* a Grade 3 class fact from the API at all. When extraction is unsure about a fact's audience, it chooses the narrower scope.
+- **One hub per school.** School identity keys are normalized (St. Nicholas = Saint Nick's; ON = Ontario), so a second parent who tries to found the same school is routed to request joining the existing hub instead of fragmenting the community. Near matches get a human decision, exact matches never fork.
+- **No credentials, no scraping.** ParentLoop never asks for a portal login. Material arrives because a parent who legitimately has it chooses to share it.
+- **Facts stay atomic; presentation groups them.** The agent cites individual facts; the reading view groups them under their source and section, the way the newsletter itself did.
+- **The model is used where it's needed** — extraction and the evening check. Deterministic work (scope filtering, conflict detection, quick-added events) is plain code: instant and free.
+
+> **Demo privacy rule:** never show real school data (real school name, staff or student names, real newsletter content) in any demo, screenshot, video, or submission. Real source files in `data/` are private test inputs only (`data/sample-newsletter.txt` is gitignored and excluded from the Docker image); anything shown publicly uses mock data. The demo school is fictional Maple Grove Elementary; fixtures in this repo use fictional names throughout.
 
 ## The demo slice
 
-Maple Grove Elementary (fictional) pizza day, using mock data based on a real newsletter — see `data/mock-newsletter.txt`.
+1. A parent founds **Grade 3 — Maple Grove Elementary** and adds the weekly newsletter; extraction publishes 24 scoped facts.
+2. The same parent belongs to **U9 Hockey — Maple Grove**. Their evening check groups both hubs' facts, nudges the two open actions (pizza orders, uniform survey — both due Friday), and flags the conflict: **Fall Festival Dance × U9 hockey game, Friday Nov 6**.
+3. A second parent opens an invite link, sees who invited them and to what, joins, and immediately receives the same hub facts — filtered to *their* child (a Grade 9 profile in the same hub receives only school-wide facts).
+4. A third parent tries to found the same school again and is routed to **Request to join** instead.
 
-> **Demo privacy rule:** never show real school data (real school name, staff or student names, real newsletter content) in any demo, screenshot, video, or submission. Real source files in `data/` are private test inputs only; anything shown publicly uses mock data.
-
-1. School Agent ingests the school newsletter → publishes "Pizza order deadline: Friday, $3/slice, form link."
-2. Group Agent announces it in the group; a parent asks "is it due Thursday?"; Group Agent checks the School Agent and corrects: Friday, with the source.
-3. Parent Agent checks its family: no order placed → nudges the parent Thursday evening and drops a calendar hold.
-4. Group Agent posts Friday morning: "18 of 22 ordered — deadline today." No names.
-5. Toggle test: turn the School Agent off and the Group Agent visibly degrades to guessing from chatter; turn it back on and it's authoritative again.
-
-## Run Phase 1 (School Agent, Docker)
+## Run it locally
 
 One command from the project root — no local Node install needed:
 
 ```sh
 docker compose up -d
+# open http://127.0.0.1:3000
 ```
 
-Then open http://127.0.0.1:3000 in a browser and press **Run School Agent**.
+- Requires `SCHOOL_AGENT_API_KEY` in `.env` (Meta Model API key) for extraction and the evening check; see `.env.example`.
+- `docker compose up -d --build` after code changes.
+- Tests: `docker compose exec -T school-agent node --test test/` (50 passing at last full run).
 
-- Same Compose pattern as `~/Developer/Docker-Environment/Unified-Dev` (`container_name`, published port, project folder bind-mounted, `restart: unless-stopped`); see `docker-compose.yml`. The project folder is mounted at `/app` in a `node:20-alpine` container, so code and `data/facts.json` stay on the host.
-- `.env` is read only inside the container by `server.js` (it is part of the mounted folder; Compose does not inject it). Copy `.env.example` to `.env` and set `SCHOOL_AGENT_API_KEY` first.
-- Server listens on `0.0.0.0:3000` so Docker port publishing (`3000:3000`) reaches it. Stop with `docker compose down`. Logs: `docker compose logs -f`.
+## Architecture in one paragraph
 
-## Stack (planned)
+A single Node service (`server.js`) over a SQLite store (`db.js`, sql.js) holds profiles, hubs, memberships, invites, join requests, materials, and scoped facts. The page (`public/index.html`) is a thin client over the REST API — every click is an API call, and the contract tests drive the product the same way an agent client would. Gmail OAuth endpoints exist in the codebase but are **deliberately dormant** in this build (see BUILD-LOG, Day 3): an unknown product earns email access later; it is not the entry price.
 
-- Meta Model API (Muse Spark / Muse Wonder) for all three agents — same model, three system prompts, three tool sets.
-- One small backend: fact store (JSON/SQLite is fine), agent endpoints, simple event log so judges can see agents talking to each other.
-- Front ends kept minimal: School Agent = upload + fact list; Parent Agent = chat + cards; Group Agent = WhatsApp-style chat mock.
-- Build with Muse Code; $150 Meta Model API credits.
+## Known limits (hackathon build)
 
-## Build order
+- **No accounts yet.** The app holds one active family per deployment, so the hosted demo is a shared sandbox — visitors can overwrite each other's demo state. Per-visitor sessions (cookie-keyed active profiles) are the next build; real accounts follow.
+- Extraction is non-deterministic (fact counts vary slightly between runs); a known-good fact set is frozen for the demo video.
+- The product name is a working title (name collisions exist in the app stores); renaming is a find-and-replace, deliberately not a build-week blocker.
 
-1. Fact schema (`docs/fact-schema.md`)
-2. School Agent end-to-end on a real newsletter: newsletter in → structured deadlines out
-3. Parent Agent filtering + nudges
-4. Group Agent Q&A against school facts
-5. Cooperation layer: correction flow, aggregates-only rule, standalone toggles
-6. Demo video — record by Nov 2; submission package finished Nov 3
+## Roadmap
 
-Hard deadline: Nov 4, 9:00 PM ET.
+Per-visitor sessions → real accounts → an agent-native interface: the API is already the product, so an MCP server plus scoped, revocable **delegated agent credentials** (a parent grants *their* agent rights to act in *their* hubs) is the natural next layer — no parent should have to fill in forms a second time, and eventually not the first time either.
 
-Full plan: ~/workspace/your_files/hackathon-build-plan.md (in Muse's workspace)
+Build history: see `BUILD-LOG.md`. Design docs: `docs/`.

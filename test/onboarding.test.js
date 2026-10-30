@@ -123,9 +123,9 @@ test('onboarding, sources, Gmail safety, and demo flow', async (t) => {
     });
     assert.equal(saved.res.status, 200);
     assert.ok(!saved.text.includes(PORTAL_SECRET));
-    assert.equal(saved.data.source.username, 'jordan');
     assert.ok(!('secret' in saved.data.source));
     assert.ok(!('password' in saved.data.source));
+    assert.ok(!('username' in saved.data.source));
     const list = await jsonFetch('/api/sources');
     assert.ok(!list.text.includes(PORTAL_SECRET));
     const status = await jsonFetch('/api/onboarding/status');

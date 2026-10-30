@@ -22,7 +22,7 @@ All three agents read and write one fact store. This schema is the contract betw
 | `action_required` | boolean | Does a parent need to do something? |
 | `action` | string | What to do, e.g. "Submit pizza order form" |
 | `link` | string (URL) | Form / source link, if any |
-| `source_document` | string | What it came from, e.g. "SJA newsletter, Oct 26, 2026" |
+| `source_document` | string | What it came from, e.g. "Maple Grove newsletter, Oct 26, 2026" |
 | `source_text` | string | The exact passage the fact was extracted from |
 | `published_at` | string (ISO datetime) | When the source was published |
 | `extracted_at` | string (ISO datetime) | When the School Agent created this fact |
@@ -42,7 +42,7 @@ All three agents read and write one fact store. This schema is the contract betw
   "action_required": true,
   "action": "Submit pizza order form",
   "link": "",
-  "source_document": "SJA newsletter",
+  "source_document": "Maple Grove newsletter",
   "source_text": "Pizza orders are due Friday. $3 per slice.",
   "published_at": "",
   "extracted_at": "",

@@ -7,6 +7,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const store = require('./db');
+const pdfParse = require('pdf-parse');
 
 const ROOT = __dirname;
 const NEWSLETTER_PATH = path.join(ROOT, 'data', 'mock-newsletter.txt');
@@ -81,7 +82,12 @@ function normalizeFact(raw, extractedAt) {
     rawId && !/^\d+$/.test(rawId)
       ? rawId
       : `fact-${slugify(title)}${date ? `-${date}` : ''}`;
+  const rawScope = raw.scope ? String(raw.scope).trim().toLowerCase() : '';
   return {
+    scope: ['school', 'grade', 'class'].includes(rawScope) ? rawScope : '',
+    scope_value: raw.scope_value ? String(raw.scope_value).trim() : '',
+    group_label: raw.group_label ? String(raw.group_label).trim() : '',
+    group_summary: raw.group_summary ? String(raw.group_summary).trim() : '',
     id,
     type,
     title,
@@ -114,14 +120,19 @@ function buildPrompt(newsletterText) {
     'applies_to (string), action_required (boolean), action (string), link (URL string or ""),',
     'source_document (string), source_text (the exact passage from the newsletter the fact came from),',
     'published_at (ISO datetime or ""), extracted_at (leave "" — the server fills it),',
-    'confidence (number 0-1), supersedes (string, "" unless this fact replaces an earlier one).',
+    'confidence (number 0-1), supersedes (string, "" unless this fact replaces an earlier one),',
+    'group_label (string: the short heading of the newsletter section this item came from, in the newsletter’s own words — e.g. "Halloween Costumes"; "" if the item has no natural section).',
+    'group_summary (string: one plain sentence saying what that section is about, for a parent skimming — e.g. "Winners and prizes from the fall chocolate fundraiser."; "" if the item has no group).',
     'Rules:',
     '- source_text must be copied verbatim from the newsletter for every fact.',
+    '- group_label uses the newsletter’s own section wording, not a paraphrase.',
+    '- Rules, dress codes, and conduct guidelines are informational facts, not actions: set action_required false for them unless the text names a form, an order, a payment, or a deadline.',
     '- confidence reflects how certain the extraction is (1.0 = explicit in the text).',
     '- The newsletter covers the week of November 2-6, 2026 (Mon Nov 2 to Fri Nov 6, 2026).',
     '  Resolve relative dates ("Friday", "November 18") to ISO dates in 2026.',
     '  Friday of that week is 2026-11-06.',
     '- source_document should name the Maple Grove Elementary newsletter.',
+    '- applies_to must name the audience explicitly: "all students" for whole-school items, "Grade N" or "Grades N-M" when the text targets a grade, "Class X" when it targets a specific class or teacher. Default to the school-wide audience; when the audience is ambiguous, choose the narrower (more specific) one.',
     '- Extract deadlines, events, requirements, and announcements. Do not invent facts.',
     '- If a fact has no date, use "" for date. Do not omit any field.',
   ].join('\n');
@@ -234,11 +245,64 @@ function extractJsonObject(text) {
   return parsed;
 }
 
-function buildParentPrompt(profile, facts) {
+function htmlToText(html) {
+  let t = String(html || '');
+  t = t.replace(/<script[\s\S]*?<\/script\s*>/gi, ' ');
+  t = t.replace(/<style[\s\S]*?<\/style\s*>/gi, ' ');
+  t = t.replace(/<[^>]+>/g, ' ');
+  t = t.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'");
+  return t.replace(/\s+/g, ' ').trim().slice(0, 6000);
+}
+
+async function fetchPageText(pageUrl) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  let res;
+  try {
+    res = await fetch(pageUrl, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': 'ParentLoop/1.0', Accept: 'text/html' },
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!res.ok) throw new Error('Page returned status ' + res.status + '.');
+  return htmlToText(await res.text());
+}
+
+function cleanField(value) {
+  return value ? String(value).trim() : '';
+}
+
+async function extractIdentityFields(pageText, kind) {
+  if (!API_KEY) throw new Error('SCHOOL_AGENT_API_KEY is missing or empty in .env.');
+  const system = kind === 'team'
+    ? 'You read a team or league web page and return the team identity as JSON. Return ONLY a JSON object, no markdown fences. Keys: name (team or organization name), sport (one of: Hockey, Soccer, Baseball, Softball, Basketball, Volleyball, Lacrosse, Swimming, Other), level (House League, Select, Rep, A, AA, AAA, or "" if unclear). Use "" for anything you cannot find.'
+    : 'You read a school web page and return the school identity as JSON. Return ONLY a JSON object, no markdown fences. Keys: school_name, city, province, country. Use "" for anything you cannot find.';
+  const content = await postMetaChat(system, 'Web page text:\n\n' + pageText, 1024);
+  const parsed = extractJsonObject(content);
+  if (kind === 'team') {
+    return { name: cleanField(parsed.name), sport: cleanField(parsed.sport), level: cleanField(parsed.level) };
+  }
+  return {
+    school_name: cleanField(parsed.school_name),
+    city: cleanField(parsed.city),
+    province: cleanField(parsed.province),
+    country: cleanField(parsed.country),
+  };
+}
+
+function buildParentPrompt(profile, facts, simulatedLabel) {
   const soul = profile.soul || {};
   const child = profile.child || {};
+  const children = profile.children && profile.children.length ? profile.children : [child];
+  const childText = children
+    .map((c) => `${c.name || 'the child'} (${c.grade || ''}${c.class ? ', Class ' + c.class : ''})`)
+    .join('; ');
+  const hubNames = [...new Set((facts || []).map((f) => f.hub_name || f.hub).filter(Boolean))];
   const system = [
-    `You are the Parent Agent for ONE family at ${profile.school || 'their school'}. The child is ${child.name || 'the child'} (${child.grade || ''}${child.class ? ', Class ' + child.class : ''}).`,
+    `You are the Parent Agent for ONE family at ${profile.school || 'their school'}. Children: ${childText}. Facts come from the family's hubs; each fact names its hub.`,
     'Soul rules (shared core — obey exactly):',
     '- I work for this family alone.',
     "- I never share this family's private information anywhere (not to the school, not to any group, not to anyone).",
@@ -248,12 +312,13 @@ function buildParentPrompt(profile, facts) {
     `- Priorities: ${(soul.priorities || []).join('; ')}`,
     `- Nudge style: ${soul.nudge_style || 'one short message in the evening'}`,
     `- Wishes: ${(soul.wishes || []).join('; ')}`,
-    `Simulated current moment: ${SIMULATED_NOW_LABEL}. Tomorrow is Friday, November 6, 2026.`,
-    'Task: filter the School Agent facts for this child only, then build the evening check.',
+    `Simulated current moment: ${simulatedLabel || SIMULATED_NOW_LABEL}. Tomorrow is Friday, November 6, 2026.`,
+    `The family belongs to these hubs and takes part in each one: ${hubNames.join(', ') || 'none'}. Belonging to a hub means that hub's context applies to the family — for example, U9 Hockey facts apply to the child because the child plays U9 hockey. Never filter out a hub's facts only because they name the hub's team, activity, or cohort.`,
+    'Task: filter the hub facts for this family\'s children only, then build the evening check. Include every dated event or deadline that applies to a child, across all of the family\'s hubs.',
     'Return ONLY a JSON object. No markdown fences, no commentary. Keys exactly:',
     'relevant_facts, nudges, calendar_hold, filtered_out_count, filtering_summary.',
     'Shapes:',
-    '- relevant_facts: array of objects {id, title} copied from the input facts, ONLY facts that apply to this child/family (school-wide, all grades, all students, Grade 3, or Grades 3-8 count as applying; facts explicitly limited to other grades/groups do not).',
+    '- relevant_facts: array of objects {id, title} copied from the input facts, ONLY facts that apply to this family\'s children (school-wide, all grades, all students, the child\'s grade, or a hub activity the family joined count as applying — hub membership means the activity applies; facts explicitly limited to other grades/groups/teams do not).',
     '- nudges: array of objects {fact_id, title, action, deadline, source}. Create a nudge ONLY for a fact with action_required=true whose tracked action state in profile.actions is still open. Open states: not_ordered, not_done, pending, open. Closed states (NO nudge): ordered, done, scheduled, completed, planning_to_attend. Match each action key to its fact by meaning (for example pizza_order -> the pizza orders fact, uniform_survey -> the uniform survey fact, hot_lunch -> a hot lunch ordering fact). Do NOT create nudges for untracked requirement facts in this evening check; keep them in relevant_facts only.',
     '- Each nudge action must say what to do in plain language; deadline must be the fact date; source must name the school newsletter source (use the fact source_document).',
     '- calendar_hold: ONE object {title, date, note} for the most urgent open deadline. If a pizza order fact is open, it must be the pizza order deadline (for the demo week, date "2026-11-06", Friday, November 6, 2026) and the note must mention the pizza order is not yet ordered. Otherwise use the earliest open action deadline, or null if there is none.',
@@ -299,6 +364,10 @@ function normalizeParentResult(raw, facts) {
       action: fact.action,
       source: fact.source_document,
       source_text: fact.source_text,
+      group_label: fact.group_label || '',
+      hub_id: fact.hub_id || '',
+      hub_name: fact.hub_name || fact.hub || '',
+      hub: fact.hub_name || fact.hub || '',
     });
   }
 
@@ -325,6 +394,37 @@ function normalizeParentResult(raw, facts) {
     };
   }
 
+  const groupsMap = new Map();
+  for (const fact of relevant) {
+    const key = fact.hub_id || fact.hub_name || 'hub';
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, {
+        hub_id: fact.hub_id || '',
+        hub_name: fact.hub_name || '',
+        hub: fact.hub_name || '',
+        facts: [],
+        nudges: [],
+      });
+    }
+    groupsMap.get(key).facts.push(fact);
+  }
+  for (const nudge of nudges) {
+    const fact = nudge.fact_id ? byId.get(nudge.fact_id) : null;
+    const key = fact ? fact.hub_id || fact.hub_name || 'hub' : 'hub';
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, {
+        hub_id: fact ? fact.hub_id || '' : '',
+        hub_name: fact ? fact.hub_name || '' : '',
+        hub: fact ? fact.hub_name || '' : '',
+        facts: [],
+        nudges: [],
+      });
+    }
+    groupsMap.get(key).nudges.push(nudge);
+  }
+  const groups = Array.from(groupsMap.values());
+  const conflicts = detectConflicts(relevant);
+
   const filteredOutCount = facts.length - relevant.length;
   const summaryText = String(
     raw.filtering_summary || raw.summary || ''
@@ -341,29 +441,98 @@ function normalizeParentResult(raw, facts) {
     checked_count: facts.length,
     relevant_count: relevant.length,
     open_action_count: nudges.length,
+    groups,
+    grouped_by_hub: groups,
+    conflicts,
+    conflict_count: conflicts.length,
   };
 }
 
-async function callParentMetaApi(profile, facts) {
-  const { system, user } = buildParentPrompt(profile, facts);
+function parseClock(text) {
+  const m = /(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?/i.exec(String(text || ''));
+  if (!m) return null;
+  let hours = Number(m[1]) % 12;
+  if (/pm/i.test(m[3] || '')) hours += 12;
+  return hours * 60 + Number(m[2] || 0);
+}
+
+function factWindow(fact) {
+  if (!fact.date) return null;
+  const times = String(fact.time || '').match(/\d{1,2}(?::\d{2})?\s*(?:AM|PM)?/gi) || [];
+  if (fact.type === 'deadline') {
+    const at = times.length ? parseClock(times[times.length - 1]) : 23 * 60 + 59;
+    return { start: at, end: at, deadline: true, allDay: false };
+  }
+  if (!times.length) return { start: 0, end: 24 * 60, deadline: false, allDay: true };
+  const start = parseClock(times[0]);
+  const end = times.length > 1 ? parseClock(times[1]) : start + 60;
+  return { start, end: Math.max(end, start), deadline: false, allDay: false };
+}
+
+function humanDateShort(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+  if (!m) return String(iso || '');
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  const label = d.toLocaleDateString('en-US', {
+    weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC',
+  });
+  return label.replace(/^(\w+),/, '$1,');
+}
+
+function detectConflicts(relevant) {
+  const conflicts = [];
+  const dated = (relevant || []).filter((f) => f.date);
+  for (let i = 0; i < dated.length; i += 1) {
+    for (let j = i + 1; j < dated.length; j += 1) {
+      const a = dated[i];
+      const b = dated[j];
+      if (a.date !== b.date) continue;
+      const wa = factWindow(a);
+      const wb = factWindow(b);
+      if (!wa || !wb) continue;
+      let overlaps = false;
+      if (wa.deadline && wb.deadline) {
+        overlaps = false;
+      } else if (wa.deadline || wb.deadline) {
+        const deadline = wa.deadline ? wa : wb;
+        const other = wa.deadline ? wb : wa;
+        overlaps = !other.allDay && deadline.start >= other.start && deadline.start <= other.end;
+      } else {
+        overlaps = wa.start < wb.end && wb.start < wa.end;
+      }
+      if (!overlaps) continue;
+      const hubA = a.hub_name || a.hub || 'a hub';
+      const hubB = b.hub_name || b.hub || 'a hub';
+      const day = humanDateShort(a.date);
+      conflicts.push({
+        date: a.date,
+        fact_a: a,
+        fact_b: b,
+        facts: [a, b],
+        hub_names: [hubA, hubB],
+        cross_hub: hubA !== hubB,
+        message: `${a.title} (${hubA}) overlaps ${b.title} (${hubB}) on ${day}`,
+      });
+    }
+  }
+  conflicts.sort((x, y) => Number(y.cross_hub) - Number(x.cross_hub));
+  return conflicts;
+}
+
+async function callParentMetaApi(profile, facts, simulatedLabel) {
+  const { system, user } = buildParentPrompt(profile, facts, simulatedLabel);
   return postMetaChat(system, user, 8192);
 }
 
-async function runParentAgent(logs) {
+async function runParentAgent(logs, simulatedLabel) {
   const push = (message) => logs.push({ at: nowIso(), message });
+  const simulated = simulatedLabel || SIMULATED_NOW_LABEL;
   push('evening check started');
-  push(`simulated time: ${SIMULATED_NOW_LABEL}`);
+  push(`simulated time: ${simulated}`);
   if (!API_KEY) {
     throw new Error(
       'SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.'
     );
-  }
-  if (!fs.existsSync(FACTS_PATH)) {
-    throw new Error('data/facts.json not found — run the School Agent first.');
-  }
-  const facts = JSON.parse(fs.readFileSync(FACTS_PATH, 'utf8'));
-  if (!Array.isArray(facts)) {
-    throw new Error('data/facts.json is not a JSON array.');
   }
   const profile = store.getProfileForRun();
   if (!profile) {
@@ -379,11 +548,17 @@ async function runParentAgent(logs) {
       // Demo wishes are optional; the stored soul still drives the run.
     }
   }
-  const childName = (profile.child && profile.child.name) || 'the child';
+  const facts = store.listFactsForProfile(profile.id);
+  const hubs = store.listHubsForProfile(profile.id);
+  const childNames = (profile.children || [profile.child])
+    .map((c) => c && c.name)
+    .filter(Boolean);
+  const childName = childNames.join(' and ') || 'the child';
   push(`family profile loaded for ${childName} (private to this Parent Agent)`);
+  push(`${hubs.length} ${hubs.length === 1 ? 'hub' : 'hubs'} checked: ${hubs.map((h) => h.name).join(', ') || 'none yet'}`);
   push(`${facts.length} facts checked against the family profile`);
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
-  const content = await callParentMetaApi(profile, facts);
+  const content = await callParentMetaApi(profile, facts, simulated);
   push('API responded — validating filtering result');
   const raw = extractJsonObject(content);
   const result = normalizeParentResult(raw, facts);
@@ -401,11 +576,26 @@ async function runParentAgent(logs) {
       `calendar hold created: ${result.calendar_hold.title} on ${result.calendar_hold.date}`
     );
   }
+  if (result.conflicts && result.conflicts.length) {
+    for (const conflict of result.conflicts) push(`CONFLICTS: ${conflict.message}`);
+  }
   push(PRIVACY_CHECK_LINE);
   return result;
 }
 
-async function extractAndSaveFacts(newsletterText, logs) {
+function narrowestScope(facts) {
+  let best = { scope: 'school', value: '' };
+  for (const f of facts || []) {
+    const scope = String((f && f.scope) || 'school').toLowerCase();
+    if (scope === 'class') return { scope, value: f.scope_value || '' };
+    if (scope === 'grade' && best.scope !== 'class') {
+      best = { scope, value: f.scope_value || '' };
+    }
+  }
+  return best;
+}
+
+async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride) {
   const push = (message) => logs.push({ at: nowIso(), message });
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
   const content = await callMetaApi(newsletterText);
@@ -424,9 +614,45 @@ async function extractAndSaveFacts(newsletterText, logs) {
     seen.add(fact.id);
   }
   push(`${facts.length} facts extracted`);
-  fs.writeFileSync(FACTS_PATH, JSON.stringify(facts, null, 2) + '\n', 'utf8');
-  push(`facts saved to data/facts.json`);
-  return facts;
+  let materialTitle = '';
+  if (materialId) {
+    try {
+      const material = store.getMaterial(materialId);
+      materialTitle = material && material.title ? String(material.title) : '';
+    } catch {
+      materialTitle = '';
+    }
+  }
+  const withHub = facts.map((f) =>
+    scopeOverride
+      ? { ...f, hub_id: hubId || '', material_id: materialId || '', scope: scopeOverride.scope, scope_value: scopeOverride.value, group_label: f.group_label || materialTitle }
+      : { ...f, hub_id: hubId || '', material_id: materialId || '', group_label: f.group_label || materialTitle }
+  );
+  if (hubId) {
+    store.insertFacts(hubId, materialId || '', withHub, true);
+    if (materialId) {
+      const materialScope = scopeOverride || narrowestScope(withHub);
+      store.updateMaterialScope(materialId, materialScope.scope, materialScope.value);
+    }
+  }
+  push('facts saved');
+  return withHub;
+}
+
+function resolveAudience(actor, audience) {
+  const mode = String(audience || 'auto').toLowerCase();
+  if (mode === '' || mode === 'auto') return null;
+  if (mode === 'school') return { scope: 'school', value: '' };
+  const child = (actor && actor.children && actor.children[0]) || (actor && actor.child) || {};
+  if (mode === 'grade') {
+    if (!child.grade) throw new Error('Add your child’s grade first, then choose that scope.');
+    return { scope: 'grade', value: String(child.grade) };
+  }
+  if (mode === 'class') {
+    if (!child.class) throw new Error('Add your child’s class first, then choose that scope.');
+    return { scope: 'class', value: String(child.class) };
+  }
+  throw new Error('Choose who this is for: automatic, whole school, grade, or class.');
 }
 
 async function runSchoolAgent(logs) {
@@ -439,7 +665,18 @@ async function runSchoolAgent(logs) {
   }
   push(`newsletter loaded: data/mock-newsletter.txt`);
   const newsletterText = fs.readFileSync(NEWSLETTER_PATH, 'utf8');
-  return extractAndSaveFacts(newsletterText, logs);
+  const demoHub = store.getDemoHub();
+  let material = demoHub ? store.findMaterial(demoHub.id, 'Maple Grove newsletter (mock)') : null;
+  if (demoHub && !material) {
+    const demo = store.getDemoProfile();
+    material = store.createMaterial(demoHub.id, demo ? demo.id : '', 'paste', 'Maple Grove newsletter (mock)', newsletterText, 'stored');
+  }
+  return extractAndSaveFacts(
+    newsletterText,
+    logs,
+    demoHub ? demoHub.id : '',
+    material ? material.id : ''
+  );
 }
 
 function sendJson(res, status, obj) {
@@ -454,7 +691,7 @@ function readJsonBody(req) {
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > 2 * 1024 * 1024) {
+      if (size > 12 * 1024 * 1024) {
         reject(new Error('Request is too large.'));
         req.destroy();
         return;
@@ -634,17 +871,23 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/newsletter') {
+      const viewer = store.getActiveProfile();
+      if (viewer && !viewer.is_demo) {
+        sendJson(res, 200, { text: '' });
+        return;
+      }
       const text = fs.readFileSync(NEWSLETTER_PATH, 'utf8');
       sendJson(res, 200, { text });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/facts') {
-      if (!fs.existsSync(FACTS_PATH)) {
+      const viewer = store.getActiveProfile();
+      if (viewer && !viewer.is_demo) {
         sendJson(res, 200, { facts: [] });
         return;
       }
-      const facts = JSON.parse(fs.readFileSync(FACTS_PATH, 'utf8'));
-      sendJson(res, 200, { facts: Array.isArray(facts) ? facts : [] });
+      const demoHub = store.getDemoHub();
+      sendJson(res, 200, { facts: demoHub ? store.listFacts(demoHub.id, viewer ? viewer.id : null) : [] });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/family-profile') {
@@ -725,8 +968,6 @@ const server = http.createServer(async (req, res) => {
         type: body.type,
         label: body.label,
         url: body.url,
-        username: body.username,
-        secret: body.password != null ? body.password : body.secret,
         status: 'saved',
       });
       sendJson(res, 200, { ok: true, source });
@@ -734,16 +975,30 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/newsletter/run') {
       const logs = [];
+      let material = null;
       try {
         const body = await readJsonBody(req);
         const text = String(body.text || '').trim();
         logs.push({ at: nowIso(), message: 'run started' });
         if (!API_KEY) throw new Error('SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.');
         if (!text) throw new Error('Paste your newsletter or notice first.');
+        const hub = body.hub_id ? store.getHub(body.hub_id) : store.getDemoHub();
+        if (!hub) throw new Error('Choose a hub first.');
+        const actor = store.getProfileForRun();
+        const override = resolveAudience(actor, body.audience);
+        material = store.createMaterial(hub.id, actor ? actor.id : '', 'paste', String(body.title || 'Pasted newsletter'), text, 'stored');
         logs.push({ at: nowIso(), message: 'pasted newsletter received' });
-        const facts = await extractAndSaveFacts(text, logs);
-        sendJson(res, 200, { ok: true, facts, logs });
+        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override);
+        store.updateMaterialStatus(material.id, 'extracted');
+        sendJson(res, 200, {
+          ok: true,
+          facts,
+          logs,
+          material: { id: material.id, hub_id: hub.id, kind: 'paste', title: material.title, status: 'extracted' },
+          facts_added: facts.length,
+        });
       } catch (err) {
+        if (material) store.updateMaterialStatus(material.id, 'failed');
         const message = err && err.message ? err.message : String(err);
         logs.push({ at: nowIso(), message: `error: ${message}` });
         sendJson(res, 500, { ok: false, error: message, logs });
@@ -887,20 +1142,36 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/email/use-newsletter') {
       const logs = [];
+      let material = null;
       try {
         const active = store.getActiveProfile();
         if (!active) throw new Error('Save your family first, then connect Gmail.');
         const body = await readJsonBody(req);
+        if (!body.hub_id) throw new Error('Choose a hub for this newsletter first.');
+        const hub = store.getHub(body.hub_id);
+        if (!hub) throw new Error('That hub could not be found.');
+        if (!store.isMember(hub.id, active.id)) throw new Error('You are not a member of that hub yet.');
         if (!body.messageId) throw new Error('Choose a message to use.');
         const accessToken = await getGmailAccessToken(active.id);
         const msg = await gmailFetch(accessToken, `users/me/messages/${body.messageId}`);
+        const headers = gmailHeaders(msg.payload);
         const text = gmailMessageText(msg.payload);
         if (!text) throw new Error('That message did not include readable text.');
+        const override = resolveAudience(active, body.audience);
+        material = store.createMaterial(hub.id, active.id, 'email', headers.subject || 'Email newsletter', text, 'stored');
         logs.push({ at: nowIso(), message: 'run started' });
-        logs.push({ at: nowIso(), message: 'Gmail message loaded as the school newsletter' });
-        const facts = await extractAndSaveFacts(text, logs);
-        sendJson(res, 200, { ok: true, facts, logs });
+        logs.push({ at: nowIso(), message: 'Gmail message loaded as a hub newsletter' });
+        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override);
+        store.updateMaterialStatus(material.id, 'extracted');
+        sendJson(res, 200, {
+          ok: true,
+          facts,
+          logs,
+          material: { id: material.id, hub_id: hub.id, kind: 'email', title: material.title, status: 'extracted' },
+          facts_added: facts.length,
+        });
       } catch (err) {
+        if (material) store.updateMaterialStatus(material.id, 'failed');
         const message = err && err.message ? err.message : String(err);
         logs.push({ at: nowIso(), message: `error: ${message}` });
         sendJson(res, 500, { ok: false, error: message, logs });
@@ -938,7 +1209,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/parent/run') {
       const logs = [];
       try {
-        const result = await runParentAgent(logs);
+        let simulatedLabel = SIMULATED_NOW_LABEL;
+        try {
+          const body = await readJsonBody(req);
+          if (body && (body.simulated_now || body.simulatedNow)) {
+            simulatedLabel = String(body.simulated_now || body.simulatedNow);
+          }
+        } catch {
+          // No body is fine; the default simulated moment applies.
+        }
+        const result = await runParentAgent(logs, simulatedLabel);
         sendJson(res, 200, {
           ok: true,
           simulated_now: SIMULATED_NOW_LABEL,
@@ -956,6 +1236,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/run') {
       const logs = [];
       try {
+        const actor = store.getActiveProfile();
+        if (actor && !actor.is_demo) {
+          throw new Error('School demo updates appear under the demo family. Switch families to run this demo check.');
+        }
         const facts = await runSchoolAgent(logs);
         sendJson(res, 200, { ok: true, facts, logs });
       } catch (err) {
@@ -965,6 +1249,249 @@ const server = http.createServer(async (req, res) => {
       }
       return;
     }
+    // Hubs, invites, joining, and materials.
+    const hubMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)$/);
+    const hubMaterialsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials$/);
+    const hubMaterialTextMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)\/text$/);
+    const hubInvitesMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/invites$/);
+    const hubInviteRevokeMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/invites\/revoke$/);
+    const hubRequestsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/join-requests$/);
+    const hubRequestDecideMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/join-requests\/([^/]+)\/(approve|decline)$/);
+    const joinInfoMatch = url.pathname.match(/^\/api\/join\/([^/]+)$/);
+    const joinAcceptMatch = url.pathname.match(/^\/api\/join\/([^/]+)\/accept$/);
+
+    if (req.method === 'GET' && url.pathname.startsWith('/join/')) {
+      const html = fs.readFileSync(INDEX_PATH, 'utf8');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/hubs') {
+      const actor = store.getProfileForRun();
+      sendJson(res, 200, { hubs: actor ? store.listHubsForProfile(actor.id) : [] });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/hubs/parse-link') {
+      const body = await readJsonBody(req);
+      const urlStr = String(body.url || '').trim();
+      const kind = body.kind === 'team' ? 'team' : 'school';
+      let parsedUrl = null;
+      try {
+        parsedUrl = new URL(urlStr);
+      } catch {
+        parsedUrl = null;
+      }
+      if (!parsedUrl) {
+        sendJson(res, 400, { error: 'That link doesn’t look complete — paste the full address starting with http:// or https://.' });
+        return;
+      }
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        sendJson(res, 400, { error: 'That link needs to start with http:// or https://.' });
+        return;
+      }
+      let pageText = '';
+      try {
+        pageText = await fetchPageText(parsedUrl.toString());
+      } catch (err) {
+        pageText = '';
+      }
+      if (!pageText) {
+        sendJson(res, 500, { error: 'That page didn’t load — check the link and try again, or just type the details in.' });
+        return;
+      }
+      try {
+        const fields = await extractIdentityFields(pageText, kind);
+        sendJson(res, 200, { ok: true, kind, domain: parsedUrl.hostname, fields });
+      } catch (err) {
+        sendJson(res, 500, { error: 'The page loaded but the details couldn’t be read — just type them in.' });
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/hubs') {
+      const actor = store.getProfileForRun();
+      if (!actor) { sendJson(res, 400, { error: 'Set up your family first.' }); return; }
+      const body = await readJsonBody(req);
+      const kinds = ['school', 'team', 'activity', 'other'];
+      const kind = kinds.includes(body.kind) ? body.kind : 'other';
+      if (kind === 'school') {
+        let schoolName = String(body.school_name || '').trim();
+        let city = String(body.city || '').trim();
+        let province = String(body.province || '').trim();
+        let country = String(body.country || '').trim();
+        if (!schoolName && !city && !province && !country) {
+          const parts = store.splitComposedName(body.name);
+          schoolName = parts.school_name;
+          city = parts.city;
+        }
+        if (!schoolName) { sendJson(res, 400, { error: 'Add the school name.' }); return; }
+        if (!city) { sendJson(res, 400, { error: 'Add the city.' }); return; }
+        if (!province) { sendJson(res, 400, { error: 'Add the state or province.' }); return; }
+        if (!country) { sendJson(res, 400, { error: 'Add the country.' }); return; }
+        const displayName = `${schoolName} — ${city}`;
+        const conflict = store.findSchoolHubConflict(schoolName, city, province, country);
+        if (conflict && conflict.match_type === 'exact') {
+          sendJson(res, 409, { error: 'That school already has a hub.', match_type: 'exact', existing_hub: conflict });
+          return;
+        }
+        if (conflict && conflict.match_type === 'similar' && !body.force) {
+          sendJson(res, 409, { error: 'That looks like a school that already has a hub.', match_type: 'similar', existing_hub: conflict });
+          return;
+        }
+        const hub = store.createHub(actor.id, displayName, kind, { school_name: schoolName, city, province, country });
+        sendJson(res, 200, { ok: true, hub });
+        return;
+      }
+      if (!String(body.name || '').trim()) { sendJson(res, 400, { error: 'Give your hub a name.' }); return; }
+      const extra = kind === 'team'
+        ? { sport: String(body.sport || '').trim(), level: String(body.level || '').trim() }
+        : null;
+      const hub = store.createHub(actor.id, body.name, kind, extra);
+      sendJson(res, 200, { ok: true, hub });
+      return;
+    }
+    if (req.method === 'DELETE' && hubMatch) {
+      const actor = store.getProfileForRun();
+      const hub = store.getHub(hubMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || store.getMemberRole(hub.id, actor.id) !== 'admin') { sendJson(res, 403, { error: 'Only hub admins can delete this hub.' }); return; }
+      store.deleteHub(hub.id);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === 'GET' && hubMatch) {
+      const actor = store.getProfileForRun();
+      const hub = store.getHub(hubMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can see this hub.' }); return; }
+      sendJson(res, 200, {
+        hub: { ...hub, role: store.getMemberRole(hub.id, actor.id) },
+        facts: store.listFacts(hub.id, actor.id),
+        materials: store.listMaterials(hub.id, actor.id),
+        member_count: hub.member_count,
+      });
+      return;
+    }
+    if (req.method === 'GET' && hubMaterialTextMatch) {
+      const actor = store.getProfileForRun();
+      const hub = store.getHub(hubMaterialTextMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can read this hub.' }); return; }
+      const doc = store.getMaterialText(hubMaterialTextMatch[2], actor.id);
+      if (!doc || doc.hub_id !== hub.id) { sendJson(res, 404, { error: 'That material is not available.' }); return; }
+      sendJson(res, 200, doc);
+      return;
+    }
+    if (req.method === 'POST' && hubMaterialsMatch) {
+      const actor = store.getProfileForRun();
+      const hub = store.getHub(hubMaterialsMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can add material to this hub.' }); return; }
+      const body = await readJsonBody(req);
+      const logs = [];
+      let material = null;
+      try {
+        if (!API_KEY) throw new Error('SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.');
+        let text = '';
+        let kind = body.kind === 'pdf' ? 'pdf' : 'paste';
+        if (kind === 'pdf') {
+          if (!body.fileBase64) throw new Error('Choose a PDF file first.');
+          const parsed = await pdfParse(Buffer.from(String(body.fileBase64), 'base64'));
+          text = String(parsed.text || '').trim();
+          if (!text) throw new Error('That PDF did not include readable text.');
+        } else {
+          text = String(body.text || '').trim();
+          if (!text) throw new Error('Paste a newsletter or notice first.');
+        }
+        const override = resolveAudience(actor, body.audience);
+        material = store.createMaterial(hub.id, actor.id, kind, String(body.title || (kind === 'pdf' ? 'PDF notice' : 'Pasted notice')), text, 'stored');
+        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override);
+        store.updateMaterialStatus(material.id, 'extracted');
+        sendJson(res, 200, {
+          ok: true,
+          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at },
+          facts,
+          facts_added: facts.length,
+          count: facts.length,
+          logs,
+        });
+      } catch (err) {
+        if (material) store.updateMaterialStatus(material.id, 'failed');
+        const message = err && err.message ? err.message : String(err);
+        sendJson(res, 500, { ok: false, error: message, logs });
+      }
+      return;
+    }
+    if (req.method === 'POST' && hubInvitesMatch) {
+      const actor = store.getProfileForRun();
+      const hub = store.getHub(hubInvitesMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can invite parents.' }); return; }
+      const token = store.createInvite(hub.id, actor.id);
+      sendJson(res, 200, { ok: true, token, path: `/join/${token}`, url: `/join/${token}` });
+      return;
+    }
+    if (req.method === 'POST' && hubInviteRevokeMatch) {
+      const actor = store.getProfileForRun();
+      const hub = store.getHub(hubInviteRevokeMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can manage invites.' }); return; }
+      const body = await readJsonBody(req);
+      if (body.token) store.revokeInvite(hub.id, String(body.token));
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === 'GET' && joinInfoMatch) {
+      const info = store.getInvite(joinInfoMatch[1]);
+      if (!info) { sendJson(res, 404, { error: 'That invite link is no longer available.' }); return; }
+      sendJson(res, 200, {
+        hub_name: info.hub_name,
+        kind: info.kind,
+        inviter_first_name: info.inviter_first_name,
+        member_count: info.member_count,
+      });
+      return;
+    }
+    if (req.method === 'POST' && joinAcceptMatch) {
+      const info = store.getInvite(joinAcceptMatch[1]);
+      if (!info) { sendJson(res, 404, { error: 'That invite link is no longer available.' }); return; }
+      const active = store.getActiveProfile();
+      if (!active) {
+        sendJson(res, 400, { error: 'Set up your family first, then accept the invite.', needsOnboarding: true, needs_onboarding: true });
+        return;
+      }
+      store.addMember(info.hub_id, active.id, 'member', 'invite');
+      sendJson(res, 200, { ok: true, hub: store.getHub(info.hub_id) });
+      return;
+    }
+    if (req.method === 'POST' && hubRequestsMatch) {
+      const hub = store.getHub(hubRequestsMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      const active = store.getActiveProfile();
+      if (!active) { sendJson(res, 400, { error: 'Set up your family first.', needsOnboarding: true }); return; }
+      if (store.isMember(hub.id, active.id)) { sendJson(res, 200, { ok: true, alreadyMember: true }); return; }
+      const request = store.createJoinRequest(hub.id, active.id);
+      sendJson(res, 200, { ok: true, request });
+      return;
+    }
+    if (req.method === 'GET' && hubRequestsMatch) {
+      const actor = store.getProfileForRun();
+      const hub = store.getHub(hubRequestsMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || store.getMemberRole(hub.id, actor.id) !== 'admin') { sendJson(res, 403, { error: 'Only hub admins can see requests.' }); return; }
+      sendJson(res, 200, { requests: store.listJoinRequests(hub.id) });
+      return;
+    }
+    if (req.method === 'POST' && hubRequestDecideMatch) {
+      const actor = store.getProfileForRun();
+      const hub = store.getHub(hubRequestDecideMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || store.getMemberRole(hub.id, actor.id) !== 'admin') { sendJson(res, 403, { error: 'Only hub admins can decide requests.' }); return; }
+      const updated = store.decideJoinRequest(hub.id, hubRequestDecideMatch[2], actor.id, hubRequestDecideMatch[3] === 'approve');
+      if (!updated) { sendJson(res, 404, { error: 'That request could not be found.' }); return; }
+      sendJson(res, 200, { ok: true, request: updated, requests: store.listJoinRequests(hub.id), hub: store.getHub(hub.id) });
+      return;
+    }
+
     sendJson(res, 404, { error: 'not found' });
   } catch (err) {
     sendJson(res, 500, { error: err && err.message ? err.message : String(err) });
