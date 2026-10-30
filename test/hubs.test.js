@@ -545,6 +545,8 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     assert.match(conflictText, /U9 Hockey/);
     assert.match(conflictText, /Fall Festival/i);
     assert.match(conflictText, /Nov 6/);
+    assert.equal(run.data.conflicts.length, 3, conflictText);
+    assert.equal(run.data.nudges.length, 2, JSON.stringify(run.data.nudges));
     const lastLog = run.data.logs[run.data.logs.length - 1].message;
     assert.equal(
       lastLog,

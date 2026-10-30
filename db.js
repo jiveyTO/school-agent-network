@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const initSqlJs = require('sql.js');
+const { isSameEvent, sameScope, mergeFactPair } = require('./event-dedupe');
 
 const ROOT = __dirname;
 const DB_PATH = process.env.APP_DB_PATH
@@ -1152,22 +1153,55 @@ function insertFacts(hubId, materialId, facts, replaceMaterialFacts) {
   if (replaceMaterialFacts && materialId) {
     run('DELETE FROM facts WHERE material_id = ?', [materialId]);
   }
+  // Same-event duplicates — one event named in two newsletter sections, or
+  // arriving via two materials in this hub — fold into a single row that keeps
+  // the clearer title and both source quotes. Facts scoped to different
+  // audiences never merge; conflict detection still skips them as same-event.
+  const known = all('SELECT * FROM facts WHERE hub_id = ?', [hubId]).map(factRowToObject);
   for (const f of facts || []) {
     const derived = f.scope && ['school', 'grade', 'class'].includes(String(f.scope).toLowerCase())
       ? { scope: String(f.scope).toLowerCase(), value: f.scope_value || '' }
       : deriveScope(f);
+    const incoming = Object.assign({}, f, {
+      hub_id: hubId,
+      material_id: materialId || '',
+      scope: derived.scope,
+      scope_value: derived.value,
+    });
+    const hit = known.find((g) => isSameEvent(g, incoming) && sameScope(g, incoming));
+    if (!hit) {
+      run(
+        `INSERT OR REPLACE INTO facts
+         (id, hub_id, material_id, type, title, detail, date, time, applies_to, action_required, action, link, source_document, source_text, published_at, extracted_at, confidence, supersedes, scope, scope_value, group_label, group_summary)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          incoming.id, hubId, materialId || '', incoming.type, incoming.title, incoming.detail || '', incoming.date || '', incoming.time || '',
+          incoming.applies_to || '', incoming.action_required ? 1 : 0, incoming.action || '', incoming.link || '',
+          incoming.source_document || '', incoming.source_text || '', incoming.published_at || '', incoming.extracted_at || '',
+          typeof incoming.confidence === 'number' ? incoming.confidence : 0, incoming.supersedes || '',
+          derived.scope, derived.value, incoming.group_label || '', incoming.group_summary || '',
+        ]
+      );
+      known.push(incoming);
+      continue;
+    }
+    const merged = mergeFactPair(hit, incoming);
     run(
-      `INSERT OR REPLACE INTO facts
-       (id, hub_id, material_id, type, title, detail, date, time, applies_to, action_required, action, link, source_document, source_text, published_at, extracted_at, confidence, supersedes, scope, scope_value, group_label, group_summary)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `UPDATE facts
+       SET type = ?, title = ?, detail = ?, date = ?, time = ?, applies_to = ?, action_required = ?,
+           action = ?, link = ?, source_document = ?, source_text = ?, confidence = ?,
+           scope = ?, scope_value = ?, group_label = ?, group_summary = ?
+       WHERE id = ?`,
       [
-        f.id, hubId, materialId || '', f.type, f.title, f.detail || '', f.date || '', f.time || '',
-        f.applies_to || '', f.action_required ? 1 : 0, f.action || '', f.link || '',
-        f.source_document || '', f.source_text || '', f.published_at || '', f.extracted_at || '',
-        typeof f.confidence === 'number' ? f.confidence : 0, f.supersedes || '',
-        derived.scope, derived.value, f.group_label || '', f.group_summary || '',
+        merged.type, merged.title, merged.detail || '', merged.date || '', merged.time || '',
+        merged.applies_to || '', merged.action_required ? 1 : 0, merged.action || '', merged.link || '',
+        merged.source_document || '', merged.source_text || '',
+        typeof merged.confidence === 'number' ? merged.confidence : 0,
+        merged.scope || 'school', merged.scope_value || '', merged.group_label || '', merged.group_summary || '',
+        hit.id,
       ]
     );
+    Object.assign(hit, merged, { id: hit.id, hub_id: hit.hub_id, material_id: hit.material_id });
   }
   persist();
   return (facts || []).length;
@@ -1286,6 +1320,7 @@ function seedDemoHubs() {
 
 module.exports = {
   DB_PATH,
+  HOCKEY_FACTS,
   initDb,
   getActiveProfile,
   getDemoProfile,

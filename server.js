@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const store = require('./db');
 const pdfParse = require('pdf-parse');
+const { mergeSameEventFacts, detectConflicts } = require('./event-dedupe');
 
 const ROOT = __dirname;
 const NEWSLETTER_PATH = path.join(ROOT, 'data', 'mock-newsletter.txt');
@@ -365,6 +366,8 @@ function normalizeParentResult(raw, facts) {
       source: fact.source_document,
       source_text: fact.source_text,
       group_label: fact.group_label || '',
+      scope: fact.scope || 'school',
+      scope_value: fact.scope_value || '',
       hub_id: fact.hub_id || '',
       hub_name: fact.hub_name || fact.hub || '',
       hub: fact.hub_name || fact.hub || '',
@@ -394,8 +397,15 @@ function normalizeParentResult(raw, facts) {
     };
   }
 
+  // Fold same-event duplicates (one event named in two newsletter sections, or
+  // arriving via two materials) so the evening check never reports them as
+  // conflicts with each other. Duplicates scoped to different audiences stay
+  // separate rows; conflict detection still skips them as the same event.
+  const mergedRelevant = mergeSameEventFacts(relevant);
+  const mergedIds = new Set(mergedRelevant.map((f) => f.id));
+
   const groupsMap = new Map();
-  for (const fact of relevant) {
+  for (const fact of mergedRelevant) {
     const key = fact.hub_id || fact.hub_name || 'hub';
     if (!groupsMap.has(key)) {
       groupsMap.set(key, {
@@ -423,100 +433,29 @@ function normalizeParentResult(raw, facts) {
     groupsMap.get(key).nudges.push(nudge);
   }
   const groups = Array.from(groupsMap.values());
-  const conflicts = detectConflicts(relevant);
+  const conflicts = detectConflicts(mergedRelevant);
 
-  const filteredOutCount = facts.length - relevant.length;
+  const filteredOutCount = facts.length - mergedIds.size;
   const summaryText = String(
     raw.filtering_summary || raw.summary || ''
   ).trim() ||
     `${filteredOutCount} facts filtered out because they do not apply to this child.`;
 
   return {
-    relevant_facts: relevant,
+    relevant_facts: mergedRelevant,
     nudges,
     calendar_hold: calendarHold,
     filtered_out_count: filteredOutCount,
     filtering_summary: summaryText,
     summary: summaryText,
     checked_count: facts.length,
-    relevant_count: relevant.length,
+    relevant_count: mergedRelevant.length,
     open_action_count: nudges.length,
     groups,
     grouped_by_hub: groups,
     conflicts,
     conflict_count: conflicts.length,
   };
-}
-
-function parseClock(text) {
-  const m = /(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?/i.exec(String(text || ''));
-  if (!m) return null;
-  let hours = Number(m[1]) % 12;
-  if (/pm/i.test(m[3] || '')) hours += 12;
-  return hours * 60 + Number(m[2] || 0);
-}
-
-function factWindow(fact) {
-  if (!fact.date) return null;
-  const times = String(fact.time || '').match(/\d{1,2}(?::\d{2})?\s*(?:AM|PM)?/gi) || [];
-  if (fact.type === 'deadline') {
-    const at = times.length ? parseClock(times[times.length - 1]) : 23 * 60 + 59;
-    return { start: at, end: at, deadline: true, allDay: false };
-  }
-  if (!times.length) return { start: 0, end: 24 * 60, deadline: false, allDay: true };
-  const start = parseClock(times[0]);
-  const end = times.length > 1 ? parseClock(times[1]) : start + 60;
-  return { start, end: Math.max(end, start), deadline: false, allDay: false };
-}
-
-function humanDateShort(iso) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
-  if (!m) return String(iso || '');
-  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  const label = d.toLocaleDateString('en-US', {
-    weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC',
-  });
-  return label.replace(/^(\w+),/, '$1,');
-}
-
-function detectConflicts(relevant) {
-  const conflicts = [];
-  const dated = (relevant || []).filter((f) => f.date);
-  for (let i = 0; i < dated.length; i += 1) {
-    for (let j = i + 1; j < dated.length; j += 1) {
-      const a = dated[i];
-      const b = dated[j];
-      if (a.date !== b.date) continue;
-      const wa = factWindow(a);
-      const wb = factWindow(b);
-      if (!wa || !wb) continue;
-      let overlaps = false;
-      if (wa.deadline && wb.deadline) {
-        overlaps = false;
-      } else if (wa.deadline || wb.deadline) {
-        const deadline = wa.deadline ? wa : wb;
-        const other = wa.deadline ? wb : wa;
-        overlaps = !other.allDay && deadline.start >= other.start && deadline.start <= other.end;
-      } else {
-        overlaps = wa.start < wb.end && wb.start < wa.end;
-      }
-      if (!overlaps) continue;
-      const hubA = a.hub_name || a.hub || 'a hub';
-      const hubB = b.hub_name || b.hub || 'a hub';
-      const day = humanDateShort(a.date);
-      conflicts.push({
-        date: a.date,
-        fact_a: a,
-        fact_b: b,
-        facts: [a, b],
-        hub_names: [hubA, hubB],
-        cross_hub: hubA !== hubB,
-        message: `${a.title} (${hubA}) overlaps ${b.title} (${hubB}) on ${day}`,
-      });
-    }
-  }
-  conflicts.sort((x, y) => Number(y.cross_hub) - Number(x.cross_hub));
-  return conflicts;
 }
 
 async function callParentMetaApi(profile, facts, simulatedLabel) {
@@ -628,15 +567,22 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
       ? { ...f, hub_id: hubId || '', material_id: materialId || '', scope: scopeOverride.scope, scope_value: scopeOverride.value, group_label: f.group_label || materialTitle }
       : { ...f, hub_id: hubId || '', material_id: materialId || '', group_label: f.group_label || materialTitle }
   );
+  // One newsletter section can name an event the Looking Ahead list repeats:
+  // fold those same-event duplicates before saving so the hub facts list stays
+  // clean. Cross-material duplicates merge again inside insertFacts.
+  const deduped = mergeSameEventFacts(withHub);
+  if (deduped.length !== withHub.length) {
+    push(`merged ${withHub.length - deduped.length} same-event duplicate(s)`);
+  }
   if (hubId) {
-    store.insertFacts(hubId, materialId || '', withHub, true);
+    store.insertFacts(hubId, materialId || '', deduped, true);
     if (materialId) {
-      const materialScope = scopeOverride || narrowestScope(withHub);
+      const materialScope = scopeOverride || narrowestScope(deduped);
       store.updateMaterialScope(materialId, materialScope.scope, materialScope.value);
     }
   }
   push('facts saved');
-  return withHub;
+  return deduped;
 }
 
 function resolveAudience(actor, audience) {
@@ -1535,20 +1481,24 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-store
-  .initDb()
-  .then(() => {
-    server.listen(PORT, '0.0.0.0', () => {
-      console.log(`School Agent Network listening at http://0.0.0.0:${PORT}`);
-      console.log(`Model: ${MODEL} via ${API_URL}`);
-      console.log(
-        API_KEY
-          ? 'SCHOOL_AGENT_API_KEY: present (configured)'
-          : 'SCHOOL_AGENT_API_KEY: MISSING — Run will show the error in the event log'
-      );
+if (require.main === module) {
+  store
+    .initDb()
+    .then(() => {
+      server.listen(PORT, '0.0.0.0', () => {
+        console.log(`School Agent Network listening at http://0.0.0.0:${PORT}`);
+        console.log(`Model: ${MODEL} via ${API_URL}`);
+        console.log(
+          API_KEY
+            ? 'SCHOOL_AGENT_API_KEY: present (configured)'
+            : 'SCHOOL_AGENT_API_KEY: MISSING — Run will show the error in the event log'
+        );
+      });
+    })
+    .catch((err) => {
+      console.error('Could not start the local database:', err.message);
+      process.exit(1);
     });
-  })
-  .catch((err) => {
-    console.error('Could not start the local database:', err.message);
-    process.exit(1);
-  });
+}
+
+module.exports = { normalizeParentResult, normalizeFact };
