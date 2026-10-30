@@ -96,6 +96,25 @@
     font-size: 17px;
     color: #dcefe3;
   }
+  .demo-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    background: var(--amber-soft);
+    border: 1px solid var(--amber);
+    border-radius: 16px;
+    padding: 12px 16px;
+    margin: 12px 16px 0;
+  }
+  .demo-bar[hidden] { display: none; }
+  .demo-bar p {
+    margin: 0;
+    flex: 1 1 200px;
+    font-weight: 700;
+    color: var(--pine-dark);
+  }
+  .demo-bar .small-btn { flex: 0 0 auto; }
   main { padding: 20px 16px 8px; display: grid; gap: 26px; }
   /* One consistent vertical-rhythm mechanism: every section after the first
      in its container sits 28px below the previous one. */
@@ -451,6 +470,10 @@
     <h1>ParentLoop</h1>
     <p class="tagline">You’re always in the loop.</p>
   </header>
+  <div id="demoBar" class="demo-bar" hidden>
+    <p>You’re exploring as the demo family.</p>
+    <button class="small-btn" id="demoBarBtn" type="button">Start with your own family</button>
+  </div>
   <nav id="tabBar" aria-label="ParentLoop views" hidden>
     <button class="tab active" id="tabHubs" type="button" data-view="hubs">My hubs</button>
     <button class="tab" id="tabEvening" type="button" data-view="evening">Evening check</button>
@@ -713,7 +736,7 @@
 
     <section aria-label="Family controls">
       <div class="quiet-controls">
-        <button class="text-btn" id="startOverBtn" type="button">Start over</button>
+        <button class="text-btn" id="startOverBtn" type="button">Start your own family</button>
         <button class="text-btn" id="demoBtn" type="button">Switch back to demo family</button>
       </div>
     </section>
@@ -1260,6 +1283,12 @@
   const onboardingView = document.getElementById('onboardingView');
 
   const tabBar = document.getElementById('tabBar');
+  const demoBar = document.getElementById('demoBar');
+  let demoViewing = false;
+
+  function paintDemoBar() {
+    demoBar.hidden = !(demoViewing && !tabBar.hidden);
+  }
   const viewIds = ['viewHubs', 'viewEvening', 'viewFamily'];
   const tabIds = { hubs: 'tabHubs', evening: 'tabEvening', family: 'tabFamily' };
 
@@ -1278,6 +1307,7 @@
     document.getElementById('joinView').hidden = true;
     tabBar.hidden = true;
     viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
+    paintDemoBar();
     window.scrollTo(0, 0);
   }
 
@@ -1285,6 +1315,7 @@
     onboardingView.hidden = true;
     document.getElementById('joinView').hidden = true;
     tabBar.hidden = false;
+    paintDemoBar();
     showView('hubs');
   }
 
@@ -1293,6 +1324,7 @@
     tabBar.hidden = true;
     viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
     document.getElementById('joinView').hidden = false;
+    paintDemoBar();
     window.scrollTo(0, 0);
   }
 
@@ -1561,6 +1593,7 @@
     try {
       const sRes = await fetch('/api/onboarding/status');
       status = await sRes.json();
+      demoViewing = Boolean(status.profile && status.profile.is_demo);
     } catch (e) {
       // Fall back to the main view below.
     }
@@ -1690,6 +1723,7 @@
         priorities: ['never miss a food-order deadline', 'keep evenings calm — one combined nudge'],
         nudge_style: 'one short message in the evening',
       });
+      demoViewing = false;
       renderFamily(data.profile);
       const showDemo = await applySchoolAudience({ profile: data.profile });
       if (showDemo) await loadSchoolDemo();
@@ -1718,6 +1752,7 @@
 
   async function switchToDemo() {
     const data = await postJson('/api/profile/demo', {});
+    demoViewing = true;
     renderFamily(data.profile);
     const showDemo = await applySchoolAudience({ profile: data.profile });
     if (showDemo) await loadSchoolDemo();
@@ -1733,6 +1768,10 @@
 
   document.getElementById('demoBtn').addEventListener('click', function () {
     switchToDemo().catch(function () {});
+  });
+
+  document.getElementById('demoBarBtn').addEventListener('click', function () {
+    document.getElementById('startOverBtn').click();
   });
 
   document.getElementById('startOverBtn').addEventListener('click', async function () {

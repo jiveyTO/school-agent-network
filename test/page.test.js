@@ -267,3 +267,16 @@ test('page uses three tabbed views and a name-only family card', () => {
   assert.ok(PAGE.includes('grid-template-columns: 3fr 2fr'), 'desktop hub grid must be ~60/40');
   assert.ok(PAGE.includes('@media (min-width: 900px)') && PAGE.includes('max-width: 960px'));
 });
+
+test('demo viewers get a demo bar with a path to their own family', () => {
+  for (const token of ['id="demoBar"', 'id="demoBarBtn"', 'demoViewing', 'paintDemoBar',
+    'You’re exploring as the demo family.', 'Start with your own family']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  const barAt = PAGE.indexOf('id="demoBar"');
+  const tabAt = PAGE.indexOf('id="tabBar"');
+  assert.ok(barAt !== -1 && barAt < tabAt, 'demo bar sits under the header, above the tab row');
+  assert.ok(PAGE.includes('demoBar.hidden = !(demoViewing && !tabBar.hidden)'), 'bar shows for demo viewers in main views only');
+  assert.ok(PAGE.includes("document.getElementById('startOverBtn').click()"), 'bar button reuses the reset flow');
+  assert.ok(!PAGE.includes('>Start over</button>'), 'quiet control renamed to match');
+});
