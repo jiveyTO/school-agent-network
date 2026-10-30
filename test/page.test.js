@@ -230,10 +230,20 @@ test('start-a-hub guides school naming and handles duplicate school hubs', () =>
   assert.ok(PAGE.includes("match_type === 'similar'") && PAGE.includes('existing_hub'));
 });
 
-test('my hubs branches on membership: zero-hub welcome vs member hub detail', () => {
+test('my hubs branches on membership: zero-hub welcome vs member list; detail lives on the hub page', () => {
   for (const token of ['id="welcomeHubs"', 'id="welcomeHubFormSlot"', 'id="startHubCard"',
-    'id="hubViewSection"', 'id="factsSection"', 'id="logSection"', 'applyHubBranch']) {
+    'id="viewHub"', 'id="hubBackBtn"', 'applyHubBranch']) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  assert.ok(!PAGE.includes("getElementById('hubViewSection').hidden"), 'list branching must not toggle hub detail');
+  const listMarkup = PAGE.slice(PAGE.indexOf('id="viewHubs"'), PAGE.indexOf('id="viewHub"'));
+  for (const token of ['id="hubs-h"', 'id="hubsList"', 'id="startHubCard"', '+ Start a hub']) {
+    assert.ok(listMarkup.includes(token), `My hubs list must contain ${token}`);
+  }
+  for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'Shared notes', 'id="hubFacts"',
+    'id="placementCard"', 'id="hubMaterials"', 'id="addMaterialBtn"', 'id="inviteBtn"',
+    'id="hubRequests"', 'id="hubDanger"']) {
+    assert.ok(!listMarkup.includes(token), `My hubs list must not contain hub detail ${token}`);
   }
   assert.ok(PAGE.includes('Start your first hub'));
   assert.ok(PAGE.includes('A hub is your class’s or team’s shared space for newsletters and notices. One parent starts it, everyone else joins by invite.'));
@@ -247,6 +257,31 @@ test('my hubs branches on membership: zero-hub welcome vs member hub detail', ()
   assert.ok(PAGE.includes("slot.appendChild(form)") || PAGE.includes('welcomeHubFormSlot'));
   assert.ok(PAGE.includes("list.after(form)"));
   assert.ok(PAGE.includes("await loadHubs(data.hub.id)"), 'creating the first hub must re-render without reload');
+});
+
+test('hub cards open a dedicated hub view; the back control returns to the list', () => {
+  for (const token of ['id="viewHub"', 'id="hubBackBtn"', 'Back to My hubs', 'openHub', "showView('hub')"]) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
+  for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'Shared notes', 'id="hubFacts"',
+    'id="hubMaterials"', 'Add this material', 'id="placementCard"', 'Place your children in this hub',
+    'id="inviteBtn"', 'id="hubRequests"', 'id="hubDanger"', 'id="facts-h"', 'id="log-h"']) {
+    assert.ok(hubMarkup.includes(token), `hub view must render ${token}`);
+  }
+  assert.ok(hubMarkup.indexOf('id="hubBackBtn"') < hubMarkup.indexOf('id="hub-view-h"'),
+    'back control sits above the hub detail');
+  assert.ok(hubMarkup.indexOf('id="hub-view-h"') < hubMarkup.indexOf('id="facts-h"') &&
+    hubMarkup.indexOf('id="facts-h"') < hubMarkup.indexOf('id="log-h"'),
+    'hub view keeps detail, facts, and activity in order');
+  const openFn = PAGE.slice(PAGE.indexOf('async function openHub'), PAGE.indexOf('async function openHub') + 400);
+  assert.ok(openFn.includes("showView('hub')") && openFn.includes('loadHubDetail'), 'opening a hub shows the hub view and loads its detail');
+  const backFn = PAGE.slice(PAGE.indexOf("getElementById('hubBackBtn')"), PAGE.indexOf("getElementById('hubBackBtn')") + 300);
+  assert.ok(backFn.includes("showView('hubs')"), 'back control returns to the My hubs list');
+  assert.ok(PAGE.includes('openHub(b.getAttribute('), 'tapping a hub card opens the hub view');
+  assert.ok(PAGE.includes('openHub(data.hub.id)'), 'creating a hub lands on the new hub page');
+  assert.ok(PAGE.includes('await openHub(accepted.hub && accepted.hub.id)'), 'accepting an invite lands on the hub page');
+  assert.ok(PAGE.includes('renderPlacementCard'), 'placement prompt still fires from the hub detail load');
 });
 
 test('view sections share one vertical-rhythm mechanism', () => {

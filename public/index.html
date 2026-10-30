@@ -510,25 +510,6 @@
     </section>
 
     <div class="view" id="viewHubs" hidden>
-    <section aria-labelledby="newsletter-h">
-      <h2 id="newsletter-h">This week’s newsletter</h2>
-      <div class="card">
-        <p class="news-summary" id="newsSummary">Pizza orders and the uniform survey are due Friday. Picture Re-Take Day is Thursday, and the Fall Festival is Friday.</p>
-        <button class="toggle-btn" id="newsletterToggle" type="button" aria-expanded="false">Read the original</button>
-        <div class="newsletter" id="newsletterOriginal" hidden><pre id="newsletterText">Loading your newsletter…</pre></div>
-      </div>
-    </section>
-
-    <section aria-labelledby="run-h">
-      <h2 id="run-h">School updates</h2>
-      <button id="runBtn" type="button">Check for school updates</button>
-      <p class="hint" id="runStatus">Reads the newest newsletter and pulls out what matters.</p>
-      <div class="error-card" id="schoolError" hidden>
-        <p><b>That didn’t work.</b> <span id="schoolErrorText"></span></p>
-        <button class="retry-btn" id="schoolRetry" type="button">Try again</button>
-      </div>
-    </section>
-
     <section aria-labelledby="hubs-h">
       <div class="hubs-head">
         <h2 id="hubs-h">My hubs</h2>
@@ -618,6 +599,31 @@
           <p class="hint" id="hubJoinRequestStatus"></p>
         </div>
         <p class="hint" id="hubCreateStatus"></p>
+      </div>
+    </section>
+    </div>
+
+    <div class="view" id="viewHub" hidden>
+    <section aria-label="Back to hub list">
+      <button class="small-btn secondary" id="hubBackBtn" type="button">← Back to My hubs</button>
+    </section>
+
+    <section aria-labelledby="newsletter-h">
+      <h2 id="newsletter-h">This week’s newsletter</h2>
+      <div class="card">
+        <p class="news-summary" id="newsSummary">Pizza orders and the uniform survey are due Friday. Picture Re-Take Day is Thursday, and the Fall Festival is Friday.</p>
+        <button class="toggle-btn" id="newsletterToggle" type="button" aria-expanded="false">Read the original</button>
+        <div class="newsletter" id="newsletterOriginal" hidden><pre id="newsletterText">Loading your newsletter…</pre></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="run-h">
+      <h2 id="run-h">School updates</h2>
+      <button id="runBtn" type="button">Check for school updates</button>
+      <p class="hint" id="runStatus">Reads the newest newsletter and pulls out what matters.</p>
+      <div class="error-card" id="schoolError" hidden>
+        <p><b>That didn’t work.</b> <span id="schoolErrorText"></span></p>
+        <button class="retry-btn" id="schoolRetry" type="button">Try again</button>
       </div>
     </section>
 
@@ -1240,8 +1246,8 @@
     if (!link) return;
     ev.preventDefault();
     const hubId = link.getAttribute('data-goto-hub');
-    showView('hubs');
-    if (hubId) loadHubDetail(hubId);
+    if (hubId) openHub(hubId);
+    else showView('hubs');
   });
 
   function renderParentResult(data) {
@@ -1304,17 +1310,25 @@
   function paintDemoBar() {
     demoBar.hidden = !(demoViewing && !tabBar.hidden);
   }
-  const viewIds = ['viewHubs', 'viewEvening', 'viewFamily'];
+  const viewIds = ['viewHubs', 'viewHub', 'viewEvening', 'viewFamily'];
   const tabIds = { hubs: 'tabHubs', evening: 'tabEvening', family: 'tabFamily' };
 
   function showView(name) {
     viewIds.forEach(function (id) {
       document.getElementById(id).hidden = id !== 'view' + name.charAt(0).toUpperCase() + name.slice(1);
     });
+    const tabKey = name === 'hub' ? 'hubs' : name;
     Object.keys(tabIds).forEach(function (key) {
-      document.getElementById(tabIds[key]).classList.toggle('active', key === name);
+      document.getElementById(tabIds[key]).classList.toggle('active', key === tabKey);
     });
     window.scrollTo(0, 0);
+  }
+
+  async function openHub(hubId) {
+    if (hubId) currentHubId = hubId;
+    markSelectedHub();
+    showView('hub');
+    if (currentHubId) await loadHubDetail(currentHubId);
   }
 
   var onboardingMode = 'new';
@@ -1660,14 +1674,13 @@
       }).join('');
       list.querySelectorAll('[data-hub-id]').forEach(function (b) {
         b.addEventListener('click', function () {
-          loadHubDetail(b.getAttribute('data-hub-id'));
+          openHub(b.getAttribute('data-hub-id'));
         });
       });
     }
     const hasHubs = currentHubs.length > 0;
     applyHubBranch(hasHubs);
     if (document.getElementById('hubKind').value === 'school') prefillSchoolLocation();
-    if (currentHubId) await loadHubDetail(currentHubId);
     markSelectedHub();
     return currentHubs;
   }
@@ -1681,9 +1694,6 @@
     if (hasHubs) {
       welcome.hidden = true;
       list.hidden = false;
-      document.getElementById('hubViewSection').hidden = false;
-      document.getElementById('factsSection').hidden = false;
-      document.getElementById('logSection').hidden = false;
       toggle.hidden = false;
       toggle.setAttribute('aria-expanded', startHubOpen ? 'true' : 'false');
       form.hidden = !startHubOpen;
@@ -1694,9 +1704,6 @@
       toggle.hidden = true;
       welcome.hidden = false;
       list.hidden = true;
-      document.getElementById('hubViewSection').hidden = true;
-      document.getElementById('factsSection').hidden = true;
-      document.getElementById('logSection').hidden = true;
     }
   }
 
@@ -1740,12 +1747,14 @@
           b.addEventListener('click', async function () {
             await postJson('/api/hubs/' + encodeURIComponent(hubId) + '/join-requests/' + encodeURIComponent(b.getAttribute('data-approve')) + '/approve', {});
             await loadHubs(hubId);
+            await loadHubDetail(hubId);
           });
         });
         document.querySelectorAll('[data-decline]').forEach(function (b) {
           b.addEventListener('click', async function () {
             await postJson('/api/hubs/' + encodeURIComponent(hubId) + '/join-requests/' + encodeURIComponent(b.getAttribute('data-decline')) + '/decline', {});
             await loadHubs(hubId);
+            await loadHubDetail(hubId);
           });
         });
       } else {
@@ -1780,6 +1789,7 @@
       currentHubId = '';
       startHubOpen = false;
       await loadHubs();
+      showView('hubs');
     } catch (e) {
       statusEl.textContent = e.message;
     } finally {
@@ -1958,11 +1968,12 @@
       const pendingJoin = sessionStorage.getItem('pendingJoinToken');
       if (pendingJoin) {
         try {
-          await postJson('/api/join/' + encodeURIComponent(pendingJoin) + '/accept', {});
+          const accepted = await postJson('/api/join/' + encodeURIComponent(pendingJoin) + '/accept', {});
           sessionStorage.removeItem('pendingJoinToken');
           statusEl.textContent = 'You’re in! Here’s your hub.';
-          await loadHubs();
+          await loadHubs(accepted.hub && accepted.hub.id);
           showMain();
+          await openHub(accepted.hub && accepted.hub.id);
           return;
         } catch (e) {
           // Fall through to the normal next steps.
@@ -2019,6 +2030,11 @@
     const allOpen = boxes.length > 0 && boxes.every(function (d) { return d.open; });
     boxes.forEach(function (d) { d.open = !allOpen; });
     paintGroupsToggle();
+  });
+
+  document.getElementById('hubBackBtn').addEventListener('click', function () {
+    showView('hubs');
+    loadHubs();
   });
 
   document.getElementById('startHubToggle').addEventListener('click', function () {
@@ -2161,6 +2177,7 @@
       document.getElementById('parseLinkStatus').textContent = '';
       startHubOpen = false;
       await loadHubs(data.hub.id);
+      openHub(data.hub.id);
     } catch (e) {
       const existing = e && e.status === 409 && e.data && e.data.existing_hub;
       if (existing) {
@@ -2284,6 +2301,7 @@
       statusEl.textContent = 'Added — ' + data.facts_added + ' shared notes found.';
       document.getElementById('materialText').value = '';
       await loadHubs(hubId);
+      await loadHubDetail(hubId);
     } catch (e) {
       statusEl.textContent = e.message;
     } finally {
@@ -2343,10 +2361,11 @@
   document.getElementById('joinAcceptBtn').addEventListener('click', async function () {
     const statusEl = document.getElementById('joinStatus');
     try {
-      await postJson('/api/join/' + encodeURIComponent(joinToken) + '/accept', {});
+      const accepted = await postJson('/api/join/' + encodeURIComponent(joinToken) + '/accept', {});
       statusEl.textContent = 'You’re in! Here’s your hub.';
-      await loadHubs();
+      await loadHubs(accepted.hub && accepted.hub.id);
       showMain();
+      await openHub(accepted.hub && accepted.hub.id);
     } catch (e) {
       if (e.message && e.message.indexOf('Set up your family') !== -1) {
         sessionStorage.setItem('pendingJoinToken', joinToken);
@@ -2366,10 +2385,11 @@
         const sRes = await fetch('/api/onboarding/status');
         const s = await sRes.json();
         if (s.hasActiveProfile) {
-          await postJson('/api/join/' + encodeURIComponent(pending) + '/accept', {});
+          const accepted = await postJson('/api/join/' + encodeURIComponent(pending) + '/accept', {});
           sessionStorage.removeItem('pendingJoinToken');
-          await loadHubs();
+          await loadHubs(accepted.hub && accepted.hub.id);
           showMain();
+          await openHub(accepted.hub && accepted.hub.id);
         }
       } catch (e) {
         // The parent can tap Join again.
