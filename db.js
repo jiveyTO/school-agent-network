@@ -202,6 +202,11 @@ async function initDb() {
     key TEXT PRIMARY KEY,
     value TEXT
   )`);
+  run(`CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    active_profile_id TEXT,
+    created_at TEXT NOT NULL
+  )`);
   run(`CREATE TABLE IF NOT EXISTS gmail_tokens (
     profile_id TEXT PRIMARY KEY,
     email TEXT,
@@ -546,21 +551,55 @@ function getProfileForRun() {
   return getActiveProfile() || getDemoProfile();
 }
 
-function setActiveProfile(id) {
-  setSetting('active_profile_id', id || null);
-  return getActiveProfile();
-}
-
-function clearActiveProfile() {
-  setSetting('active_profile_id', null);
-}
-
 function activateDemoProfile() {
   seedDemoIfNeeded();
   const demo = getDemoRow();
   if (!demo) return null;
-  setSetting('active_profile_id', demo.id);
   return rowToProfile(demo);
+}
+
+// Test and migration-simulation only: recreates the pre-sessions global
+// active-profile pointer so a server can boot against a legacy-shaped
+// database. Production code never writes this key.
+function setLegacyActiveProfile(id) {
+  setSetting('active_profile_id', id || null);
+}
+
+function createSession() {
+  const id = crypto.randomUUID();
+  // One-time legacy migration: the first session minted while a pre-sessions
+  // global pointer exists adopts it, then the pointer is deleted so no later
+  // session can inherit another visitor's profile.
+  const adopted = getSetting('active_profile_id') || null;
+  if (adopted) run('DELETE FROM settings WHERE key = ?', ['active_profile_id']);
+  run('INSERT INTO sessions (id, active_profile_id, created_at) VALUES (?, ?, ?)', [
+    id,
+    adopted,
+    new Date().toISOString(),
+  ]);
+  persist();
+  return getSession(id);
+}
+
+function getSession(id) {
+  if (!id) return null;
+  const row = one('SELECT * FROM sessions WHERE id = ?', [String(id)]);
+  return row || null;
+}
+
+function setSessionProfile(sessionId, profileId) {
+  if (!sessionId) return null;
+  run('UPDATE sessions SET active_profile_id = ? WHERE id = ?', [profileId || null, String(sessionId)]);
+  persist();
+  return getSession(sessionId);
+}
+
+function getSessionViewer(session) {
+  if (session && session.active_profile_id) {
+    const row = getProfileRowById(session.active_profile_id);
+    if (row) return rowToProfile(row);
+  }
+  return getDemoProfile();
 }
 
 function createProfile(input) {
@@ -592,7 +631,6 @@ function createProfile(input) {
       [crypto.randomUUID(), id, String(kid.name || ''), String(kid.grade || ''), String(kid.class || kid.class_name || ''), now]
     );
   }
-  setSetting('active_profile_id', id);
   persist();
   return rowToProfile(getProfileRowById(id));
 }
@@ -1252,9 +1290,12 @@ module.exports = {
   getActiveProfile,
   getDemoProfile,
   getProfileForRun,
-  setActiveProfile,
-  clearActiveProfile,
   activateDemoProfile,
+  createSession,
+  setLegacyActiveProfile,
+  getSession,
+  setSessionProfile,
+  getSessionViewer,
   createProfile,
   updateProfileActions,
   listSources,

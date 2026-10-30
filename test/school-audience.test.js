@@ -26,8 +26,17 @@ async function waitForServer() {
   throw new Error('Test server did not start.');
 }
 
+let jarCookie = '';
 async function jf(urlPath, options) {
-  const res = await fetch(`${BASE}${urlPath}`, options || {});
+  const opts = Object.assign({}, options || {});
+  opts.headers = Object.assign({}, (options && options.headers) || {});
+  if (jarCookie) opts.headers.Cookie = jarCookie;
+  const res = await fetch(`${BASE}${urlPath}`, opts);
+  const setCookie = res.headers.get('set-cookie');
+  if (setCookie) {
+    const m = setCookie.match(/parentloop_session=([^;]+)/);
+    if (m) jarCookie = 'parentloop_session=' + m[1];
+  }
   const text = await res.text();
   let data = {};
   try {

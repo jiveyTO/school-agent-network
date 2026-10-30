@@ -20,8 +20,10 @@ async function waitForServer() {
   const deadline = Date.now() + 25000;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${BASE}/api/onboarding/status`);
-      if (res.ok) return;
+      // Probe through the jarred client: a bare probe would mint its own
+      // session and burn the one-time legacy adoption before tests run.
+      const probed = await jf('/api/onboarding/status');
+      if (probed.res.ok) return;
     } catch {
       // Still starting.
     }
@@ -30,8 +32,17 @@ async function waitForServer() {
   throw new Error('Test server did not start.');
 }
 
+let jarCookie = '';
 async function jf(urlPath, options) {
-  const res = await fetch(`${BASE}${urlPath}`, options || {});
+  const opts = Object.assign({}, options || {});
+  opts.headers = Object.assign({}, (options && options.headers) || {});
+  if (jarCookie) opts.headers.Cookie = jarCookie;
+  const res = await fetch(`${BASE}${urlPath}`, opts);
+  const setCookie = res.headers.get('set-cookie');
+  if (setCookie) {
+    const m = setCookie.match(/parentloop_session=([^;]+)/);
+    if (m) jarCookie = 'parentloop_session=' + m[1];
+  }
   const text = await res.text();
   let data = {};
   try {
@@ -56,9 +67,11 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
   process.env.APP_DB_PATH = dbPath;
 
   // A profile that exists before the server boots must survive migration.
+  // The legacy pointer recreates the pre-sessions database shape, where the
+  // seeded profile was the global active one.
   const db = require('../db');
   await db.initDb();
-  db.createProfile({
+  const preExisting = db.createProfile({
     parent_name: 'Pre Existing',
     child_name: 'Kid Existing',
     grade: 'Grade 3',
@@ -68,6 +81,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     nudge_style: 'one short message in the evening',
     actions: {},
   });
+  db.setLegacyActiveProfile(preExisting.id);
 
   child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,

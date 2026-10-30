@@ -524,7 +524,7 @@ async function callParentMetaApi(profile, facts, simulatedLabel) {
   return postMetaChat(system, user, 8192);
 }
 
-async function runParentAgent(logs, simulatedLabel) {
+async function runParentAgent(logs, simulatedLabel, viewer) {
   const push = (message) => logs.push({ at: nowIso(), message });
   const simulated = simulatedLabel || SIMULATED_NOW_LABEL;
   push('evening check started');
@@ -534,7 +534,7 @@ async function runParentAgent(logs, simulatedLabel) {
       'SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.'
     );
   }
-  const profile = store.getProfileForRun();
+  const profile = viewer;
   if (!profile) {
     throw new Error('No family profile found — finish setup or switch to the demo family.');
   }
@@ -683,6 +683,40 @@ function sendJson(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(body);
+}
+
+const SESSION_COOKIE = 'parentloop_session';
+
+function parseCookies(req) {
+  const out = {};
+  const header = req.headers.cookie || '';
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const name = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (name) out[name] = decodeURIComponent(value);
+  }
+  return out;
+}
+
+function sessionUsesSecureCookie(req) {
+  const forwarded = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  if (forwarded === 'https') return true;
+  if (forwarded === 'http') return false;
+  return Boolean(req.socket && req.socket.encrypted);
+}
+
+function ensureSession(req, res) {
+  const cookies = parseCookies(req);
+  let session = cookies[SESSION_COOKIE] ? store.getSession(cookies[SESSION_COOKIE]) : null;
+  if (!session) {
+    session = store.createSession();
+    const parts = [SESSION_COOKIE + '=' + encodeURIComponent(session.id), 'Path=/', 'HttpOnly', 'SameSite=Lax'];
+    if (sessionUsesSecureCookie(req)) parts.push('Secure');
+    res.setHeader('Set-Cookie', parts.join('; '));
+  }
+  return session;
 }
 
 function readJsonBody(req) {
@@ -863,6 +897,7 @@ function classifyGmailMessage(headers, snippet, body) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  const session = ensureSession(req, res);
   try {
     if (req.method === 'GET' && url.pathname === '/') {
       const html = fs.readFileSync(INDEX_PATH, 'utf8');
@@ -871,7 +906,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/newsletter') {
-      const viewer = store.getActiveProfile();
+      const viewer = store.getSessionViewer(session);
       if (viewer && !viewer.is_demo) {
         sendJson(res, 200, { text: '' });
         return;
@@ -881,7 +916,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/facts') {
-      const viewer = store.getActiveProfile();
+      const viewer = store.getSessionViewer(session);
       if (viewer && !viewer.is_demo) {
         sendJson(res, 200, { facts: [] });
         return;
@@ -891,7 +926,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/family-profile') {
-      const profile = store.getProfileForRun();
+      const profile = store.getSessionViewer(session);
       if (!profile) {
         sendJson(res, 404, { error: 'family profile not found' });
         return;
@@ -900,7 +935,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/onboarding/status') {
-      const active = store.getActiveProfile();
+      const active = store.getSessionViewer(session);
       sendJson(res, 200, {
         hasActiveProfile: Boolean(active),
         has_active_profile: Boolean(active),
@@ -927,25 +962,27 @@ const server = http.createServer(async (req, res) => {
         nudge_style: body.nudge_style,
         actions: body.actions,
       });
+      store.setSessionProfile(session.id, profile.id);
       sendJson(res, 200, { ok: true, profile });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/profile/reset') {
-      store.clearActiveProfile();
+      store.setSessionProfile(session.id, null);
       sendJson(res, 200, { ok: true, hasActiveProfile: false, isDemo: false });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/profile/demo') {
-      const profile = store.activateDemoProfile();
+      const profile = store.getDemoProfile();
       if (!profile) {
         sendJson(res, 404, { error: 'Demo family is not available.' });
         return;
       }
+      store.setSessionProfile(session.id, profile.id);
       sendJson(res, 200, { ok: true, profile, isDemo: true });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/sources') {
-      const active = store.getActiveProfile();
+      const active = store.getSessionViewer(session);
       if (!active) {
         sendJson(res, 200, { sources: [] });
         return;
@@ -954,7 +991,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/sources') {
-      const active = store.getActiveProfile();
+      const active = store.getSessionViewer(session);
       if (!active) {
         sendJson(res, 400, { error: 'Save your family first, then save each source.' });
         return;
@@ -984,7 +1021,7 @@ const server = http.createServer(async (req, res) => {
         if (!text) throw new Error('Paste your newsletter or notice first.');
         const hub = body.hub_id ? store.getHub(body.hub_id) : store.getDemoHub();
         if (!hub) throw new Error('Choose a hub first.');
-        const actor = store.getProfileForRun();
+        const actor = store.getSessionViewer(session);
         const override = resolveAudience(actor, body.audience);
         material = store.createMaterial(hub.id, actor ? actor.id : '', 'paste', String(body.title || 'Pasted newsletter'), text, 'stored');
         logs.push({ at: nowIso(), message: 'pasted newsletter received' });
@@ -1013,7 +1050,7 @@ const server = http.createServer(async (req, res) => {
         });
         return;
       }
-      const active = store.getActiveProfile();
+      const active = store.getSessionViewer(session);
       if (!active) {
         sendJson(res, 400, { error: 'Save your family first, then connect Gmail.' });
         return;
@@ -1025,7 +1062,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/email/callback') {
       try {
         const code = url.searchParams.get('code');
-        const profileId = url.searchParams.get('state') || (store.getActiveProfile() || {}).id;
+        const profileId = url.searchParams.get('state') || (store.getSessionViewer(session) || {}).id;
         if (!code) throw new Error('Google did not return a sign-in code.');
         if (!profileId) throw new Error('Save your family first, then connect Gmail.');
         if (!gmailConfigured()) throw new Error('Gmail setup is needed first.');
@@ -1057,7 +1094,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/email/status') {
-      const active = store.getActiveProfile();
+      const active = store.getSessionViewer(session);
       const tokens = active ? store.getGmailTokens(active.id) : null;
       sendJson(res, 200, {
         connected: Boolean(tokens && tokens.access_token),
@@ -1070,7 +1107,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/email/scan') {
       try {
-        const active = store.getActiveProfile();
+        const active = store.getSessionViewer(session);
         if (!active) throw new Error('Save your family first, then connect Gmail.');
         const accessToken = await getGmailAccessToken(active.id);
         const school = (active.school || '').replace(/"/g, '');
@@ -1144,7 +1181,7 @@ const server = http.createServer(async (req, res) => {
       const logs = [];
       let material = null;
       try {
-        const active = store.getActiveProfile();
+        const active = store.getSessionViewer(session);
         if (!active) throw new Error('Save your family first, then connect Gmail.');
         const body = await readJsonBody(req);
         if (!body.hub_id) throw new Error('Choose a hub for this newsletter first.');
@@ -1180,7 +1217,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/email/disconnect') {
       try {
-        const active = store.getActiveProfile();
+        const active = store.getSessionViewer(session);
         if (active) {
           const tokens = store.getGmailTokens(active.id);
           if (tokens && (tokens.refresh_token || tokens.access_token)) {
@@ -1218,7 +1255,7 @@ const server = http.createServer(async (req, res) => {
         } catch {
           // No body is fine; the default simulated moment applies.
         }
-        const result = await runParentAgent(logs, simulatedLabel);
+        const result = await runParentAgent(logs, simulatedLabel, store.getSessionViewer(session));
         sendJson(res, 200, {
           ok: true,
           simulated_now: SIMULATED_NOW_LABEL,
@@ -1236,7 +1273,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/run') {
       const logs = [];
       try {
-        const actor = store.getActiveProfile();
+        const actor = store.getSessionViewer(session);
         if (actor && !actor.is_demo) {
           throw new Error('School demo updates appear under the demo family. Switch families to run this demo check.');
         }
@@ -1267,7 +1304,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/hubs') {
-      const actor = store.getProfileForRun();
+      const actor = store.getSessionViewer(session);
       sendJson(res, 200, { hubs: actor ? store.listHubsForProfile(actor.id) : [] });
       return;
     }
@@ -1308,7 +1345,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/hubs') {
-      const actor = store.getProfileForRun();
+      const actor = store.getSessionViewer(session);
       if (!actor) { sendJson(res, 400, { error: 'Set up your family first.' }); return; }
       const body = await readJsonBody(req);
       const kinds = ['school', 'team', 'activity', 'other'];
@@ -1350,7 +1387,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'DELETE' && hubMatch) {
-      const actor = store.getProfileForRun();
+      const actor = store.getSessionViewer(session);
       const hub = store.getHub(hubMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || store.getMemberRole(hub.id, actor.id) !== 'admin') { sendJson(res, 403, { error: 'Only hub admins can delete this hub.' }); return; }
@@ -1359,7 +1396,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && hubMatch) {
-      const actor = store.getProfileForRun();
+      const actor = store.getSessionViewer(session);
       const hub = store.getHub(hubMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can see this hub.' }); return; }
@@ -1372,7 +1409,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && hubMaterialTextMatch) {
-      const actor = store.getProfileForRun();
+      const actor = store.getSessionViewer(session);
       const hub = store.getHub(hubMaterialTextMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can read this hub.' }); return; }
@@ -1382,7 +1419,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && hubMaterialsMatch) {
-      const actor = store.getProfileForRun();
+      const actor = store.getSessionViewer(session);
       const hub = store.getHub(hubMaterialsMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can add material to this hub.' }); return; }
@@ -1422,7 +1459,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && hubInvitesMatch) {
-      const actor = store.getProfileForRun();
+      const actor = store.getSessionViewer(session);
       const hub = store.getHub(hubInvitesMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can invite parents.' }); return; }
@@ -1431,7 +1468,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && hubInviteRevokeMatch) {
-      const actor = store.getProfileForRun();
+      const actor = store.getSessionViewer(session);
       const hub = store.getHub(hubInviteRevokeMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can manage invites.' }); return; }
@@ -1454,7 +1491,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && joinAcceptMatch) {
       const info = store.getInvite(joinAcceptMatch[1]);
       if (!info) { sendJson(res, 404, { error: 'That invite link is no longer available.' }); return; }
-      const active = store.getActiveProfile();
+      const active = store.getSessionViewer(session);
       if (!active) {
         sendJson(res, 400, { error: 'Set up your family first, then accept the invite.', needsOnboarding: true, needs_onboarding: true });
         return;
@@ -1466,7 +1503,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && hubRequestsMatch) {
       const hub = store.getHub(hubRequestsMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
-      const active = store.getActiveProfile();
+      const active = store.getSessionViewer(session);
       if (!active) { sendJson(res, 400, { error: 'Set up your family first.', needsOnboarding: true }); return; }
       if (store.isMember(hub.id, active.id)) { sendJson(res, 200, { ok: true, alreadyMember: true }); return; }
       const request = store.createJoinRequest(hub.id, active.id);
@@ -1474,7 +1511,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && hubRequestsMatch) {
-      const actor = store.getProfileForRun();
+      const actor = store.getSessionViewer(session);
       const hub = store.getHub(hubRequestsMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || store.getMemberRole(hub.id, actor.id) !== 'admin') { sendJson(res, 403, { error: 'Only hub admins can see requests.' }); return; }
@@ -1482,7 +1519,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && hubRequestDecideMatch) {
-      const actor = store.getProfileForRun();
+      const actor = store.getSessionViewer(session);
       const hub = store.getHub(hubRequestDecideMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || store.getMemberRole(hub.id, actor.id) !== 'admin') { sendJson(res, 403, { error: 'Only hub admins can decide requests.' }); return; }
