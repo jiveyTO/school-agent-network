@@ -96,6 +96,35 @@
     font-size: 17px;
     color: #dcefe3;
   }
+  #authArea {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin-top: 14px;
+  }
+  #authArea[hidden] { display: none; }
+  .auth-btn {
+    display: inline-block;
+    background: #fff;
+    color: var(--pine-dark);
+    font-size: 14px;
+    font-weight: 700;
+    border: 1px solid #fff;
+    border-radius: 999px;
+    padding: 8px 16px;
+    cursor: pointer;
+    text-decoration: none;
+    font-family: inherit;
+  }
+  .auth-btn.secondary {
+    background: transparent;
+    color: #fff;
+  }
+  #signedInAs { font-size: 14px; font-weight: 600; color: #dcefe3; }
+  #signedInAs[hidden], #signInBtn[hidden], #signOutBtn[hidden] { display: none; }
+  .auth-error { margin: 10px 0 0; font-size: 14px; color: #ffe1a8; }
+  .auth-error[hidden] { display: none; }
   .demo-bar {
     display: flex;
     flex-wrap: wrap;
@@ -469,6 +498,12 @@
     <span class="demo-badge">Demo — fictional school &amp; family</span>
     <h1>ParentLoop</h1>
     <p class="tagline">You’re always in the loop.</p>
+    <div id="authArea">
+      <a class="auth-btn" id="signInBtn" href="/api/auth/login" hidden>Sign in with Google</a>
+      <span id="signedInAs" hidden>Signed in as <span id="signedInEmail"></span></span>
+      <button class="auth-btn secondary" id="signOutBtn" type="button" hidden>Sign out</button>
+    </div>
+    <p class="auth-error" id="authError" hidden></p>
   </header>
   <div id="demoBar" class="demo-bar" hidden>
     <p>You’re exploring as the demo family.</p>
@@ -1813,8 +1848,48 @@
     return true;
   }
 
+  async function loadAuth() {
+    const signInBtn = document.getElementById('signInBtn');
+    const signedInAs = document.getElementById('signedInAs');
+    const signedInEmail = document.getElementById('signedInEmail');
+    const signOutBtn = document.getElementById('signOutBtn');
+    const authError = document.getElementById('authError');
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('signin') === 'error') {
+        authError.textContent = params.get('message') || 'Google sign-in did not work. Please try again.';
+        authError.hidden = false;
+      }
+      const aRes = await fetch('/api/auth/status');
+      const auth = await aRes.json();
+      if (auth && auth.signed_in) {
+        signInBtn.hidden = true;
+        signedInEmail.textContent = auth.email || 'your Google account';
+        signedInAs.hidden = false;
+        signOutBtn.hidden = false;
+      } else {
+        signInBtn.hidden = false;
+        signedInAs.hidden = true;
+        signOutBtn.hidden = true;
+      }
+    } catch (e) {
+      signInBtn.hidden = false;
+      signedInAs.hidden = true;
+      signOutBtn.hidden = true;
+    }
+  }
+
   async function loadInitial() {
     let status = { hasActiveProfile: false, isDemo: false, profile: null };
+    await loadAuth();
+    document.getElementById('signOutBtn').addEventListener('click', async function () {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } catch (e) {
+        // Signed-out state is restored from the server below regardless.
+      }
+      window.location.href = '/';
+    });
     try {
       const sRes = await fetch('/api/onboarding/status');
       status = await sRes.json();

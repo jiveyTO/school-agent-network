@@ -51,6 +51,8 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
+const LOGIN_SCOPES = 'openid email profile';
+const TEST_AUTH_ENABLED = process.env.PARENTLOOP_TEST_AUTH === '1';
 
 const FACT_TYPES = ['deadline', 'event', 'requirement', 'change', 'announcement'];
 
@@ -898,6 +900,36 @@ async function googleTokenRequest(params) {
   return data;
 }
 
+function googleLoginUrl(req, state) {
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: `${publicBaseUrl(req)}/api/auth/callback`,
+    response_type: 'code',
+    scope: LOGIN_SCOPES,
+    state,
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+// Identity scopes only (openid email profile) — never Gmail scopes. Verified
+// server-side via the userinfo endpoint; nothing token-like leaves the server.
+async function googleUserinfo(accessToken) {
+  const res = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const text = await res.text();
+  let data = {};
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = {};
+  }
+  if (!res.ok || !data.sub) {
+    throw new Error('Google sign-in failed (identity check). Please try signing in again.');
+  }
+  return { sub: String(data.sub), email: String(data.email || '') };
+}
+
 async function gmailFetch(accessToken, urlPath) {
   const res = await fetch(`https://gmail.googleapis.com/gmail/v1/${urlPath}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -1051,7 +1083,83 @@ const server = http.createServer(async (req, res) => {
         is_demo: Boolean(active && active.is_demo),
         needsOnboarding: !(active && !active.is_demo),
         profile: active,
+        auth: store.getSessionIdentity(session),
       });
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/auth/login') {
+      if (!gmailConfigured()) {
+        sendJson(res, 400, {
+          error: 'Google sign-in is not set up yet. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to .env.',
+          setup_needed: true,
+        });
+        return;
+      }
+      const state = store.createLoginState(session.id);
+      res.writeHead(302, { Location: googleLoginUrl(req, state) });
+      res.end();
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/auth/callback') {
+      try {
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state') || '';
+        if (!code) throw new Error('Google did not return a sign-in code.');
+        if (!store.consumeLoginState(state, session.id)) {
+          throw new Error('This sign-in attempt expired. Please try signing in again.');
+        }
+        if (!gmailConfigured()) throw new Error('Google sign-in is not set up yet.');
+        const tokens = await googleTokenRequest({
+          code,
+          client_id: GOOGLE_CLIENT_ID,
+          client_secret: GOOGLE_CLIENT_SECRET,
+          redirect_uri: `${publicBaseUrl(req)}/api/auth/callback`,
+          grant_type: 'authorization_code',
+        });
+        const identity = await googleUserinfo(tokens.access_token);
+        store.completeGoogleSignIn(session.id, identity.sub, identity.email);
+        res.writeHead(302, { Location: '/' });
+        res.end();
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        res.writeHead(302, {
+          Location: `/?signin=error&message=${encodeURIComponent(message)}`,
+        });
+        res.end();
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/auth/status') {
+      sendJson(res, 200, {
+        ...store.getSessionIdentity(session),
+        configured: gmailConfigured(),
+        setup_needed: !gmailConfigured(),
+      });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
+      store.signOutSession(session.id);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    // Test-only sign-in completion: runs the exact linking logic the OAuth
+    // callback runs, without Google network calls. Enabled only when the
+    // server boots with PARENTLOOP_TEST_AUTH=1 (never set in production).
+    if (req.method === 'POST' && url.pathname === '/api/auth/test-complete') {
+      if (!TEST_AUTH_ENABLED) {
+        sendJson(res, 404, { error: 'not found' });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const sub = String(body.sub || '').trim();
+      const email = String(body.email || '').trim();
+      if (!sub) {
+        sendJson(res, 400, { error: 'sub is required' });
+        return;
+      }
+      const result = store.completeGoogleSignIn(session.id, sub, email);
+      const fresh = store.getSession(session.id);
+      sendJson(res, 200, { ok: true, ...store.getSessionIdentity(fresh), profile: result && result.profile });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/profile') {

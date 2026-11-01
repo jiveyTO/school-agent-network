@@ -334,6 +334,13 @@ async function initDb() {
   run(`CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     active_profile_id TEXT,
+    google_sub TEXT,
+    google_email TEXT,
+    created_at TEXT NOT NULL
+  )`);
+  run(`CREATE TABLE IF NOT EXISTS login_states (
+    state TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`);
   run(`CREATE TABLE IF NOT EXISTS gmail_tokens (
@@ -446,6 +453,10 @@ async function initDb() {
   addColumnIfMissing('hubs', 'city', "city TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'province', "province TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'country', "country TEXT DEFAULT ''");
+  addColumnIfMissing('profiles', 'google_sub', "google_sub TEXT DEFAULT ''");
+  addColumnIfMissing('profiles', 'google_email', "google_email TEXT DEFAULT ''");
+  addColumnIfMissing('sessions', 'google_sub', "google_sub TEXT DEFAULT ''");
+  addColumnIfMissing('sessions', 'google_email', "google_email TEXT DEFAULT ''");
   backfillSchoolKeys();
   persist();
   seedDemoHubs();
@@ -905,6 +916,101 @@ function getSessionViewer(session) {
     if (row) return rowToProfile(row);
   }
   return getDemoProfile();
+}
+
+// Account login (Google identity <-> family linking). The link lives on the
+// family profile row (google_sub + email) so it survives in the same durable
+// store as everything else; the signed-in identity also lives on the session
+// row so a signed-in session without a family yet (onboarding) still renders
+// "Signed in as <email>".
+function getProfileByGoogleSub(sub) {
+  if (!sub) return null;
+  return rowToProfile(one('SELECT * FROM profiles WHERE google_sub = ? LIMIT 1', [String(sub)]));
+}
+
+function setProfileGoogleLink(profileId, sub, email) {
+  const row = getProfileRowById(profileId);
+  if (!row || row.is_demo) return null;
+  run('UPDATE profiles SET google_sub = ?, google_email = ? WHERE id = ?', [
+    String(sub || ''),
+    String(email || ''),
+    String(profileId),
+  ]);
+  persist();
+  return rowToProfile(getProfileRowById(profileId));
+}
+
+function getSessionIdentity(session) {
+  if (!session) return { signed_in: false, email: '' };
+  const sub = session.google_sub || '';
+  return { signed_in: Boolean(sub), email: sub ? session.google_email || '' : '' };
+}
+
+function setSessionIdentity(sessionId, sub, email) {
+  if (!sessionId) return null;
+  run('UPDATE sessions SET google_sub = ?, google_email = ? WHERE id = ?', [
+    sub ? String(sub) : null,
+    sub ? String(email || '') : null,
+    String(sessionId),
+  ]);
+  persist();
+  return getSession(sessionId);
+}
+
+// One-time OAuth state nonce bound to the session that started the login.
+// Consumed (deleted) by the callback; stale nonces are pruned on mint.
+function createLoginState(sessionId) {
+  run("DELETE FROM login_states WHERE created_at < datetime('now', '-30 minutes')");
+  const state = crypto.randomUUID();
+  run('INSERT INTO login_states (state, session_id, created_at) VALUES (?, ?, ?)', [
+    state,
+    String(sessionId),
+    new Date().toISOString(),
+  ]);
+  persist();
+  return state;
+}
+
+function consumeLoginState(state, sessionId) {
+  if (!state) return false;
+  const row = one('SELECT * FROM login_states WHERE state = ?', [String(state)]);
+  if (!row) return false;
+  run('DELETE FROM login_states WHERE state = ?', [String(state)]);
+  persist();
+  return row.session_id === String(sessionId);
+}
+
+// Shared sign-in completion used by the real OAuth callback and (under a
+// test-only env gate in server.js) by tests. Rules: (a) an account that
+// already owns a family wins — the session switches to it, no merging;
+// (b) otherwise the session's own non-demo family is attached to the
+// account; (c) the demo family is never attachable — signing in while
+// viewing it lands on the account family or on onboarding.
+function completeGoogleSignIn(sessionId, sub, email) {
+  const session = getSession(sessionId);
+  if (!session || !sub) return null;
+  const accountProfile = getProfileByGoogleSub(sub);
+  if (accountProfile && !accountProfile.is_demo) {
+    setSessionProfile(sessionId, accountProfile.id);
+    setSessionIdentity(sessionId, sub, email);
+    return { profile: getProfileByGoogleSub(sub), attached: false, switched: true };
+  }
+  const currentRow = session.active_profile_id ? getProfileRowById(session.active_profile_id) : null;
+  if (currentRow && !currentRow.is_demo) {
+    const linked = setProfileGoogleLink(currentRow.id, sub, email);
+    setSessionIdentity(sessionId, sub, email);
+    return { profile: linked, attached: true, switched: false };
+  }
+  setSessionProfile(sessionId, null);
+  setSessionIdentity(sessionId, sub, email);
+  return { profile: null, attached: false, switched: false };
+}
+
+function signOutSession(sessionId) {
+  if (!sessionId) return null;
+  setSessionIdentity(sessionId, null, '');
+  setSessionProfile(sessionId, null);
+  return getSession(sessionId);
 }
 
 function createProfile(input) {
@@ -1716,6 +1822,14 @@ module.exports = {
   getSession,
   setSessionProfile,
   getSessionViewer,
+  getProfileByGoogleSub,
+  setProfileGoogleLink,
+  getSessionIdentity,
+  setSessionIdentity,
+  createLoginState,
+  consumeLoginState,
+  completeGoogleSignIn,
+  signOutSession,
   createProfile,
   updateProfileNames,
   __testSetChildLegacy,
