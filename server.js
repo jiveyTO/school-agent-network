@@ -1745,6 +1745,24 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
+  // Hosted copy: write the database back to durable storage before the
+  // instance is replaced (Cloud Run sends SIGTERM on rollout/scale-down).
+  // Best-effort with a bounded wait; the debounced write-back covers the rest.
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const done = () => {
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 5000).unref();
+    };
+    Promise.race([
+      store.flushDurableStore(),
+      new Promise((resolve) => setTimeout(resolve, 8000)),
+    ]).then(done, done);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
   store
     .initDb()
     .then(() => {

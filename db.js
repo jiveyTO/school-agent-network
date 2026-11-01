@@ -37,10 +37,137 @@ const SHARED_CORE = [
 
 let db = null;
 
+// Durable database backing for the hosted copy (env-gated).
+// Local and docker runs leave APP_DB_GCS_BUCKET unset, so the database stays
+// a plain file exactly as before. When the bucket is set (Cloud Run), the
+// database file is downloaded from Cloud Storage at boot when present
+// (otherwise the local file/seed path below runs unchanged), and every
+// persist is written back: debounced while serving, flushed on shutdown and
+// at the end of boot. Auth uses the Cloud Run service account via the
+// metadata server; plain fetch against the GCS JSON API, no new dependencies.
+const DURABLE_UPLOAD_DEBOUNCE_MS = 1500;
+let durableDirty = false;
+let durableUploadTimer = null;
+let durableToken = null;
+let durableTokenExpiresAt = 0;
+
+function durableConfig() {
+  const bucket = (process.env.APP_DB_GCS_BUCKET || '').trim();
+  if (!bucket) return null;
+  const object = (process.env.APP_DB_GCS_OBJECT || 'app.db').trim() || 'app.db';
+  const endpoint = (process.env.APP_DB_GCS_ENDPOINT || 'https://storage.googleapis.com').replace(
+    /\/+$/,
+    ''
+  );
+  return { bucket, object, endpoint };
+}
+
+function isDurableStoreEnabled() {
+  return Boolean(durableConfig());
+}
+
+async function durableAccessToken() {
+  if (durableToken && Date.now() < durableTokenExpiresAt - 60000) return durableToken;
+  const res = await fetch(
+    'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+    { headers: { 'Metadata-Flavor': 'Google' }, signal: AbortSignal.timeout(3000) }
+  );
+  if (!res.ok) throw new Error('metadata token HTTP ' + res.status);
+  const data = await res.json();
+  if (!data || !data.access_token) throw new Error('metadata token missing access_token');
+  durableToken = data.access_token;
+  durableTokenExpiresAt = Date.now() + Number(data.expires_in || 3600) * 1000;
+  return durableToken;
+}
+
+function durableAuthHeaders() {
+  // The test endpoint override (APP_DB_GCS_ENDPOINT) emulates GCS without auth.
+  if (process.env.APP_DB_GCS_ENDPOINT) return Promise.resolve({});
+  return durableAccessToken().then((token) => ({ Authorization: 'Bearer ' + token }));
+}
+
+// Returns true when a database was restored. Never throws: on any failure
+// the caller falls back to the local file/seed path.
+async function restoreDurableStore() {
+  const cfg = durableConfig();
+  if (!cfg) return false;
+  try {
+    const headers = await durableAuthHeaders();
+    const url =
+      cfg.endpoint +
+      '/storage/v1/b/' +
+      encodeURIComponent(cfg.bucket) +
+      '/o/' +
+      encodeURIComponent(cfg.object) +
+      '?alt=media';
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+    if (res.status === 404) return false;
+    if (!res.ok) throw new Error('download HTTP ' + res.status);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    fs.writeFileSync(DB_PATH, bytes);
+    return true;
+  } catch (err) {
+    console.warn('durable store restore skipped:', err && err.message ? err.message : err);
+    return false;
+  }
+}
+
+async function durableUploadFromFile() {
+  const cfg = durableConfig();
+  if (!cfg || !durableDirty) return false;
+  if (!fs.existsSync(DB_PATH)) return false;
+  const headers = await durableAuthHeaders();
+  headers['Content-Type'] = 'application/octet-stream';
+  const url =
+    cfg.endpoint +
+    '/upload/storage/v1/b/' +
+    encodeURIComponent(cfg.bucket) +
+    '/o?uploadType=media&name=' +
+    encodeURIComponent(cfg.object);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: fs.readFileSync(DB_PATH),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) throw new Error('upload HTTP ' + res.status);
+  return true;
+}
+
+function scheduleDurableUpload() {
+  if (!durableConfig()) return;
+  durableDirty = true;
+  if (durableUploadTimer) return;
+  durableUploadTimer = setTimeout(() => {
+    durableUploadTimer = null;
+    flushDurableStore();
+  }, DURABLE_UPLOAD_DEBOUNCE_MS);
+  if (durableUploadTimer.unref) durableUploadTimer.unref();
+}
+
+// Best-effort write-back of the latest database file. Never throws.
+async function flushDurableStore() {
+  if (durableUploadTimer) {
+    clearTimeout(durableUploadTimer);
+    durableUploadTimer = null;
+  }
+  if (!durableConfig() || !durableDirty) return false;
+  try {
+    const uploaded = await durableUploadFromFile();
+    if (uploaded) durableDirty = false;
+    return uploaded;
+  } catch (err) {
+    console.warn('durable store upload failed:', err && err.message ? err.message : err);
+    return false;
+  }
+}
+
 function persist() {
   if (!db) return;
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   fs.writeFileSync(DB_PATH, Buffer.from(db.export()));
+  scheduleDurableUpload();
 }
 
 function run(sql, params) {
@@ -167,6 +294,8 @@ function seedDemoIfNeeded() {
 
 async function initDb() {
   if (db) return;
+  const restored = await restoreDurableStore();
+  if (restored) console.log('durable store: database restored from hosted storage');
   const SQL = await initSqlJs({
     locateFile: (file) => path.join(ROOT, 'node_modules', 'sql.js', 'dist', file),
   });
@@ -322,6 +451,9 @@ async function initDb() {
   seedDemoHubs();
   restampDemoFactScopes();
   backfillSeedGroups();
+  // First boot with the durable store enabled uploads the seeded database so
+  // later instances restore it. No-op when disabled or nothing changed.
+  await flushDurableStore();
 }
 
 function migrateChildren() {
@@ -1573,6 +1705,8 @@ module.exports = {
   DB_PATH,
   HOCKEY_FACTS,
   initDb,
+  isDurableStoreEnabled,
+  flushDurableStore,
   getActiveProfile,
   getDemoProfile,
   getProfileForRun,
