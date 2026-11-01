@@ -88,15 +88,76 @@ test('add-material wait carries a reassurance line and survives navigation', () 
     'dots show during extraction and hide after');
 });
 
-test('hub detail renders one source card per material with collapsible groups', () => {
+test('hub detail renders one source card per material with flat facts inside', () => {
   for (const token of ['renderHubSources', 'renderHubSourcesSection', 'factBullet', 'groupBulletList', 'paintGroupsToggle', 'factMatters',
-    'source-card', 'group-card', 'data-groupname', "'Expand all'", "'Collapse all'"]) {
+    'source-card', 'group-subhead', "'Expand all'", "'Collapse all'"]) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
   assert.ok(!PAGE.includes('hubFactCard'), 'no per-fact cards inside groups');
+  for (const token of ['card group-card', 'card group-summary', 'div.group-card', 'details.group-card', 'data-groupname']) {
+    assert.ok(!PAGE.includes(token), `${token} must be gone — no nested card inside the material card`);
+  }
   assert.ok(PAGE.includes('Added ') && PAGE.includes('notes'), 'card header shows when it was added and its note count');
   assert.ok(PAGE.includes('Nothing shared from this one yet.'));
 });
+
+test('single-group material renders facts flat: no nested card, no repeated title', () => {
+  const html = renderMaterialsHtml(
+    [{ id: 'm1', title: 'November Newsletter', created_at: '2026-11-01' }],
+    [
+      { material_id: 'm1', group_label: 'Halloween Costumes', title: 'Costume parade', detail: 'Parade at 9am', date: '2026-10-31', applies_to: 'all', action_required: false, action: '', source_text: '' },
+      { material_id: 'm1', group_label: 'Halloween Costumes', title: 'No masks', detail: 'Leave masks at home', date: '', applies_to: 'all', action_required: false, action: '', source_text: '' },
+    ]
+  );
+  assert.ok(html.includes('November Newsletter'), 'material title stays on the card');
+  assert.ok(html.includes('Parade at 9am') && html.includes('Leave masks at home'), 'same facts render');
+  assert.ok(!html.includes('Halloween Costumes'), 'single group title is not repeated');
+  for (const token of ['group-subhead', 'group-card', 'group-summary', 'data-groupname']) {
+    assert.ok(!html.includes(token), `${token} must not appear for a single group`);
+  }
+  assert.equal(html.split('<details').length - 1, 1, 'exactly one material card');
+  assert.ok(html.includes('note-list'), 'facts render as the plain bullet list');
+});
+
+test('multi-group material separates groups with plain subheadings, never nested cards', () => {
+  const html = renderMaterialsHtml(
+    [{ id: 'm2', title: 'November Newsletter', created_at: '2026-11-01' }],
+    [
+      { material_id: 'm2', group_label: 'Pizza Lunch', title: 'Pizza orders', detail: 'Order by Friday', date: '2026-11-06', applies_to: 'all', action_required: true, action: 'Order pizza', source_text: '' },
+      { material_id: 'm2', group_label: 'Lost and Found', title: 'Bin reminder', detail: 'Bins sit by the office', group_summary: 'Bins sit by the office.', date: '', applies_to: 'all', action_required: false, action: '', source_text: '' },
+    ]
+  );
+  assert.ok(html.includes('Order by Friday') && html.includes('Bins sit by the office.'), 'same facts render');
+  assert.equal(html.split('group-subhead').length - 1, 2, 'one plain subheading per group');
+  assert.equal(html.split('Pizza Lunch').length - 1, 1, 'actionable group label appears once');
+  assert.equal(html.split('Lost and Found').length - 1, 1, 'summary group label appears once');
+  for (const token of ['card group-card', 'card group-summary', 'div.group-card', 'details.group-card', 'data-groupname']) {
+    assert.ok(!html.includes(token), `${token} must be gone — subheadings carry no border or box`);
+  }
+  assert.ok(html.includes('group-summary'), 'informational group keeps its summary block');
+  assert.ok(html.includes('View full text'), 'summary keeps the full-text path');
+});
+
+function renderMaterialsHtml(materials, facts) {
+  const vm = require('node:vm');
+  const els = {};
+  function fakeEl() {
+    return {
+      innerHTML: '', hidden: true, textContent: '',
+      children: [],
+      querySelectorAll() { return []; },
+      querySelector() { return null; },
+    };
+  }
+  const sandbox = {
+    document: { getElementById(id) { return els[id] || (els[id] = fakeEl()); } },
+    __facts: facts,
+    __materials: materials,
+  };
+  const src = PAGE.slice(PAGE.indexOf('function esc(s)'), PAGE.indexOf('function friendlyTime('));
+  vm.runInNewContext(src + ';renderHubSources(__facts, __materials);', sandbox);
+  return els.hubFacts.innerHTML;
+}
 
 test('informational-only groups collapse to a one-line summary with a read-all toggle', () => {
   for (const token of ['groupSummaryText', 'group-summary', 'data-read-group', 'group-full', 'Read all ', 'Show less']) {

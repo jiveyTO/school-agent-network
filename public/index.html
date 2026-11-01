@@ -231,11 +231,8 @@
   @media (prefers-reduced-motion: reduce) {
     .thinking-dots > span { animation: none; opacity: 0.6; }
   }
-  details.group-card { margin-bottom: 10px; }
-  details.group-card summary { cursor: pointer; font-weight: 700; }
-  details.group-card summary .count { font-weight: 400; color: var(--muted); }
-  div.group-card { margin-bottom: 10px; }
-  div.group-card .count { font-weight: 400; color: var(--muted); }
+  .group-subhead { margin: 10px 0 2px; font-size: 14px; font-weight: 700; }
+  .group-subhead .count { font-weight: 400; color: var(--muted); }
   .note-list { margin: 6px 0 6px 20px; padding: 0; }
   .note-list li { margin: 5px 0; }
   details.source-card { margin-bottom: 10px; }
@@ -1006,18 +1003,21 @@
           body += groupBulletList(direct, 'd' + (uid.count++));
           body += groupQuotesBlock(direct, 'q' + (uid.count++));
         }
+        // One group fills the whole material: its facts render directly with no
+        // repeated title. Multiple groups are separated by a plain subheading.
+        const singleGroup = !direct.length && groups.length === 1;
         body += groups.map(function (g) {
+          const head = singleGroup ? '' :
+            '<p class="group-subhead">' + esc(g.name) + ' <span class="count">(' + g.items.length + ')</span></p>';
           if (g.items.some(factMatters)) {
-            return '<div class="card group-card" data-groupname="' + esc(g.name) + '">' +
-              '<p style="margin:0"><b>' + esc(g.name) + '</b> <span class="count">(' + g.items.length + ')</span></p>' +
+            return head +
               groupBulletList(g.items, 'n' + (uid.count++)) +
-              groupQuotesBlock(g.items, 'q' + (uid.count++)) +
-              '</div>';
+              groupQuotesBlock(g.items, 'q' + (uid.count++));
           }
           const summaryIdx = uid.count++;
           const extLink = g.items.map(function (f) { return String((f && f.link) || '').trim(); }).filter(Boolean)[0] || '';
-          return '<div class="card group-summary" style="margin-bottom:10px">' +
-            '<p style="margin:0"><b>' + esc(g.name) + '</b> <span class="count">(' + g.items.length + ')</span></p>' +
+          return head +
+            '<div class="group-summary" style="margin-bottom:10px">' +
             '<p class="hint" style="margin:4px 0">' + esc(groupSummaryText(g.items)) + '</p>' +
             '<div class="group-actions">' +
             '<button class="toggle-btn" type="button" data-read-group="' + summaryIdx + '" data-read-count="' + g.items.length + '">Read all ' + g.items.length + '</button>' +
