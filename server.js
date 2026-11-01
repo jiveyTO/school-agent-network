@@ -664,12 +664,32 @@ function narrowestScope(facts) {
   return best;
 }
 
+const EMPTY_EXTRACTION_MESSAGE =
+  'We couldn\'t pull any notes out of that one — try pasting it again.';
+
 async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride) {
   const push = (message) => logs.push({ at: nowIso(), message });
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
-  const content = await callMetaApi(newsletterText);
+  let content = await callMetaApi(newsletterText);
   push('API responded — parsing facts');
-  const rawFacts = extractJsonArray(content);
+  let rawFacts = extractJsonArray(content);
+  // The model sometimes returns a valid but empty fact list for a
+  // non-trivial source. Retry the model call ONCE before giving up, so one
+  // flaky reply cannot silently save zero facts as a success.
+  const nonWhitespace = String(newsletterText || '').replace(/\s/g, '').length;
+  if (rawFacts.length === 0 && nonWhitespace > 100) {
+    push('no facts parsed from a non-trivial source — retrying the model call once');
+    push(`API called: POST ${API_URL} (model: ${MODEL})`);
+    content = await callMetaApi(newsletterText);
+    push('API responded — parsing facts');
+    rawFacts = extractJsonArray(content);
+  }
+  if (rawFacts.length === 0 && nonWhitespace > 100) {
+    // Every material route marks the material 'failed' on a throw and
+    // returns this message, so the hub list shows the failure instead of
+    // an empty success. Tiny pastes keep today's behavior below.
+    throw new Error(EMPTY_EXTRACTION_MESSAGE);
+  }
   const extractedAt = nowIso();
   const facts = rawFacts.map((f) => normalizeFact(f, extractedAt));
   // Guarantee id uniqueness even if two facts slugify the same.

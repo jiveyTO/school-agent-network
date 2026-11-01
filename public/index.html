@@ -997,7 +997,9 @@
       let body = '<summary><b>' + esc(m.title) + '</b> ' +
         '<span class="added">Added ' + esc(humanDate(m.created_at)) + ' · ' + items.length + ' ' + noteWord + '</span></summary>';
       if (!items.length) {
-        body += '<p class="facts-empty">Nothing shared from this one yet.</p>';
+        body += m.status === 'failed'
+          ? '<p class="facts-empty">We couldn\'t pull any notes out of that one — try pasting it again.</p>'
+          : '<p class="facts-empty">Nothing shared from this one yet.</p>';
       } else {
         if (direct.length) {
           body += groupBulletList(direct, 'd' + (uid.count++));
@@ -2391,6 +2393,14 @@
       await loadHubs();
       if (currentHubId === hubId) await loadHubDetail(hubId);
     } catch (e) {
+      // A failed extraction still saved its material (status 'failed'), so
+      // refresh the list: the failure renders inside the hub, not only here.
+      try {
+        await loadHubs();
+        if (currentHubId === hubId) await loadHubDetail(hubId);
+      } catch (refreshErr) {
+        // The message below matters more than a refresh failure.
+      }
       statusEl.textContent = e.message;
     } finally {
       stopStagedStatus(stages);
