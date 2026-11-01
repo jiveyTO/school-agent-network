@@ -643,35 +643,33 @@
           </p>
           <p class="hint" id="placementStatus"></p>
         </div>
+        <div class="card" id="hubSourcesCard" style="margin-bottom:12px">
+          <p style="margin:0"><b>Sources for this hub</b></p>
+          <p class="hint">Everything this hub is built from.</p>
+          <div id="hubSources"></div>
+          <div id="hubWebsiteAdd" hidden>
+            <label class="field"><span id="hubWebsiteAddLabel">Add the school website</span>
+              <input type="url" id="hubWebsiteAddInput" placeholder="https://" inputmode="url">
+            </label>
+            <p style="margin:8px 0 0"><button class="small-btn secondary" id="hubWebsiteSaveBtn" type="button">Save website</button></p>
+            <p class="hint" id="hubWebsiteAddStatus"></p>
+          </div>
+        </div>
         <div class="hub-grid">
           <div>
-            <p><b>Shared notes</b></p>
-            <div id="familyStrip"></div>
+            <p><b>What is in this hub</b></p>
             <button class="toggle-btn" id="hubGroupsToggle" type="button" hidden>Expand all</button>
-            <div id="hubFacts"><p class="facts-empty">Nothing shared yet.</p></div>
+            <div id="hubFacts"><p class="facts-empty">Nothing added yet.</p></div>
           </div>
           <div>
-            <p><b>Newsletters and notices added</b></p>
-            <div id="hubMaterials"><p class="facts-empty">Nothing added yet.</p></div>
             <p><b>Add material</b></p>
-            <label class="field">Title
-              <input type="text" id="materialTitle" placeholder="e.g. November newsletter">
-            </label>
-            <label class="field">Who is this for?
-              <select id="materialAudience">
-                <option value="auto">Let ParentLoop decide</option>
-                <option value="school">Whole school</option>
-                <option value="grade">My child’s grade</option>
-                <option value="class">My child’s class</option>
-              </select>
-            </label>
             <label class="field">Paste a newsletter or notice
               <textarea id="materialText" placeholder="Paste the text here…"></textarea>
             </label>
             <label class="field">Or add a PDF
               <input type="file" id="materialPdf" accept="application/pdf">
             </label>
-            <button class="small-btn" id="addMaterialBtn" type="button">Add this material</button>
+            <button class="small-btn" id="addMaterialBtn" type="button">Add it</button>
             <div class="progress" id="materialProgress" hidden><span></span></div>
             <p class="hint" id="materialStatus"></p>
             <p style="margin-top:14px"><button class="small-btn secondary" id="inviteBtn" type="button">Invite a parent</button></p>
@@ -826,14 +824,6 @@
     return v.charAt(0).toUpperCase() + v.slice(1);
   }
 
-  function friendlyScope(item) {
-    const scope = String((item && item.scope) || 'school').toLowerCase();
-    const value = item && item.scope_value ? String(item.scope_value) : '';
-    if (scope === 'grade') return 'Grade scope · ' + (value || 'grade');
-    if (scope === 'class') return 'Class scope · ' + (value || 'class');
-    return 'Whole school';
-  }
-
   // One bullet per fact: the note itself plus its date/action chips.
   // Groups show at most five bullets; the rest sit behind a toggle.
   function factBullet(f) {
@@ -878,13 +868,6 @@
     return '';
   }
 
-  function stripChips(f) {
-    const chips = [];
-    if (f.date) chips.push('<span class="chip date-chip">Due ' + esc(humanDate(f.date)) + '</span>');
-    if (factActionKind(f)) chips.push('<span class="chip action-chip">' + esc(f.action || f.title) + '</span>');
-    return chips.join('');
-  }
-
   // A fact "matters" for expansion purposes with a deadline or a real action
   // (order, sign-up, payment, RSVP) — informational guidance alone never does.
   function factMatters(f) {
@@ -901,44 +884,6 @@
     return fallback.length > 140 ? fallback.slice(0, 140) + '…' : fallback;
   }
 
-  function renderFamilyStrip(facts) {
-    const stripEl = document.getElementById('familyStrip');
-    const items = (facts || []).filter(factMatters);
-    if (!items.length) { stripEl.innerHTML = ''; return; }
-    const groups = [];
-    const byName = {};
-    items.forEach(function (f) {
-      const name = String((f && f.group_label) || '').trim();
-      if (!name) { groups.push({ name: '', items: [f] }); return; }
-      if (!byName[name]) {
-        const entry = { name: name, items: [] };
-        byName[name] = entry;
-        groups.push(entry);
-      }
-      byName[name].items.push(f);
-    });
-    stripEl.innerHTML = '<p><b>For your family</b></p>' + groups.map(function (g) {
-      if (g.items.length === 1) {
-        const f = g.items[0];
-        return '<div class="card" style="margin-bottom:10px"><p style="margin:0"><b>' + esc(f.title) + '</b></p>' +
-          '<div class="chips">' + stripChips(f) + '</div></div>';
-      }
-      return '<button type="button" class="card strip-group" style="margin-bottom:10px" data-expand-group="' + esc(g.name) + '">' +
-        '<b>' + esc(g.name) + '</b> <span class="count">(' + g.items.length + ')</span></button>';
-    }).join('');
-    stripEl.onclick = function (ev) {
-      const btn = ev.target && ev.target.closest ? ev.target.closest('[data-expand-group]') : null;
-      if (!btn) return;
-      const name = btn.getAttribute('data-expand-group');
-      const listEl = document.getElementById('hubFacts');
-      const match = Array.prototype.filter.call(
-        listEl.querySelectorAll('[data-groupname]'),
-        function (d) { return d.getAttribute('data-groupname') === name; }
-      )[0];
-      if (match && match.scrollIntoView) match.scrollIntoView();
-    };
-  }
-
   function paintGroupsToggle() {
     const listEl = document.getElementById('hubFacts');
     const toggle = document.getElementById('hubGroupsToggle');
@@ -950,6 +895,29 @@
   }
 
   var fullTextCache = {};
+
+  function renderHubSourcesSection(hub) {
+    const box = document.getElementById('hubSources');
+    const addWrap = document.getElementById('hubWebsiteAdd');
+    const site = String((hub && hub.website) || '').trim();
+    const rows = [];
+    if (site) {
+      const label = hub && hub.kind === 'team' ? 'Team website' : 'School website';
+      rows.push('<p class="source-row" style="margin:4px 0"><b>' + esc(label) + '</b> · ' +
+        '<a href="' + esc(site) + '" target="_blank" rel="noopener">' + esc(site) + '</a></p>');
+    }
+    rows.push('<p class="source-row" style="margin:4px 0">Calendar link — coming soon</p>');
+    box.innerHTML = rows.join('');
+    document.getElementById('hubWebsiteAddInput').value = '';
+    document.getElementById('hubWebsiteAddStatus').textContent = '';
+    if (!site && hub && hub.role === 'admin') {
+      document.getElementById('hubWebsiteAddLabel').textContent =
+        hub.kind === 'team' ? 'Add the team website' : 'Add the school website';
+      addWrap.hidden = false;
+    } else {
+      addWrap.hidden = true;
+    }
+  }
 
   function renderHubSources(facts, materials) {
     const uid = { count: 0 };
@@ -1757,11 +1725,8 @@
       document.getElementById('deleteHubName').textContent = data.hub.name;
       const facts = data.facts || [];
       const materials = data.materials || [];
-      renderFamilyStrip(facts);
+      renderHubSourcesSection(data.hub);
       renderHubSources(facts, materials);
-      document.getElementById('hubMaterials').innerHTML = materials.length ? materials.map(function (m) {
-        return '<p class="hint">• ' + esc(m.title) + ' (' + esc(m.status) + ', ' + esc(friendlyScope(m)) + ')</p>';
-      }).join('') : '<p class="facts-empty">Nothing added yet.</p>';
       if (data.hub.role === 'admin') {
         const rRes = await fetch('/api/hubs/' + encodeURIComponent(hubId) + '/join-requests');
         const rData = await rRes.json();
@@ -2153,11 +2118,13 @@
       payload.city = document.getElementById('hubSchoolCity').value;
       payload.province = document.getElementById('hubSchoolProvince').value;
       payload.country = document.getElementById('hubSchoolCountry').value;
+      payload.website = document.getElementById('hubWebsite').value.trim();
       rememberSchoolLocation(payload);
     } else if (kind === 'team') {
       payload.name = document.getElementById('hubName').value;
       payload.sport = document.getElementById('hubSport').value;
       payload.level = document.getElementById('hubLevel').value;
+      payload.website = document.getElementById('hubWebsite').value.trim();
     } else {
       payload.name = document.getElementById('hubName').value;
     }
@@ -2292,7 +2259,7 @@
     const btn = document.getElementById('addMaterialBtn');
     const statusEl = document.getElementById('materialStatus');
     const progressEl = document.getElementById('materialProgress');
-    const inputs = ['materialTitle', 'materialText', 'materialAudience', 'materialPdf'].map(function (id) {
+    const inputs = ['materialText', 'materialPdf'].map(function (id) {
       return document.getElementById(id);
     });
     const hubId = currentHubId;
@@ -2317,16 +2284,12 @@
         });
         data = await postJson('/api/hubs/' + encodeURIComponent(hubId) + '/materials', {
           kind: 'pdf',
-          title: document.getElementById('materialTitle').value || file.name,
           fileBase64: base64,
-          audience: document.getElementById('materialAudience').value,
         });
       } else {
         data = await postJson('/api/hubs/' + encodeURIComponent(hubId) + '/materials', {
           kind: 'paste',
-          title: document.getElementById('materialTitle').value,
           text: document.getElementById('materialText').value,
-          audience: document.getElementById('materialAudience').value,
         });
       }
       statusEl.textContent = 'Added — ' + data.facts_added + ' shared notes found.';
@@ -2348,6 +2311,27 @@
   function shareInviteMessage(hubName, link) {
     return 'I started a ParentLoop hub for ' + hubName + ' so we can share newsletters and notices in one place. Join here: ' + link;
   }
+
+  document.getElementById('hubWebsiteSaveBtn').addEventListener('click', async function () {
+    const btn = document.getElementById('hubWebsiteSaveBtn');
+    const statusEl = document.getElementById('hubWebsiteAddStatus');
+    const input = document.getElementById('hubWebsiteAddInput');
+    if (!currentHubId) return;
+    const website = input.value.trim();
+    if (!website) { statusEl.textContent = 'Paste the school website address first.'; return; }
+    btn.disabled = true;
+    statusEl.textContent = 'Saving…';
+    try {
+      await postJson('/api/hubs/' + encodeURIComponent(currentHubId) + '/website', { website: website });
+      statusEl.textContent = 'Saved.';
+      await loadHubs(currentHubId);
+      await loadHubDetail(currentHubId);
+    } catch (e) {
+      statusEl.textContent = e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   document.getElementById('inviteBtn').addEventListener('click', async function () {
     const hubId = currentHubId;

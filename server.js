@@ -713,6 +713,38 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
   return deduped;
 }
 
+// One-box adding has no title field: derive the material title from the
+// pasted content's first line (which usually carries the date range), so
+// extracted facts keep a readable group label. Falls back to a dated
+// newsletter label when the content has no usable first line.
+function deriveMaterialTitle(text, now) {
+  const first = String(text || '')
+    .split('\n')
+    .map((line) => line.trim().replace(/^#+\s*/, '').trim())
+    .find((line) => line);
+  if (first) {
+    const clean = first.length > 80 ? first.slice(0, 80).trim() + '…' : first;
+    if (clean) return clean;
+  }
+  const at = now instanceof Date && !isNaN(now.getTime()) ? now : new Date();
+  return `Newsletter — ${at.toISOString().slice(0, 10)}`;
+}
+
+function normalizeWebsiteUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  let parsed = null;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+    throw new Error('That website link doesn’t look complete — paste the full address starting with http:// or https://.');
+  }
+  return raw;
+}
+
 function resolveAudience(actor, audience, hubId) {
   const mode = String(audience || 'auto').toLowerCase();
   if (mode === '' || mode === 'auto') return null;
@@ -1392,6 +1424,7 @@ const server = http.createServer(async (req, res) => {
     }
     // Hubs, invites, joining, and materials.
     const hubMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)$/);
+    const hubWebsiteMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/website$/);
     const hubPlacementsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/placements$/);
     const hubMaterialsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials$/);
     const hubMaterialTextMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)\/text$/);
@@ -1498,13 +1531,27 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, 409, { error: 'That looks like a school that already has a hub.', match_type: 'similar', existing_hub: conflict });
           return;
         }
-        const hub = store.createHub(actor.id, displayName, kind, { school_name: schoolName, city, province, country });
+        let website = '';
+        try {
+          website = normalizeWebsiteUrl(body.website);
+        } catch (err) {
+          sendJson(res, 400, { error: err.message });
+          return;
+        }
+        const hub = store.createHub(actor.id, displayName, kind, { school_name: schoolName, city, province, country, website });
         sendJson(res, 200, { ok: true, hub });
         return;
       }
       if (!String(body.name || '').trim()) { sendJson(res, 400, { error: 'Give your hub a name.' }); return; }
+      let website = '';
+      try {
+        website = normalizeWebsiteUrl(body.website);
+      } catch (err) {
+        sendJson(res, 400, { error: err.message });
+        return;
+      }
       const extra = kind === 'team'
-        ? { sport: String(body.sport || '').trim(), level: String(body.level || '').trim() }
+        ? { sport: String(body.sport || '').trim(), level: String(body.level || '').trim(), website }
         : null;
       const hub = store.createHub(actor.id, body.name, kind, extra);
       sendJson(res, 200, { ok: true, hub });
@@ -1517,6 +1564,25 @@ const server = http.createServer(async (req, res) => {
       if (!actor || store.getMemberRole(hub.id, actor.id) !== 'admin') { sendJson(res, 403, { error: 'Only hub admins can delete this hub.' }); return; }
       store.deleteHub(hub.id);
       sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === 'POST' && hubWebsiteMatch) {
+      const actor = store.getSessionViewer(session);
+      const hub = store.getHub(hubWebsiteMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can update this hub.' }); return; }
+      if (store.getMemberRole(hub.id, actor.id) !== 'admin') { sendJson(res, 403, { error: 'Only hub admins can set the school website.' }); return; }
+      const body = await readJsonBody(req);
+      let website = '';
+      try {
+        website = normalizeWebsiteUrl(body.website);
+      } catch (err) {
+        sendJson(res, 400, { error: err.message });
+        return;
+      }
+      if (!website) { sendJson(res, 400, { error: 'Paste the school website address first.' }); return; }
+      const updated = store.setHubWebsite(hub.id, website);
+      sendJson(res, 200, { ok: true, hub: updated });
       return;
     }
     if (req.method === 'GET' && hubMatch) {
@@ -1582,7 +1648,8 @@ const server = http.createServer(async (req, res) => {
           if (!text) throw new Error('Paste a newsletter or notice first.');
         }
         const override = resolveAudience(actor, body.audience, hub.id);
-        material = store.createMaterial(hub.id, actor.id, kind, String(body.title || (kind === 'pdf' ? 'PDF notice' : 'Pasted notice')), text, 'stored');
+        const suppliedTitle = String(body.title || '').trim();
+        material = store.createMaterial(hub.id, actor.id, kind, suppliedTitle || deriveMaterialTitle(text), text, 'stored');
         const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override);
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
@@ -1697,4 +1764,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { normalizeParentResult, normalizeFact, buildParentPrompt, placementLinesForRun };
+module.exports = { normalizeParentResult, normalizeFact, buildParentPrompt, placementLinesForRun, deriveMaterialTitle };

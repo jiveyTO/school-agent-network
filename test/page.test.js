@@ -63,14 +63,13 @@ test('long model waits show indeterminate progress with staged status', () => {
 });
 
 test('hub detail renders one source card per material with collapsible groups', () => {
-  for (const token of ['renderHubSources', 'renderFamilyStrip', 'factBullet', 'groupBulletList', 'paintGroupsToggle', 'factMatters',
+  for (const token of ['renderHubSources', 'renderHubSourcesSection', 'factBullet', 'groupBulletList', 'paintGroupsToggle', 'factMatters',
     'source-card', 'group-card', 'data-groupname', "'Expand all'", "'Collapse all'"]) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
   assert.ok(!PAGE.includes('hubFactCard'), 'no per-fact cards inside groups');
   assert.ok(PAGE.includes('Added ') && PAGE.includes('notes'), 'card header shows when it was added and its note count');
   assert.ok(PAGE.includes('Nothing shared from this one yet.'));
-  assert.ok(PAGE.includes('data-expand-group'), 'shared strip entries expand their group in place');
 });
 
 test('informational-only groups collapse to a one-line summary with a read-all toggle', () => {
@@ -99,12 +98,34 @@ test('summary rows link the full source without becoming actions', () => {
   assert.ok(PAGE.includes('group-actions'));
 });
 
-test('family strip is group-aware and qualifies only deadlines and real actions', () => {
-  for (const token of ['factActionKind', 'stripChips', 'id="familyStrip"', 'For your family']) {
+test('hub page has one materials list with one empty state', () => {
+  assert.ok(PAGE.includes('What is in this hub'), 'single list heading present');
+  for (const token of ['Shared notes', 'Newsletters and notices added', 'id="hubMaterials"', 'id="familyStrip"',
+    'For your family', 'Nothing shared yet.', 'data-expand-group', 'renderFamilyStrip', 'stripChips']) {
+    assert.ok(!PAGE.includes(token), `${token} must be gone after the merge`);
+  }
+  const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
+  assert.equal(hubMarkup.split('Nothing added yet.').length - 1, 1, 'exactly one materials empty state in the hub view');
+});
+
+test('hub page leads with a Sources section and a calendar placeholder', () => {
+  for (const token of ['Sources for this hub', 'id="hubSourcesCard"', 'id="hubSources"', 'id="hubWebsiteAdd"',
+    'id="hubWebsiteAddLabel"', 'Add the school website', 'id="hubWebsiteAddInput"', 'id="hubWebsiteSaveBtn"',
+    'Save website', '/website', 'Calendar link — coming soon']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  assert.ok(PAGE.includes('School website'), 'website row labels the school site');
+  const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
+  assert.ok(hubMarkup.indexOf('Sources for this hub') !== -1, 'Sources lives in the hub view');
+  assert.ok(hubMarkup.indexOf('Sources for this hub') < hubMarkup.indexOf('What is in this hub'),
+    'Sources sits above the single list');
+});
+
+test('action ranks still qualify only deadlines and real actions', () => {
+  for (const token of ['factActionKind', "Due ' + esc(humanDate(f.date))"]) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
   assert.ok(!PAGE.includes('Sign-up needed'), 'no generic strip labels');
-  assert.ok(PAGE.includes("Due ' + esc(humanDate(f.date))"));
   assert.ok(PAGE.includes('order') && PAGE.includes('rsvp') && PAGE.includes('payment') && PAGE.includes('signup'));
   assert.ok(!PAGE.includes('\\$'), 'a bare dollar amount alone is not a payment action');
 });
@@ -183,17 +204,18 @@ test('member hubs use card picker plus toggle; no dropdown', () => {
   assert.ok(PAGE.includes('startHubOpen = false;'), 'successful create collapses the form');
 });
 
-test('add material has a "Who is this for?" audience selector sent with uploads', () => {
-  assert.ok(PAGE.includes('id="materialAudience"'));
-  assert.ok(PAGE.includes('Who is this for?'));
-  assert.ok(PAGE.includes('Let ParentLoop decide'));
-  assert.ok(PAGE.includes('My child’s grade') && PAGE.includes('My child’s class'));
+test('add material is one box: paste plus optional PDF, no title or audience fields', () => {
+  for (const token of ['id="materialTitle"', 'id="materialAudience"', 'Who is this for?',
+    'Let ParentLoop decide', 'My child’s grade', 'My child’s class', 'friendlyScope']) {
+    assert.ok(!PAGE.includes(token), `${token} must be gone from the add form`);
+  }
+  assert.ok(!PAGE.includes('audience:'), 'the hub page no longer sends an audience scope');
+  for (const token of ['id="materialText"', 'id="materialPdf"', 'id="addMaterialBtn"', 'Add it']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
   const pdfAt = PAGE.indexOf("kind: 'pdf'");
   const pasteAt = PAGE.indexOf("kind: 'paste'");
-  assert.ok(pdfAt !== -1 && pasteAt !== -1);
-  assert.ok(PAGE.indexOf('audience:', pdfAt) !== -1 && PAGE.indexOf('audience:', pdfAt) < pdfAt + 400);
-  assert.ok(PAGE.indexOf('audience:', pasteAt) !== -1 && PAGE.indexOf('audience:', pasteAt) < pasteAt + 400);
-  assert.ok(PAGE.includes('friendlyScope'));
+  assert.ok(pdfAt !== -1 && pasteAt !== -1, 'both paste and PDF upload paths remain');
 });
 
 test('announced facts default to 3 with an expand/collapse toggle, under the hub detail', () => {
@@ -240,8 +262,8 @@ test('my hubs branches on membership: zero-hub welcome vs member list; detail li
   for (const token of ['id="hubs-h"', 'id="hubsList"', 'id="startHubCard"', '+ Start a hub']) {
     assert.ok(listMarkup.includes(token), `My hubs list must contain ${token}`);
   }
-  for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'Shared notes', 'id="hubFacts"',
-    'id="placementCard"', 'id="hubMaterials"', 'id="addMaterialBtn"', 'id="inviteBtn"',
+  for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'What is in this hub', 'Sources for this hub', 'id="hubFacts"',
+    'id="placementCard"', 'id="addMaterialBtn"', 'id="inviteBtn"',
     'id="hubRequests"', 'id="hubDanger"']) {
     assert.ok(!listMarkup.includes(token), `My hubs list must not contain hub detail ${token}`);
   }
@@ -264,8 +286,8 @@ test('hub cards open a dedicated hub view; the back control returns to the list'
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
   const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
-  for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'Shared notes', 'id="hubFacts"',
-    'id="hubMaterials"', 'Add this material', 'id="placementCard"', 'Place your children in this hub',
+  for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'Sources for this hub', 'id="hubSources"',
+    'What is in this hub', 'id="hubFacts"', 'Add it', 'id="placementCard"', 'Place your children in this hub',
     'id="inviteBtn"', 'id="hubRequests"', 'id="hubDanger"', 'id="facts-h"', 'id="log-h"']) {
     assert.ok(hubMarkup.includes(token), `hub view must render ${token}`);
   }

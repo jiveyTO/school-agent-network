@@ -18,6 +18,9 @@ const SEED_PATH = path.join(ROOT, 'data', 'family-profile.json');
 const FACTS_SEED_PATH = path.join(ROOT, 'data', 'facts.json');
 const DEMO_HUB_A_NAME = 'Grade 3 — Maple Grove Elementary';
 const DEMO_HUB_B_NAME = 'U9 Hockey — Maple Grove';
+// Fictional school website shown on the demo hub's Sources section (reserved
+// .example.com domain, never a real school's address).
+const DEMO_SCHOOL_WEBSITE = 'https://maplegrove-elementary.example.com';
 const HOCKEY_FACTS = [
   { id: 'fact-u9-hockey-practice-2026-11-03', type: 'event', title: 'U9 Hockey practice', detail: 'Weekly practice at Maple Grove Arena, Rink 2.', date: '2026-11-03', time: '6:00 PM–7:00 PM', applies_to: 'U9 Hockey players', action_required: false, action: '', link: '', source_document: 'U9 Hockey — Maple Grove (fictional schedule)', source_text: 'Practice is Tuesday at 6:00 PM on Rink 2.', published_at: '2026-11-01T09:00:00.000Z', confidence: 0.98, group_label: 'Weekly schedule' },
   { id: 'fact-u9-hockey-skate-fitting-2026-11-04', type: 'event', title: 'Skate fitting', detail: 'Skate fitting at the arena pro shop before the season opener.', date: '2026-11-04', time: '4:30 PM–5:30 PM', applies_to: 'U9 Hockey players', action_required: true, action: 'Bring skates for fitting', link: '', source_document: 'U9 Hockey — Maple Grove (fictional schedule)', source_text: 'Skate fitting is Wednesday between 4:30 and 5:30 PM at the pro shop.', published_at: '2026-11-01T09:00:00.000Z', confidence: 0.97, group_label: 'Season prep' },
@@ -308,6 +311,7 @@ async function initDb() {
   addColumnIfMissing('facts', 'group_summary', "group_summary TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'sport', "sport TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'level', "level TEXT DEFAULT ''");
+  addColumnIfMissing('hubs', 'website', "website TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'school_key', "school_key TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'school_name', "school_name TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'city', "city TEXT DEFAULT ''");
@@ -991,6 +995,7 @@ function rowToHub(row) {
     country: row.country || '',
     sport: row.sport || '',
     level: row.level || '',
+    website: row.website || '',
     created_by: row.created_by || '',
     created_at: row.created_at,
     is_demo: Boolean(row.is_demo),
@@ -1124,6 +1129,7 @@ function createHub(profileId, name, kind, extra) {
   let country = '';
   let sport = '';
   let level = '';
+  let website = extra && extra.website ? String(extra.website).trim() : '';
   if (cleanKind === 'school') {
     if (extra && (extra.school_name || extra.city || extra.province || extra.country)) {
       schoolName = String(extra.school_name || '').trim();
@@ -1139,7 +1145,7 @@ function createHub(profileId, name, kind, extra) {
     sport = String(extra.sport || '').trim();
     level = String(extra.level || '').trim();
   }
-  run('INSERT INTO hubs (id, name, kind, school_key, school_name, city, province, country, sport, level, created_by, created_at, is_demo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)', [
+  run('INSERT INTO hubs (id, name, kind, school_key, school_name, city, province, country, sport, level, website, created_by, created_at, is_demo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)', [
     id,
     String(name || '').trim(),
     cleanKind,
@@ -1150,6 +1156,7 @@ function createHub(profileId, name, kind, extra) {
     country,
     sport,
     level,
+    website,
     profileId,
     now,
   ]);
@@ -1162,6 +1169,13 @@ function createHub(profileId, name, kind, extra) {
   ]);
   persist();
   return { ...getHub(id), role: 'admin' };
+}
+
+function setHubWebsite(hubId, website) {
+  if (!hubId || !getHubRow(hubId)) return null;
+  run('UPDATE hubs SET website = ? WHERE id = ?', [String(website || '').trim(), hubId]);
+  persist();
+  return getHub(hubId);
 }
 
 function listHubsForProfile(profileId) {
@@ -1493,6 +1507,10 @@ function seedDemoHubs() {
   const now = new Date().toISOString();
   const hubA = ensureHub(DEMO_HUB_A_NAME, 'school', demo.id, 1);
   addMember(hubA.id, demo.id, 'admin', 'founder');
+  if (!String(hubA.website || '').trim()) {
+    run('UPDATE hubs SET website = ? WHERE id = ?', [DEMO_SCHOOL_WEBSITE, hubA.id]);
+    persist();
+  }
 
   let materialA = findMaterial(hubA.id, 'Maple Grove newsletter (mock)');
   if (!materialA) {
@@ -1594,6 +1612,7 @@ module.exports = {
   isMember,
   getMemberRole,
   createHub,
+  setHubWebsite,
   deleteHub,
   listHubsForProfile,
   createInvite,
