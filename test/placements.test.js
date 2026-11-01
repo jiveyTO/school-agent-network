@@ -98,6 +98,60 @@ test('placements: names-only profile, per-hub filtering, legacy migration', asyn
     assert.deepEqual(titles, ['lg-c', 'lg-g3', 'lg-s']);
   });
 
+  await t.test('grade spellings canonicalize to the closed vocabulary', async () => {
+    assert.deepEqual(db.GRADE_OPTIONS, ['Kindergarten'].concat(
+      Array.from({ length: 12 }, (_, i) => 'Grade ' + (i + 1))
+    ));
+    for (const [raw, want] of [
+      ['Gr 3', 'Grade 3'],
+      ['grade three', 'Grade 3'],
+      ['3', 'Grade 3'],
+      ['Grade Three', 'Grade 3'],
+      ['Grade 03', 'Grade 3'],
+      ['  grade 3  ', 'Grade 3'],
+      ['Kinder', 'Kindergarten'],
+      ['Kindergarten', 'Kindergarten'],
+      ['', ''],
+    ]) {
+      assert.equal(db.canonicalGrade(raw), want, JSON.stringify(raw));
+    }
+  });
+
+  await t.test('legacy-spelled placements still match grade-scoped facts on read', async () => {
+    // A placement row stored before the dropdown (free text) keeps working
+    // even before it is re-saved: matching canonicalizes both sides.
+    assert.equal(db.gradeMatchesScope('Grade 3', 'Gr 3'), true);
+    assert.equal(db.gradeMatchesScope('Grade 3', 'grade three'), true);
+    assert.equal(db.gradeMatchesScope('Grade 3', '3'), true);
+    assert.equal(db.gradeMatchesScope('Grades 3-5', 'grade three'), true);
+    assert.equal(db.gradeMatchesScope('Grade 4', 'Gr 3'), false);
+    assert.equal(db.gradeMatchesScope('Grade 3', 'Gr 4'), false);
+    assert.equal(db.gradeMatchesScope('Grade 3', 'Kindergarten'), false);
+    assert.equal(db.gradeMatchesScope('Kindergarten', 'kinder'), true);
+  });
+
+  await t.test('legacy spelling "Gr 3" saves canonical and sees Grade 3 facts only', async () => {
+    const profile = db.createProfile({
+      parent_name: 'Spelling Sam',
+      children: [{ name: 'Sam Jr' }],
+    });
+    const hub = db.createHub(profile.id, 'Spelling School — Spellingtown', 'school', {
+      school_name: 'Spelling School', city: 'Spellingtown', province: 'Ontario', country: 'Canada',
+    });
+    const mat = db.createMaterial(hub.id, profile.id, 'paste', 'notice', 'text', 'stored');
+    db.insertFacts(hub.id, mat.id, [
+      scopedFact('sp-s', 'School assembly', 'school', ''),
+      scopedFact('sp-g3', 'Grade 3 trip', 'grade', 'Grade 3'),
+      scopedFact('sp-g4', 'Grade 4 trip', 'grade', 'Grade 4'),
+    ], false);
+    const kid = db.getChildren(profile.id)[0];
+    db.setPlacements(hub.id, profile.id, [{ child_id: kid.id, grade: 'Gr 3', class: '' }]);
+    const rows = db.listPlacements(hub.id, profile.id);
+    assert.equal(rows[0].grade, 'Grade 3', 'saved spelling is canonical');
+    const titles = db.listFacts(hub.id, profile.id).map((f) => f.id).sort();
+    assert.deepEqual(titles, ['sp-g3', 'sp-s']);
+  });
+
   await t.test('team hubs take no placements', async () => {
     const profile = db.createProfile({ parent_name: 'Team Tam', children: [{ name: 'Tam Jr' }] });
     const hub = db.createHub(profile.id, 'U9 Team', 'team', { sport: 'Hockey', level: 'House League' });

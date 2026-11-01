@@ -721,7 +721,7 @@ function resolveAudience(actor, audience, hubId) {
   if (mode === 'grade') {
     const grade = placed.map((p) => p.grade).find((g) => String(g || '').trim());
     if (!grade) throw new Error('Add your child’s grade for this hub first, then choose that scope.');
-    return { scope: 'grade', value: String(grade) };
+    return { scope: 'grade', value: store.canonicalGrade(String(grade)) };
   }
   if (mode === 'class') {
     const className = placed.map((p) => p.class).find((c) => String(c || '').trim());

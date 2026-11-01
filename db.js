@@ -473,9 +473,49 @@ function isSubset(a, b) {
   return true;
 }
 
+// Closed grade vocabulary: every placement grade is stored as one of these
+// canonical labels, matching the "Grade N" labels extraction puts on facts.
+const GRADE_OPTIONS = ['Kindergarten'].concat(
+  Array.from({ length: 12 }, (_, i) => 'Grade ' + (i + 1))
+);
+
+const GRADE_WORD_NUMBERS = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6,
+  seventh: 7, eighth: 8, ninth: 9, tenth: 10, eleventh: 11, twelfth: 12,
+};
+
+// Numeric grade for matching: Kindergarten counts as 0 so it never falls
+// inside a numeric "Grades N-M" range but still matches itself.
+function gradeNumberOf(value) {
+  const s = String(value || '').toLowerCase();
+  if (!s.trim()) return null;
+  if (/\bkinder/.test(s) || /(^|[^a-z])(jk|sk|kg|k)([^a-z]|$)/.test(s)) return 0;
+  const digits = /(\d{1,2})/.exec(s);
+  if (digits) return Number(digits[1]);
+  for (const word of Object.keys(GRADE_WORD_NUMBERS)) {
+    if (new RegExp('\\b' + word + '\\b').test(s)) return GRADE_WORD_NUMBERS[word];
+  }
+  return null;
+}
+
+// Canonicalize a grade spelling to the closed vocabulary: "Gr 3",
+// "grade three", "3", and "Grade Three" all become "Grade 3"; kinder
+// spellings become "Kindergarten". Unrecognized input keeps its trimmed
+// text so legacy rows are never silently blanked.
+function canonicalGrade(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const n = gradeNumberOf(raw);
+  if (n == null) return raw;
+  if (n === 0) return 'Kindergarten';
+  if (n >= 1 && n <= 12) return 'Grade ' + n;
+  return raw;
+}
+
 function normalizeGrade(value) {
-  const m = /(\d{1,2})/.exec(String(value || ''));
-  return m ? Number(m[1]) : null;
+  return gradeNumberOf(value);
 }
 
 function normalizeClass(value) {
@@ -485,18 +525,37 @@ function normalizeClass(value) {
     .replace(/[^a-z0-9]/g, '');
 }
 
-function gradeMatchesScope(scopeValue, childGrade) {
-  const a = String(scopeValue || '').trim().toLowerCase();
-  const b = String(childGrade || '').trim().toLowerCase();
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const childNum = normalizeGrade(b);
-  if (childNum == null) return false;
-  const range = /(\d{1,2})\s*-\s*(\d{1,2})/.exec(a);
-  if (range) {
-    return childNum >= Number(range[1]) && childNum <= Number(range[2]);
+function scopeRangeBounds(scopeValue) {
+  const s = String(scopeValue || '');
+  const digits = [...s.matchAll(/(\d{1,2})/g)].map((m) => Number(m[1]));
+  if (digits.length >= 2) return [digits[0], digits[1]];
+  if (digits.length === 0) {
+    const words = [];
+    const lower = s.toLowerCase();
+    const wordRe = /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)\b/g;
+    let m;
+    while ((m = wordRe.exec(lower))) words.push(GRADE_WORD_NUMBERS[m[1]]);
+    if (words.length >= 2) return [words[0], words[1]];
   }
-  return normalizeGrade(a) === childNum;
+  return null;
+}
+
+function gradeMatchesScope(scopeValue, childGrade) {
+  const a = String(scopeValue || '').trim();
+  const b = String(childGrade || '').trim();
+  if (!a || !b) return false;
+  // Canonical spellings match exactly: "Gr 3", "grade three", "3", and
+  // "Grade Three" all canonicalize to "Grade 3", as does the stored value.
+  const canonA = canonicalGrade(a).toLowerCase();
+  const canonB = canonicalGrade(b).toLowerCase();
+  if (canonA && canonA === canonB) return true;
+  const childNum = gradeNumberOf(b);
+  if (childNum == null) return false;
+  const range = scopeRangeBounds(a);
+  if (range) {
+    return childNum >= range[0] && childNum <= range[1];
+  }
+  return gradeNumberOf(a) === childNum;
 }
 
 // Placements: per-child grade + optional class inside one hub. School (and
@@ -521,7 +580,7 @@ function ensurePlacements(hubId, profileId) {
   for (const kid of kids) {
     run(
       'INSERT OR IGNORE INTO placements (hub_id, child_id, grade, class_name, updated_at) VALUES (?, ?, ?, ?, ?)',
-      [hubId, kid.id, kid.grade || '', kid.class || '', now]
+      [hubId, kid.id, canonicalGrade(kid.grade || ''), kid.class || '', now]
     );
   }
   persist();
@@ -586,7 +645,7 @@ function setPlacements(hubId, profileId, list) {
     const id = item && item.child_id ? String(item.child_id) : '';
     if (!id || !byId.has(id)) throw new Error('That child is not in your family.');
     submitted.set(id, {
-      grade: String((item && item.grade) || '').trim(),
+      grade: canonicalGrade(item && item.grade),
       class: String((item && (item.class || item.class_name)) || '').trim(),
     });
   }
@@ -1553,4 +1612,8 @@ module.exports = {
   insertFacts,
   listFacts,
   listFactsForProfile,
+  GRADE_OPTIONS,
+  canonicalGrade,
+  gradeNumberOf,
+  gradeMatchesScope,
 };

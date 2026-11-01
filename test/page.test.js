@@ -317,6 +317,23 @@ test('onboarding is names-only: one or more children, no grade/class/school, bla
   assert.ok(PAGE.includes("document.getElementById('obParentName').value = ''"), 'blank means blank');
 });
 
+test('placement grade is a select with the closed vocabulary, not a typed field', () => {
+  assert.ok(PAGE.includes('<select class="placeGrade">'), 'hub placement card uses a grade select');
+  assert.ok(PAGE.includes("var GRADE_OPTIONS = ['Kindergarten', 'Grade 1', 'Grade 2', 'Grade 3', 'Grade 4',"),
+    'grade options start at Kindergarten');
+  assert.ok(PAGE.includes("'Grade 10', 'Grade 11', 'Grade 12'"), 'grade options run through Grade 12');
+  assert.ok(PAGE.includes('\'<option value="\' + g + \'"\''), 'rows build one option per closed-vocabulary grade');
+  assert.ok(PAGE.includes('canonicalGradeLabel'), 'legacy spellings render as their canonical option');
+  assert.ok(PAGE.includes('Select grade…'), 'empty placement shows the placeholder, not a guess');
+  assert.ok(!PAGE.includes('<input type="text" class="placeGrade"'), 'no typed grade field may remain');
+  assert.ok(!PAGE.includes('placeholder="e.g. Grade 3"'), 'no free-text grade placeholder may remain');
+  assert.ok(PAGE.includes('<input type="text" class="placeClass"'), 'class stays a free-text optional field');
+  const cardFn = PAGE.slice(PAGE.indexOf('function renderPlacementCard'), PAGE.indexOf('function renderPlacementCard') + 600);
+  assert.ok(cardFn.includes('placementRowHtml'), 'hub placement card renders through the shared row');
+  const familyFn = PAGE.slice(PAGE.indexOf('async function loadFamilyPlacements'), PAGE.indexOf('async function loadFamilyPlacements') + 2600);
+  assert.ok(familyFn.includes('placementRowHtml'), 'School placements section renders through the same shared row');
+});
+
 test('grade and class live in hub placements, editable from the hub view or My family', () => {
   for (const token of ['id="placementCard"', 'id="placementFields"', 'id="placementSaveBtn"',
     'id="placementSkipBtn"', 'id="placementStatus"', 'Place your children in this hub', 'Skip for now',

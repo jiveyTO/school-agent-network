@@ -1518,11 +1518,42 @@
 
   var skippedPlacementHubs = {};
 
+  var GRADE_OPTIONS = ['Kindergarten', 'Grade 1', 'Grade 2', 'Grade 3', 'Grade 4',
+    'Grade 5', 'Grade 6', 'Grade 7', 'Grade 8', 'Grade 9', 'Grade 10', 'Grade 11', 'Grade 12'];
+
+  var GRADE_WORD_NUMBERS = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+    seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+    first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6,
+    seventh: 7, eighth: 8, ninth: 9, tenth: 10, eleventh: 11, twelfth: 12
+  };
+
+  function canonicalGradeLabel(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const s = raw.toLowerCase();
+    if (/\bkinder/.test(s) || /(^|[^a-z])(jk|sk|kg|k)([^a-z]|$)/.test(s)) return 'Kindergarten';
+    const digits = /(\d{1,2})/.exec(s);
+    if (digits) {
+      const n = Number(digits[1]);
+      if (n >= 1 && n <= 12) return 'Grade ' + n;
+      return raw;
+    }
+    for (const word of Object.keys(GRADE_WORD_NUMBERS)) {
+      if (new RegExp('\\b' + word + '\\b').test(s)) return 'Grade ' + GRADE_WORD_NUMBERS[word];
+    }
+    return raw;
+  }
+
   function placementRowHtml(p) {
+    const selected = canonicalGradeLabel(p.grade || '');
+    const options = '<option value="">Select grade…</option>' + GRADE_OPTIONS.map(function (g) {
+      return '<option value="' + g + '"' + (g === selected ? ' selected' : '') + '>' + g + '</option>';
+    }).join('');
     return '<div class="place-row" data-child-id="' + esc(p.child_id || '') + '">' +
       '<p style="margin:6px 0 0"><b>' + esc(p.child_name || '') + '</b></p>' +
       '<label class="field">Grade' +
-      '<input type="text" class="placeGrade" placeholder="e.g. Grade 3" value="' + esc(p.grade || '') + '">' +
+      '<select class="placeGrade">' + options + '</select>' +
       '</label>' +
       '<label class="field">Class <span style="font-weight:400;color:var(--muted)">(optional)</span>' +
       '<input type="text" class="placeClass" placeholder="e.g. 3B" value="' + esc(p.class || '') + '">' +
