@@ -49,17 +49,43 @@ test('page keeps the ParentLoop footer and hub flow entry points', () => {
   assert.ok(PAGE.includes('id="createProfileBtn"'));
 });
 
-test('long model waits show indeterminate progress with staged status', () => {
-  assert.ok(PAGE.includes('id="materialProgress"') && PAGE.includes('id="parentProgress"'));
+test('long model waits show a thinking-dots indicator, never a progress bar', () => {
+  for (const token of ['class="progress"', 'progress-slide', 'id="materialProgress"', 'id="parentProgress"', 'progressEl']) {
+    assert.ok(!PAGE.includes(token), `${token} must be gone — no bar element remains`);
+  }
+  for (const token of ['thinking-dots', 'id="materialDots"', 'id="parentDots"', 'thinking-pulse']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  for (const id of ['materialDots', 'parentDots']) {
+    const at = PAGE.indexOf('id="' + id + '"');
+    const dots = PAGE.slice(at, at + 200);
+    assert.equal((dots.match(/<span><\/span>/g) || []).length, 3, `${id} holds exactly three dots`);
+  }
+  assert.ok(PAGE.includes('.thinking-dots > span:nth-child(2)') && PAGE.includes('.thinking-dots > span:nth-child(3)'),
+    'dots cycle one at a time via CSS-only staggered delays');
+  assert.ok(PAGE.includes('prefers-reduced-motion'), 'dot motion respects reduced-motion');
   assert.ok(PAGE.includes('startStagedStatus') && PAGE.includes('stopStagedStatus'));
-  assert.ok(PAGE.includes('progress-slide'), 'indeterminate animation, no percentages');
   for (const stage of ['Reading your material…', 'Sorting out what matters…', 'Saving to your hub…',
-    'Checking every hub for what’s still open…', 'Writing one calm summary…']) {
+    'Pulling together tonight’s summary…', 'Checking every hub for what’s still open…', 'Writing one calm summary…']) {
     assert.ok(PAGE.includes(stage), `staged text present: ${stage}`);
   }
   assert.ok(!PAGE.includes('% complete') && !PAGE.includes('percent'));
   assert.ok(PAGE.includes("inputs.forEach(function (el) { if (el) el.disabled = true; })"), 'material inputs disable during processing');
   assert.ok(PAGE.includes("inputs.forEach(function (el) { if (el) el.disabled = false; })"), 'material inputs re-enable after');
+  assert.ok(PAGE.includes('Done — one calm summary for tonight.'), 'evening completion state unchanged');
+  assert.ok(PAGE.includes('Added — '), 'add-material completion state unchanged');
+});
+
+test('add-material wait carries a reassurance line and survives navigation', () => {
+  assert.ok(PAGE.includes('id="materialWaitNote"'), 'reassurance line present on the add-material flow');
+  assert.ok(PAGE.includes('This can take up to a minute — you do not need to stay here. It will be in this hub when you come back.'));
+  assert.ok(PAGE.includes("waitNoteEl.hidden = false") && PAGE.includes("waitNoteEl.hidden = true"),
+    'reassurance line shows during extraction and hides after');
+  assert.ok(!PAGE.includes('AbortController') && !PAGE.includes('signal'), 'in-flight request is never cancelled by view changes');
+  assert.ok(PAGE.includes('if (currentHubId === hubId) await loadHubDetail(hubId)'),
+    'background finish re-renders detail only when still on that hub; returning re-fetches anyway');
+  assert.ok(PAGE.includes('dotsEl.hidden = false') && PAGE.includes('dotsEl.hidden = true'),
+    'dots show during extraction and hide after');
 });
 
 test('hub detail renders one source card per material with collapsible groups', () => {

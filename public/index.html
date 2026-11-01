@@ -204,25 +204,32 @@
   }
   .share-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
   .share-row .small-btn { text-decoration: none; }
-  .progress {
+  .thinking-row { display: flex; align-items: center; gap: 10px; }
+  .thinking-row .thinking-label { margin: 0; flex: 1; }
+  .thinking-dots {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    flex: none;
+  }
+  .thinking-dots[hidden] { display: none; }
+  .thinking-dots > span {
+    width: 8px;
     height: 8px;
-    border-radius: 999px;
-    background: var(--wash);
-    border: 1px solid var(--line);
-    overflow: hidden;
-    margin: 10px 0;
-  }
-  .progress > span {
-    display: block;
-    height: 100%;
-    width: 40%;
-    border-radius: inherit;
+    border-radius: 50%;
     background: var(--pine);
-    animation: progress-slide 1.1s ease-in-out infinite;
+    opacity: 0.25;
+    animation: thinking-pulse 1.5s ease-in-out infinite;
   }
-  @keyframes progress-slide {
-    0% { margin-left: -40%; }
-    100% { margin-left: 100%; }
+  .thinking-dots > span:nth-child(2) { animation-delay: 0.25s; }
+  .thinking-dots > span:nth-child(3) { animation-delay: 0.5s; }
+  @keyframes thinking-pulse {
+    0%, 100% { opacity: 0.25; transform: scale(0.85); }
+    50% { opacity: 1; transform: scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .thinking-dots > span { animation: none; opacity: 0.6; }
   }
   details.group-card { margin-bottom: 10px; }
   details.group-card summary { cursor: pointer; font-weight: 700; }
@@ -705,8 +712,11 @@
               <input type="file" id="materialPdf" accept="application/pdf">
             </label>
             <button class="small-btn" id="addMaterialBtn" type="button">Add it</button>
-            <div class="progress" id="materialProgress" hidden><span></span></div>
-            <p class="hint" id="materialStatus"></p>
+            <div class="thinking-row">
+              <div class="thinking-dots" id="materialDots" hidden aria-hidden="true"><span></span><span></span><span></span></div>
+              <p class="hint thinking-label" id="materialStatus"></p>
+            </div>
+            <p class="hint" id="materialWaitNote" hidden>This can take up to a minute — you do not need to stay here. It will be in this hub when you come back.</p>
             <p style="margin-top:14px"><button class="small-btn secondary" id="inviteBtn" type="button">Invite a parent</button></p>
             <p class="hint" id="inviteLink" style="word-break:break-all"></p>
             <div id="inviteShare" hidden>
@@ -749,8 +759,10 @@
     <section aria-labelledby="parent-run-h">
       <h2 id="parent-run-h">Evening check</h2>
       <button id="parentRunBtn" type="button">Run my evening check</button>
-      <div class="progress" id="parentProgress" hidden><span></span></div>
-      <p class="hint" id="parentStatus">One calm summary of what’s still open for Maya tonight.</p>
+      <div class="thinking-row">
+        <div class="thinking-dots" id="parentDots" hidden aria-hidden="true"><span></span><span></span><span></span></div>
+        <p class="hint thinking-label" id="parentStatus">One calm summary of what’s still open for Maya tonight.</p>
+      </div>
       <div class="error-card" id="parentError" hidden>
         <p><b>That didn’t work.</b> <span id="parentErrorText"></span></p>
         <button class="retry-btn" id="parentRetry" type="button">Try again</button>
@@ -825,8 +837,9 @@
       .replace(/"/g, '&quot;');
   }
 
-  // Indeterminate model-wait progress: cycles staged text while the real
-  // duration stays unknown. No fake completion.
+  // Model-wait thinking indicator: three dots cycle gently (CSS-only)
+  // beside a staged status line while the real duration stays unknown.
+  // No fake completion.
   function startStagedStatus(el, stages) {
     let i = 0;
     el.textContent = stages[0];
@@ -1967,7 +1980,7 @@
   parentRunBtn.addEventListener('click', async function () {
     parentRunBtn.disabled = true;
     parentRunBtn.textContent = 'Checking…';
-    document.getElementById('parentProgress').hidden = false;
+    document.getElementById('parentDots').hidden = false;
     const stages = startStagedStatus(parentStatus, [
       'Pulling together tonight’s summary…',
       'Checking every hub for what’s still open…',
@@ -2002,7 +2015,7 @@
       parentStatus.textContent = 'That check didn’t work — here’s what happened.';
     } finally {
       stopStagedStatus(stages);
-      document.getElementById('parentProgress').hidden = true;
+      document.getElementById('parentDots').hidden = true;
       parentRunBtn.disabled = false;
       parentRunBtn.textContent = 'Run my evening check';
     }
@@ -2333,7 +2346,8 @@
   document.getElementById('addMaterialBtn').addEventListener('click', async function () {
     const btn = document.getElementById('addMaterialBtn');
     const statusEl = document.getElementById('materialStatus');
-    const progressEl = document.getElementById('materialProgress');
+    const dotsEl = document.getElementById('materialDots');
+    const waitNoteEl = document.getElementById('materialWaitNote');
     const inputs = ['materialText', 'materialPdf'].map(function (id) {
       return document.getElementById(id);
     });
@@ -2341,7 +2355,8 @@
     if (!hubId) { statusEl.textContent = 'Choose a hub first.'; return; }
     btn.disabled = true;
     inputs.forEach(function (el) { if (el) el.disabled = true; });
-    progressEl.hidden = false;
+    dotsEl.hidden = false;
+    waitNoteEl.hidden = false;
     const stages = startStagedStatus(statusEl, [
       'Reading your material…',
       'Sorting out what matters…',
@@ -2369,13 +2384,18 @@
       }
       statusEl.textContent = 'Added — ' + data.facts_added + ' shared notes found.';
       document.getElementById('materialText').value = '';
-      await loadHubs(hubId);
-      await loadHubDetail(hubId);
+      // The extraction request is never cancelled by view changes, so a
+      // background finish still lands: refresh the list, and re-render the
+      // detail only if the viewer is still on this hub. Returning to the hub
+      // re-fetches anyway, so the finished material is always shown.
+      await loadHubs();
+      if (currentHubId === hubId) await loadHubDetail(hubId);
     } catch (e) {
       statusEl.textContent = e.message;
     } finally {
       stopStagedStatus(stages);
-      progressEl.hidden = true;
+      dotsEl.hidden = true;
+      waitNoteEl.hidden = true;
       inputs.forEach(function (el) { if (el) el.disabled = false; });
       btn.disabled = false;
     }
