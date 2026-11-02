@@ -2268,6 +2268,23 @@
     }
   }
 
+  // Precedence for the website autofill: fields the page parse returned win
+  // over the remembered location; the remembered location only fills the
+  // fields the parse left blank. Pure helper so the rule is pinnable.
+  function mergeParsedSchoolLocation(parsed, remembered) {
+    parsed = parsed || {};
+    remembered = remembered || {};
+    var out = {};
+    var keys = ['city', 'province', 'country'];
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var fromPage = parsed[key] == null ? '' : String(parsed[key]).trim();
+      var fromMemory = remembered[key] == null ? '' : String(remembered[key]).trim();
+      out[key] = fromPage || fromMemory || '';
+    }
+    return out;
+  }
+
   function prefillSchoolLocation() {
     const cityEl = document.getElementById('hubSchoolCity');
     const provEl = document.getElementById('hubSchoolProvince');
@@ -2429,9 +2446,13 @@
         if (f.level) document.getElementById('hubLevel').value = f.level;
       } else {
         if (f.school_name) document.getElementById('hubSchoolName').value = f.school_name;
-        if (f.city) document.getElementById('hubSchoolCity').value = f.city;
-        if (f.province) document.getElementById('hubSchoolProvince').value = f.province;
-        if (f.country) document.getElementById('hubSchoolCountry').value = f.country;
+        // A page-provided value always wins over the remembered location;
+        // fields the parse left blank keep what is already in the form
+        // (manual edits and the remembered-location prefill stay as-is).
+        var merged = mergeParsedSchoolLocation(f, readSavedSchoolLocation());
+        if (f.city) document.getElementById('hubSchoolCity').value = merged.city;
+        if (f.province) document.getElementById('hubSchoolProvince').value = merged.province;
+        if (f.country) document.getElementById('hubSchoolCountry').value = merged.country;
       }
       resetHubConflictCard();
       statusEl.textContent = 'Filled from ' + data.domain + ' — give it a quick check.';
