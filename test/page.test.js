@@ -1005,3 +1005,62 @@ test('onboarding action cluster breathes: one rhythm from child row to demo link
   assert.ok(!PAGE.includes('overflow-x: hidden'),
     'no page-level overflow clipping masks unwrapped content');
 });
+
+test('invite landing and account choice hide the demo pill for the demo viewer (brief 037)', () => {
+  assert.ok(PAGE.includes('id="demoPill"'), 'pill carries a gate id');
+  assert.ok(PAGE.includes('Demo — fictional school &amp; family'), 'pill copy unchanged');
+  assert.ok(PAGE.includes('id="joinView"'), 'invite landing present');
+  assert.ok(PAGE.includes('You’re invited'), 'invite landing copy unchanged');
+  assert.ok(PAGE.includes('id="joinChoice"'), 'account-choice screen present');
+  assert.ok(PAGE.includes('Already have an account?'), 'account-choice copy unchanged');
+  assert.ok(PAGE.includes('New here?'), 'account-choice copy unchanged');
+  function paintBody() {
+    const src = pageFnSource('paintDemoBar');
+    const open = src.indexOf('{');
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(open + 1, i); }
+    }
+    assert.fail('paintDemoBar body never closes');
+  }
+  const body = paintBody();
+  function repaint(els, demoViewing, joinFlowActive) {
+    const fn = new Function('document', 'demoBar', 'tabBar', 'demoViewing', 'joinFlowActive', body);
+    fn({ getElementById: (id) => els[id] }, els.demoBar, els.tabBar, demoViewing, joinFlowActive);
+  }
+  function freshEls(joinVisible) {
+    return {
+      demoPill: { hidden: true },
+      demoBar: { hidden: true },
+      tabBar: { hidden: true },
+      joinView: { hidden: !joinVisible },
+    };
+  }
+  let els = freshEls(true);
+  repaint(els, true, true);
+  assert.equal(els.demoPill.hidden, true, 'invite landing hides the pill for the demo viewer');
+  els = freshEls(true);
+  repaint(els, true, true);
+  assert.equal(els.demoPill.hidden, true, 'account-choice screen hides the pill for the demo viewer');
+  els = freshEls(false);
+  repaint(els, true, true);
+  assert.equal(els.demoPill.hidden, true, 'join-flow transition (family setup) hides the pill');
+  els = freshEls(false);
+  els.tabBar.hidden = false;
+  repaint(els, true, false);
+  assert.equal(els.demoPill.hidden, false, 'demo home still shows the pill for the demo viewer');
+  assert.equal(els.demoBar.hidden, false, 'demo home still shows the demo bar for the demo viewer');
+  els = freshEls(false);
+  els.tabBar.hidden = false;
+  repaint(els, false, false);
+  assert.equal(els.demoPill.hidden, true, 'non-demo viewer never sees the pill');
+  assert.ok(pageFnSource('showJoin').includes('joinFlowActive = true'),
+    'showJoin marks the join flow so the pill stays hidden');
+  assert.ok(pageFnSource('showJoin').includes('paintDemoBar()'), 'showJoin repaints the pill');
+  assert.ok(pageFnSource('showMain').includes('joinFlowActive = false'),
+    'showMain clears the join flow when the hub lands');
+  assert.ok(pageFnSource('showMain').includes('paintDemoBar()'), 'showMain repaints the pill');
+  assert.ok(pageFnSource('showJoinChoice').includes('showJoin()'),
+    'account choice re-enters the join view (and its pill-hidden paint)');
+});
