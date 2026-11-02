@@ -287,7 +287,7 @@ test('member hubs use card picker plus toggle; no dropdown', () => {
   assert.ok(PAGE.includes('aria-current'));
   assert.ok(PAGE.includes('markSelectedHub'));
   assert.ok(PAGE.includes('startHubOpen'));
-  assert.ok(PAGE.includes('form.hidden = !startHubOpen'));
+  assert.ok(PAGE.includes('card.hidden = !startHubOpen'));
   assert.ok(PAGE.includes('startHubOpen = false;'), 'successful create collapses the form');
 });
 
@@ -340,7 +340,8 @@ test('start-a-hub guides school naming and handles duplicate school hubs', () =>
 });
 
 test('my hubs branches on membership: zero-hub welcome vs member list; detail lives on the hub page', () => {
-  for (const token of ['id="welcomeHubs"', 'id="welcomeHubFormSlot"', 'id="startHubCard"',
+  for (const token of ['id="welcomeHubs"', 'id="welcomeHubFormSlot"', 'id="startHubForm"',
+    'id="startHubCard"', 'id="startHubCardSlot"',
     'id="viewHub"', 'id="hubBackBtn"', 'applyHubBranch']) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
@@ -364,8 +365,52 @@ test('my hubs branches on membership: zero-hub welcome vs member list; detail li
     PAGE.indexOf('id="welcomeHubFormSlot"')
   );
   assert.ok(PAGE.includes("slot.appendChild(form)") || PAGE.includes('welcomeHubFormSlot'));
-  assert.ok(PAGE.includes("list.after(form)"));
+  assert.ok(PAGE.includes("cardSlot.appendChild(form)"));
+  assert.ok(PAGE.includes("list.after(card)"));
   assert.ok(PAGE.includes("await loadHubs(data.hub.id)"), 'creating the first hub must re-render without reload');
+});
+
+test('zero-hub start-a-hub is one card: title, explainers, form, invite line, no nested card', () => {
+  const welcome = PAGE.slice(PAGE.indexOf('<div class="card" id="welcomeHubs"'), PAGE.indexOf('id="hubsList"'));
+  assert.equal((welcome.match(/class="card"/g) || []).length, 1,
+    'the zero-hub composition must render exactly one card container');
+  assert.ok(!welcome.includes('<b>Start a hub</b>'),
+    'the merged card carries one heading — the form’s own "Start a hub" heading is gone here');
+  assert.ok(PAGE.includes('<div id="welcomeHubFormSlot"><div id="startHubForm">'),
+    'the form is a plain block inside the welcome card, not a card of its own');
+  for (const token of ['Start your first hub', 'id="hubKind"', 'id="hubWebsite"',
+    'id="websiteFillBtn"', 'id="hubName"', 'id="hubSchoolName"', 'id="hubSchoolCity"',
+    'id="hubSchoolProvince"', 'id="hubSchoolCountry"', 'id="hubSport"', 'id="hubLevel"',
+    'id="hubKindHelp"', 'id="createHubBtn"', 'Start this hub', 'id="hubConflictCard"',
+    'id="hubCreateStatus"']) {
+    assert.ok(welcome.includes(token), `merged card must contain ${token}`);
+  }
+  assert.ok(
+    welcome.indexOf('Start your first hub') <
+    welcome.indexOf('everyone else joins by invite.') <
+    welcome.indexOf('Just you for now?') <
+    welcome.indexOf('welcomeHubFormSlot') <
+    welcome.indexOf('Got an invite link'),
+    'merged card keeps today’s order: title, explainers, form, invite line'
+  );
+});
+
+test('has-hubs start-a-hub keeps its own card and expander; form is never nested', () => {
+  const shell = PAGE.slice(PAGE.indexOf('id="startHubCard"'), PAGE.indexOf('id="viewHub"'));
+  assert.ok(shell.includes('<b>Start a hub</b>'), 'the has-hubs card keeps its heading');
+  assert.ok(shell.includes('id="startHubCardSlot"'), 'the has-hubs card hosts the form slot');
+  for (const token of ['id="hubKind"', 'id="createHubBtn"']) {
+    assert.ok(!shell.includes(token), `the form must not be duplicated in the shell — ${token} lives in the single movable form`);
+  }
+  const fn = PAGE.slice(PAGE.indexOf('function applyHubBranch'), PAGE.indexOf('async function loadHubDetail'));
+  const elseAt = fn.indexOf('} else {');
+  assert.ok(elseAt !== -1 && fn.includes('cardSlot.appendChild(form)') && fn.includes('list.after(card)'),
+    'has-hubs branch moves the plain form into its own card after the list');
+  assert.ok(fn.indexOf('cardSlot.appendChild(form)') < elseAt, 'form-to-shell move happens in the has-hubs branch');
+  assert.ok(fn.indexOf('slot.appendChild(form)') > elseAt, 'form-to-welcome move happens in the zero-hub branch');
+  assert.ok(fn.includes('card.hidden = true'), 'zero-hub branch keeps the spare shell hidden');
+  assert.ok(PAGE.includes("getElementById('startHubCard').hidden = !startHubOpen"),
+    'the + Start a hub toggle still expands the shell card');
 });
 
 test('hub cards open a dedicated hub view; the back control returns to the list', () => {
@@ -730,8 +775,8 @@ test('start-a-hub autofill confirmation reads as a notice, not a wedged hint lin
 });
 
 test('start-a-hub card holds one vertical rhythm before and after filling', () => {
-  for (const token of ['#startHubCard { display: grid;', '#startHubCard[hidden] { display: none; }',
-    '#startHubCard > * { min-width: 0; }', '#startHubCard .field { margin-bottom: 0; }',
+  for (const token of ['#startHubForm { display: grid;', '#startHubForm[hidden] { display: none; }',
+    '#startHubForm > * { min-width: 0; }', '#startHubForm .field { margin-bottom: 0; }',
     '#schoolNameWrap', '#teamFieldsWrap', 'gap: 12px']) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }

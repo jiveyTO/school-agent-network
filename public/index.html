@@ -490,14 +490,16 @@
   .small-btn:disabled { opacity: 0.55; cursor: wait; }
   .add-material { display: grid; gap: 12px; }
   .add-material .field { margin-bottom: 0; }
-  /* Start-a-hub card: one consistent vertical rhythm (12px field-to-field,
+  /* Start-a-hub form: one consistent vertical rhythm (12px field-to-field,
      matching .field's own margin and the add-material grid), so the form
-     reads the same before and after autofill. */
-  #startHubCard { display: grid; gap: 14px; }
-  #startHubCard[hidden] { display: none; }
-  #startHubCard > * { min-width: 0; }
-  #startHubCard > p, #startHubFields > .hint { margin: 0; }
-  #startHubCard .field { margin-bottom: 0; }
+     reads the same before and after autofill. The form is one plain block
+     moved between the zero-hub card and the "+ Start a hub" expander card,
+     never a card of its own, so the rhythm rule lives on the form itself. */
+  #startHubForm { display: grid; gap: 14px; }
+  #startHubForm[hidden] { display: none; }
+  #startHubForm > * { min-width: 0; }
+  #startHubForm > p, #startHubFields > .hint { margin: 0; }
+  #startHubForm .field { margin-bottom: 0; }
   #kindFieldWrap, #websiteFieldWrap, #startHubFields, #singleNameWrap,
   #schoolNameWrap, #teamFieldsWrap { display: grid; gap: 12px; }
   #kindFieldWrap[hidden], #websiteFieldWrap[hidden], #startHubFields[hidden],
@@ -655,86 +657,88 @@
         <h3 id="welcome-hubs-h" style="margin-top:0">Start your first hub</h3>
         <p>A hub is your class’s or team’s shared space for newsletters and notices. One parent starts it, everyone else joins by invite.</p>
         <p>Just you for now? That works too — start the hub, add your newsletters, and invite other parents whenever you’re ready.</p>
-        <div id="welcomeHubFormSlot"></div>
+        <div id="welcomeHubFormSlot"><div id="startHubForm">
+          <div id="kindFieldWrap">
+            <label class="field">What kind of hub is it?
+              <select id="hubKind">
+                <option value="school">School</option>
+                <option value="team">Team</option>
+                <option value="activity">Activity</option>
+                <option value="other">Something else</option>
+              </select>
+            </label>
+          </div>
+          <div id="websiteFieldWrap" hidden>
+            <label class="field"><span id="websiteLabel">School website</span>
+              <input type="url" id="hubWebsite" placeholder="https://" inputmode="url">
+            </label>
+            <button class="small-btn secondary" id="websiteFillBtn" type="button">Fill it in for me</button>
+            <p class="autofill-note" id="parseLinkStatus"></p>
+          </div>
+          <div id="startHubFields">
+            <div id="singleNameWrap">
+              <label class="field">Hub name
+                <input type="text" id="hubName" placeholder="e.g. Grade 3 — Maple Grove Elementary">
+              </label>
+            </div>
+            <div id="schoolNameWrap" hidden>
+              <label class="field">School name
+                <input type="text" id="hubSchoolName" placeholder="e.g. St. Nicholas">
+              </label>
+              <label class="field">City
+                <input type="text" id="hubSchoolCity" placeholder="e.g. Willow Creek">
+              </label>
+              <label class="field">State / Province
+                <input type="text" id="hubSchoolProvince" placeholder="e.g. Ontario">
+              </label>
+              <label class="field">Country
+                <input type="text" id="hubSchoolCountry" placeholder="e.g. Canada">
+              </label>
+            </div>
+            <div id="teamFieldsWrap" hidden>
+              <label class="field">Sport
+                <select id="hubSport">
+                  <option value="">Choose a sport…</option>
+                  <option>Hockey</option>
+                  <option>Soccer</option>
+                  <option>Baseball</option>
+                  <option>Softball</option>
+                  <option>Basketball</option>
+                  <option>Volleyball</option>
+                  <option>Lacrosse</option>
+                  <option>Swimming</option>
+                  <option>Other</option>
+                </select>
+              </label>
+              <label class="field">Level / League
+                <input type="text" id="hubLevel" list="hubLevelOptions" placeholder="e.g. House League">
+                <datalist id="hubLevelOptions">
+                  <option value="House League"></option>
+                  <option value="Select"></option>
+                  <option value="Rep"></option>
+                  <option value="A"></option>
+                  <option value="AA"></option>
+                  <option value="AAA"></option>
+                </datalist>
+              </label>
+            </div>
+            <p class="hint" id="hubKindHelp" hidden>Name it for the whole school — parents from every grade join this one hub, and each family's agent shows only what matches their child.</p>
+            <button class="small-btn" id="createHubBtn" type="button">Start this hub</button>
+          </div>
+          <div id="hubConflictCard" hidden>
+            <p style="margin-top:0" id="hubConflictText"></p>
+            <button class="small-btn" id="hubJoinRequestBtn" type="button">Request to join</button>
+            <button class="small-btn" id="hubForceCreateBtn" type="button" hidden>Different school — create mine anyway</button>
+            <p class="hint" id="hubJoinRequestStatus"></p>
+          </div>
+          <p class="hint" id="hubCreateStatus"></p>
+        </div></div>
         <p class="hint">Got an invite link from another parent? Just open it — it brings you straight into their hub.</p>
       </div>
       <div id="hubsList"><p class="facts-empty">Loading your hubs…</p></div>
-      <div class="card" id="startHubCard" style="margin-top:12px">
+      <div class="card" id="startHubCard" style="margin-top:12px" hidden>
         <p style="margin-top:0"><b>Start a hub</b></p>
-        <div id="kindFieldWrap">
-          <label class="field">What kind of hub is it?
-            <select id="hubKind">
-              <option value="school">School</option>
-              <option value="team">Team</option>
-              <option value="activity">Activity</option>
-              <option value="other">Something else</option>
-            </select>
-          </label>
-        </div>
-        <div id="websiteFieldWrap" hidden>
-          <label class="field"><span id="websiteLabel">School website</span>
-            <input type="url" id="hubWebsite" placeholder="https://" inputmode="url">
-          </label>
-          <button class="small-btn secondary" id="websiteFillBtn" type="button">Fill it in for me</button>
-          <p class="autofill-note" id="parseLinkStatus"></p>
-        </div>
-        <div id="startHubFields">
-          <div id="singleNameWrap">
-            <label class="field">Hub name
-              <input type="text" id="hubName" placeholder="e.g. Grade 3 — Maple Grove Elementary">
-            </label>
-          </div>
-          <div id="schoolNameWrap" hidden>
-            <label class="field">School name
-              <input type="text" id="hubSchoolName" placeholder="e.g. St. Nicholas">
-            </label>
-            <label class="field">City
-              <input type="text" id="hubSchoolCity" placeholder="e.g. Willow Creek">
-            </label>
-            <label class="field">State / Province
-              <input type="text" id="hubSchoolProvince" placeholder="e.g. Ontario">
-            </label>
-            <label class="field">Country
-              <input type="text" id="hubSchoolCountry" placeholder="e.g. Canada">
-            </label>
-          </div>
-          <div id="teamFieldsWrap" hidden>
-            <label class="field">Sport
-              <select id="hubSport">
-                <option value="">Choose a sport…</option>
-                <option>Hockey</option>
-                <option>Soccer</option>
-                <option>Baseball</option>
-                <option>Softball</option>
-                <option>Basketball</option>
-                <option>Volleyball</option>
-                <option>Lacrosse</option>
-                <option>Swimming</option>
-                <option>Other</option>
-              </select>
-            </label>
-            <label class="field">Level / League
-              <input type="text" id="hubLevel" list="hubLevelOptions" placeholder="e.g. House League">
-              <datalist id="hubLevelOptions">
-                <option value="House League"></option>
-                <option value="Select"></option>
-                <option value="Rep"></option>
-                <option value="A"></option>
-                <option value="AA"></option>
-                <option value="AAA"></option>
-              </datalist>
-            </label>
-          </div>
-          <p class="hint" id="hubKindHelp" hidden>Name it for the whole school — parents from every grade join this one hub, and each family's agent shows only what matches their child.</p>
-          <button class="small-btn" id="createHubBtn" type="button">Start this hub</button>
-        </div>
-        <div id="hubConflictCard" hidden>
-          <p style="margin-top:0" id="hubConflictText"></p>
-          <button class="small-btn" id="hubJoinRequestBtn" type="button">Request to join</button>
-          <button class="small-btn" id="hubForceCreateBtn" type="button" hidden>Different school — create mine anyway</button>
-          <p class="hint" id="hubJoinRequestStatus"></p>
-        </div>
-        <p class="hint" id="hubCreateStatus"></p>
+        <div id="startHubCardSlot"></div>
       </div>
     </section>
     </div>
@@ -1902,8 +1906,10 @@
 
   function applyHubBranch(hasHubs) {
     const welcome = document.getElementById('welcomeHubs');
-    const form = document.getElementById('startHubCard');
+    const card = document.getElementById('startHubCard');
+    const form = document.getElementById('startHubForm');
     const slot = document.getElementById('welcomeHubFormSlot');
+    const cardSlot = document.getElementById('startHubCardSlot');
     const list = document.getElementById('hubsList');
     const toggle = document.getElementById('startHubToggle');
     if (hasHubs) {
@@ -1911,11 +1917,12 @@
       list.hidden = false;
       toggle.hidden = false;
       toggle.setAttribute('aria-expanded', startHubOpen ? 'true' : 'false');
-      form.hidden = !startHubOpen;
-      list.after(form);
+      cardSlot.appendChild(form);
+      card.hidden = !startHubOpen;
+      list.after(card);
     } else {
       slot.appendChild(form);
-      form.hidden = false;
+      card.hidden = true;
       toggle.hidden = true;
       welcome.hidden = false;
       list.hidden = true;
