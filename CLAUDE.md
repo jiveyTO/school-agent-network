@@ -64,6 +64,22 @@ print them. Remove `/tmp/parentloop-deploy` afterwards.
 4. Durability: boot logs show the durable store restore line (e.g.
    "database restored from hosted storage") and the ENGAGED line, and a
    fresh Google sign-in restores the account's family (not demo).
+5. Data conservation (briefs 032/036): the deploy must not lose or
+   reseed the hosted database. Before deploying, copy the live object
+   to scratch WITHOUT writing anything back (`gcloud storage cp
+   gs://$APP_DB_GCS_BUCKET/$APP_DB_GCS_OBJECT /tmp/pre-deploy.db`,
+   bucket/object names read from the local `.env`, never printed) and
+   record profile+hub counts with a read-only query (open the copy
+   `mode=ro`, e.g. `python3 -c` with sqlite3:
+   `SELECT COUNT(*) FROM profiles` and the same for `hubs`). After
+   the new revision serves traffic, repeat into
+   `/tmp/post-deploy.db`. Both counts must be >= the pre-deploy
+   counts; any drop — in particular a collapse to seed/demo-only
+   counts — fails the deploy loudly: roll back and report instead of
+   proceeding. Runner jobs never write the durable object directly
+   (no uploads, no bucket writes); the deployed service is the single
+   writer, and any job whose brief touches the production database
+   records the same pre/post count tuple around its own action.
 
 ## Privacy (hard rules)
 

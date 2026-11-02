@@ -50,6 +50,26 @@ let durableDirty = false;
 let durableUploadTimer = null;
 let durableToken = null;
 let durableTokenExpiresAt = 0;
+// Brief 036: a failed restore must never let a fresh seed overwrite the live
+// database. Outcome of this boot's restore attempt: 'unattempted' (store
+// disabled), 'absent' (no object existed, first boot may seed it), 'restored'
+// (in-memory content is the stored object), or 'failed' (see below).
+let durableRestoreOutcome = 'unattempted';
+// Write-back is allowed only while this is true. Any restore failure, any
+// refused upload, or any generation mismatch disables it for the rest of the
+// boot, so a stale or seed-holding instance can never clobber the stored
+// object. Degraded choice (brief 036): keep serving (seed or stale-local)
+// with write-back hard-disabled and loud logs, rather than refusing traffic
+// and crash-looping the demo on a transient storage blip.
+let durableWriteBackEnabled = true;
+let durableWriteBackRefusalLogged = false;
+// Generation of the stored object observed at restore time. Uploads carry it
+// as an ifGenerationMatch precondition so a stale instance loses with HTTP
+// 412 instead of overwriting a newer object. Null when unknown (e.g. the
+// storage stub in tests, or a metadata fetch that failed) — uploads then go
+// without a precondition, exactly as before.
+let durableRemoteGeneration = null;
+let durableRemoteSize = null;
 
 function durableConfig() {
   const bucket = (process.env.APP_DB_GCS_BUCKET || '').trim();
@@ -93,29 +113,99 @@ function durableAuthHeaders() {
   return durableAccessToken().then((token) => ({ Authorization: 'Bearer ' + token }));
 }
 
+// Fails the boot's restore loudly and disables write-back for the rest of
+// the boot. The instance keeps serving (seed or stale-local) but NOTHING it
+// holds may overwrite the stored object.
+function durableRestoreFailed(cfg, reason) {
+  durableRestoreOutcome = 'failed';
+  durableWriteBackEnabled = false;
+  console.warn(
+    `DURABLE STORE RESTORE FAILED — WRITE-BACK DISABLED: ${reason} ` +
+      `(bucket="${cfg.bucket}" object="${cfg.object}"). ` +
+      'Serving without the hosted restore; local writes will NOT overwrite the stored object.'
+  );
+}
+
+// The stored object is authoritative only when the bytes we downloaded are
+// plausibly that object: non-empty, SQLite-shaped, and (when the metadata
+// fetch told us the size) exactly the stored size. Anything else means the
+// download is corrupt or truncated, and installing it — or later uploading a
+// seed over the real object — would destroy data.
+function durableDownloadedBytesValid(bytes) {
+  if (!bytes || bytes.length === 0) return false;
+  if (bytes.slice(0, 16).toString('binary') !== 'SQLite format 3\x00') return false;
+  if (durableRemoteSize != null && bytes.length !== durableRemoteSize) return false;
+  return true;
+}
+
 // Returns true when a database was restored. Never throws: on any failure
-// the caller falls back to the local file/seed path.
+// the caller falls back to the local file/seed path — but with write-back
+// disabled (see durableRestoreFailed), so the fallback seed can never
+// overwrite the stored object.
 async function restoreDurableStore() {
   const cfg = durableConfig();
-  if (!cfg) return false;
+  if (!cfg) {
+    durableRestoreOutcome = 'unattempted';
+    return false;
+  }
+  const objectPath =
+    '/storage/v1/b/' + encodeURIComponent(cfg.bucket) + '/o/' + encodeURIComponent(cfg.object);
   try {
     const headers = await durableAuthHeaders();
-    const url =
-      cfg.endpoint +
-      '/storage/v1/b/' +
-      encodeURIComponent(cfg.bucket) +
-      '/o/' +
-      encodeURIComponent(cfg.object) +
-      '?alt=media';
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
-    if (res.status === 404) return false;
-    if (!res.ok) throw new Error('download HTTP ' + res.status);
+    // Metadata first: distinguishes "no object yet" (first boot may seed it)
+    // from "stored object exists" (a later failure must disable write-back).
+    // Tolerated when it fails — the media fetch below still decides.
+    try {
+      const meta = await fetch(cfg.endpoint + objectPath, {
+        headers,
+        signal: AbortSignal.timeout(15000),
+      });
+      if (meta.status === 404) {
+        durableRestoreOutcome = 'absent';
+        return false;
+      }
+      if (meta.ok) {
+        const info = await meta.json();
+        if (info && info.generation != null) durableRemoteGeneration = String(info.generation);
+        if (info && info.size != null && !Number.isNaN(Number(info.size))) {
+          durableRemoteSize = Number(info.size);
+        }
+      }
+    } catch {
+      // Metadata is advisory only; the download below is authoritative.
+    }
+    const res = await fetch(cfg.endpoint + objectPath + '?alt=media', {
+      headers,
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.status === 404) {
+      durableRestoreOutcome = 'absent';
+      return false;
+    }
+    if (!res.ok) {
+      durableRestoreFailed(cfg, 'download HTTP ' + res.status);
+      return false;
+    }
     const bytes = Buffer.from(await res.arrayBuffer());
+    // Prefer the download's own generation stamp when the server sends one.
+    const genHeader = res.headers && res.headers.get && res.headers.get('x-goog-generation');
+    if (genHeader) durableRemoteGeneration = String(genHeader);
+    if (!durableDownloadedBytesValid(bytes)) {
+      durableRestoreFailed(
+        cfg,
+        `downloaded bytes failed validation (length=${bytes.length}` +
+          (durableRemoteSize != null ? `, stored size=${durableRemoteSize}` : ', stored size unknown') +
+          '): refusing to install them over the local database'
+      );
+      return false;
+    }
     fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
     fs.writeFileSync(DB_PATH, bytes);
+    durableRestoreOutcome = 'restored';
+    durableWriteBackEnabled = true;
     return true;
   } catch (err) {
-    console.warn('durable store restore skipped:', err && err.message ? err.message : err);
+    durableRestoreFailed(cfg, err && err.message ? err.message : String(err));
     return false;
   }
 }
@@ -124,21 +214,55 @@ async function durableUploadFromFile() {
   const cfg = durableConfig();
   if (!cfg || !durableDirty) return false;
   if (!fs.existsSync(DB_PATH)) return false;
+  if (!durableWriteBackEnabled) {
+    if (!durableWriteBackRefusalLogged) {
+      durableWriteBackRefusalLogged = true;
+      console.warn(
+        'durable store: write-back disabled for this boot — local database will NOT be uploaded ' +
+          `(bucket="${cfg.bucket}" object="${cfg.object}").`
+      );
+    }
+    return false;
+  }
   const headers = await durableAuthHeaders();
   headers['Content-Type'] = 'application/octet-stream';
-  const url =
+  let url =
     cfg.endpoint +
     '/upload/storage/v1/b/' +
     encodeURIComponent(cfg.bucket) +
     '/o?uploadType=media&name=' +
     encodeURIComponent(cfg.object);
+  // Optimistic concurrency: a restored instance may only overwrite the exact
+  // generation it restored; a first-boot seed may only create the object when
+  // nothing exists yet. A stale instance gets HTTP 412 and is disabled below.
+  if (durableRemoteGeneration != null) {
+    url += '&ifGenerationMatch=' + encodeURIComponent(durableRemoteGeneration);
+  } else if (durableRestoreOutcome === 'absent') {
+    url += '&ifGenerationMatch=0';
+  }
   const res = await fetch(url, {
     method: 'POST',
     headers,
     body: fs.readFileSync(DB_PATH),
     signal: AbortSignal.timeout(30000),
   });
+  if (res.status === 412) {
+    durableWriteBackEnabled = false;
+    console.warn(
+      `DURABLE STORE WRITE-BACK REFUSED — generation precondition failed (HTTP 412) ` +
+        `(bucket="${cfg.bucket}" object="${cfg.object}"). ` +
+        'The stored object changed under this instance; local writes will NOT overwrite it. WRITE-BACK DISABLED for the rest of this boot.'
+    );
+    return false;
+  }
   if (!res.ok) throw new Error('upload HTTP ' + res.status);
+  try {
+    const body = await res.json();
+    if (body && body.generation != null) durableRemoteGeneration = String(body.generation);
+  } catch {
+    // Upload succeeded; a missing generation in the reply just means the
+    // next upload goes without a precondition.
+  }
   return true;
 }
 
