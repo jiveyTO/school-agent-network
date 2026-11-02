@@ -1229,6 +1229,9 @@
           '<a class="toggle-btn" href="/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(m.id) + '/file" target="_blank" rel="noopener">View original PDF</a>' +
           '</div>';
       }
+      if (m.may_have_unread_pictures) {
+        body += '<p class="hint" style="margin:6px 0">Part of this document may be inside pictures, so we couldn\'t read it. If something looks missing, have a look at the original.</p>';
+      }
       if (!items.length) {
         body += m.status === 'failed'
           ? '<p class="facts-empty">We couldn\'t pull any notes out of that one — try pasting it again.</p>'
