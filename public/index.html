@@ -1270,6 +1270,7 @@
   }
 
   let currentChildFirst = 'Maya';
+  let currentChildAll = 'Maya';
 
   var currentProfile = null;
 
@@ -1283,6 +1284,8 @@
     const kids = (profile.children && profile.children.length ? profile.children : [profile.child || {}]);
     const firstName = (kids[0] && kids[0].name) || 'your child';
     currentChildFirst = firstName.split(' ')[0];
+    const allFirsts = kids.map(function (k) { return String((k && k.name) || '').trim().split(' ')[0]; }).filter(Boolean);
+    currentChildAll = allFirsts.length ? allFirsts.join(' and ') : 'your family';
     parentStatus.textContent = 'One calm summary of what’s still open for ' + currentChildFirst + ' tonight.';
     const parentLast = (profile.parent.name || '').trim().split(' ').slice(-1)[0] || 'Your';
     familyCardEl.innerHTML =
@@ -1344,7 +1347,7 @@
     const hold = result.calendar_hold;
     let html = '';
     html += '<p class="hint">We checked ' + esc(result.checked_count != null ? result.checked_count : '') +
-      ' school notes · ' + esc(result.relevant_count != null ? result.relevant_count : '') + ' matter for ' + esc(currentChildFirst) + ' · ' +
+      ' school notes · ' + esc(result.relevant_count != null ? result.relevant_count : '') + ' matter for ' + esc(currentChildAll) + ' · ' +
       esc(result.filtered_out_count != null ? result.filtered_out_count : '') + ' set aside. ' +
       esc(result.filtering_summary || result.summary || '') + '</p>';
     if (nudges.length) {

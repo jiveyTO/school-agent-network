@@ -424,7 +424,7 @@ function buildParentPrompt(profile, facts, simulatedLabel, placementLines) {
     '- Each nudge action must say what to do in plain language; deadline must be the fact date; source must name the school newsletter source (use the fact source_document).',
     '- calendar_hold: ONE object {title, date, note} for the most urgent open deadline. If a pizza order fact is open, it must be the pizza order deadline (for the demo week, date "2026-11-06", Friday, November 6, 2026) and the note must mention the pizza order is not yet ordered. Otherwise use the earliest open action deadline, or null if there is none.',
     '- filtered_out_count: number of input facts NOT in relevant_facts.',
-    '- filtering_summary: ONE line explaining why facts were filtered out.',
+    '- filtering_summary: ONE line explaining why facts were filtered out. Name every child the kept facts apply to in that line — or say "your family" when they apply across the children — never just the first child.',
     'Keep nudge wording short and calm (evening, combined message). Do not invent facts, dates, or actions.',
   ].join('\n');
   const user =
@@ -667,7 +667,13 @@ function narrowestScope(facts) {
 const EMPTY_EXTRACTION_MESSAGE =
   'We couldn\'t pull any notes out of that one — try pasting it again.';
 
-async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride) {
+// When stampSource is true (parent-added paste/PDF/email material), the server
+// stamps every extracted fact's source_document from the actual material being
+// extracted — the material's title when it has one, otherwise the hub's display
+// name — replacing whatever the model returned for that field (it copies the
+// extraction prompt's Maple Grove example). The demo school run passes no flag,
+// so seeded/demo labels stay exactly as they are.
+async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride, stampSource) {
   const push = (message) => logs.push({ at: nowIso(), message });
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
   let content = await callMetaApi(newsletterText);
@@ -712,11 +718,25 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
       materialTitle = '';
     }
   }
-  const withHub = facts.map((f) =>
-    scopeOverride
+  let stampedSource = '';
+  if (stampSource) {
+    stampedSource = materialTitle;
+    if (!stampedSource && hubId) {
+      try {
+        const hub = store.getHub(hubId);
+        stampedSource = hub && hub.name ? String(hub.name) : '';
+      } catch {
+        stampedSource = '';
+      }
+    }
+  }
+  const withHub = facts.map((f) => {
+    const stamped = scopeOverride
       ? { ...f, hub_id: hubId || '', material_id: materialId || '', scope: scopeOverride.scope, scope_value: scopeOverride.value, group_label: f.group_label || materialTitle }
-      : { ...f, hub_id: hubId || '', material_id: materialId || '', group_label: f.group_label || materialTitle }
-  );
+      : { ...f, hub_id: hubId || '', material_id: materialId || '', group_label: f.group_label || materialTitle };
+    if (stampedSource) stamped.source_document = stampedSource;
+    return stamped;
+  });
   // One newsletter section can name an event the Looking Ahead list repeats:
   // fold those same-event duplicates before saving so the hub facts list stays
   // clean. Cross-material duplicates merge again inside insertFacts.
@@ -1290,7 +1310,7 @@ const server = http.createServer(async (req, res) => {
         const override = resolveAudience(actor, body.audience, hub.id);
         material = store.createMaterial(hub.id, actor ? actor.id : '', 'paste', String(body.title || 'Pasted newsletter'), text, 'stored');
         logs.push({ at: nowIso(), message: 'pasted newsletter received' });
-        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override);
+        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true);
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
           ok: true,
@@ -1462,7 +1482,7 @@ const server = http.createServer(async (req, res) => {
         material = store.createMaterial(hub.id, active.id, 'email', headers.subject || 'Email newsletter', text, 'stored');
         logs.push({ at: nowIso(), message: 'run started' });
         logs.push({ at: nowIso(), message: 'Gmail message loaded as a hub newsletter' });
-        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override);
+        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true);
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
           ok: true,
@@ -1778,7 +1798,7 @@ const server = http.createServer(async (req, res) => {
         const override = resolveAudience(actor, body.audience, hub.id);
         const suppliedTitle = String(body.title || '').trim();
         material = store.createMaterial(hub.id, actor.id, kind, suppliedTitle || deriveMaterialTitle(text), text, 'stored');
-        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override);
+        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true);
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
           ok: true,
