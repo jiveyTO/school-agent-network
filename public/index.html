@@ -1036,6 +1036,34 @@
       <div id="placementsList"><p class="facts-empty">Loading your hubs…</p></div>
     </section>
 
+    <section aria-labelledby="agent-h" id="agentSection" hidden>
+      <h2 id="agent-h">Agent access</h2>
+      <p class="hint">Let your own AI agent work for your family — finding school hubs, adding newsletters, and keeping placements up to date. A token only ever acts as your family, and you can cut it off here any time.</p>
+      <div class="save-notice" id="agentSignInNotice" hidden>
+        <p><b>Save your family first.</b> A token has to hang off a family you can always get back. Sign in with Google so your family is tied to your account, then come back here to create one.</p>
+        <div class="save-notice-row">
+          <a class="small-btn" href="/api/auth/login">Sign in with Google</a>
+        </div>
+      </div>
+      <div id="agentCreateBox" hidden>
+        <label class="field">Name this token
+          <input type="text" id="agentNameInput" placeholder="e.g. Homework helper" autocomplete="off">
+        </label>
+        <p style="margin:8px 0 0"><button class="small-btn" id="agentCreateBtn" type="button">Create token</button></p>
+        <p class="hint" id="agentCreateStatus"></p>
+      </div>
+      <div class="card" id="agentOnceBox" hidden style="margin-top:12px">
+        <p style="margin-top:0"><b>Your new agent token</b></p>
+        <p>Treat this like a password — anyone holding it can act as your family. Copy it now: it is shown only this once, and we can’t show it again. If it ever slips out, revoke it below and make a fresh one.</p>
+        <label class="field">Agent token
+          <input type="text" id="agentOnceValue" readonly autocomplete="off">
+        </label>
+        <p style="margin:8px 0 0"><button class="small-btn" id="agentCopyBtn" type="button">Copy token</button></p>
+        <p class="hint" id="agentCopyStatus"></p>
+      </div>
+      <div id="agentList" style="margin-top:12px"><p class="facts-empty">Loading your tokens…</p></div>
+    </section>
+
     <section aria-labelledby="parent-log-h">
       <h2 id="parent-log-h">Activity</h2>
       <ol id="parentLog"><li class="empty">Nothing here yet — run your evening check tonight.</li></ol>
@@ -1502,6 +1530,7 @@
       (familyEmail ? '<p>' + esc(familyEmail) + '</p>' : '') +
       kids.map(function (k) { return '<p>' + esc(k.name || '') + '</p>'; }).join('');
     paintFamilyEmail(profile, familyEmail);
+    loadAgentTokens();
   }
 
   function familyEmailOf(profile) {
@@ -1910,7 +1939,7 @@
     btn.addEventListener('click', function () {
       const view = btn.getAttribute('data-view');
       showView(view);
-      if (view === 'family') loadFamilyPlacements();
+      if (view === 'family') { loadFamilyPlacements(); loadAgentTokens(); }
     });
   });
 
@@ -2153,6 +2182,112 @@
       });
     });
   }
+
+  var agentOnceFor = '';
+
+  function agentWhen(iso) {
+    if (!iso) return '';
+    return humanDate(iso);
+  }
+
+  async function loadAgentTokens() {
+    const section = document.getElementById('agentSection');
+    const profile = currentProfile;
+    if (!section) return;
+    if (!profile || profile.is_demo) {
+      section.hidden = true;
+      agentOnceFor = '';
+      const onceBox = document.getElementById('agentOnceBox');
+      if (onceBox) onceBox.hidden = true;
+      return;
+    }
+    section.hidden = false;
+    if (agentOnceFor !== profile.id) {
+      document.getElementById('agentOnceBox').hidden = true;
+    }
+    const list = document.getElementById('agentList');
+    let data = null;
+    try {
+      const res = await fetch('/api/agent-tokens');
+      data = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(data.error || 'Couldn’t load your tokens.');
+    } catch (e) {
+      if (currentProfile === profile) list.innerHTML = '<p class="facts-empty">Couldn’t load your tokens.</p>';
+      return;
+    }
+    if (currentProfile !== profile) return;
+    const needsSignIn = Boolean(data.needs_sign_in);
+    document.getElementById('agentSignInNotice').hidden = !needsSignIn;
+    document.getElementById('agentCreateBox').hidden = needsSignIn;
+    const tokens = data.tokens || [];
+    if (!tokens.length) {
+      list.innerHTML = '<p class="facts-empty">No tokens yet — name one above and create it.</p>';
+      return;
+    }
+    list.innerHTML = tokens.map(function (tk) {
+      const state = tk.active ? 'Active' : 'Revoked';
+      const lastUsed = tk.last_used_at ? agentWhen(tk.last_used_at) : 'Not used yet';
+      return '<div class="card" style="margin-bottom:10px">' +
+        '<p style="margin:0"><b>' + esc(tk.name) + '</b> · ' + esc(state) + '</p>' +
+        '<p class="hint" style="margin:4px 0">Created ' + esc(agentWhen(tk.created_at)) + ' · Last used ' + esc(lastUsed) + '</p>' +
+        (tk.active
+          ? '<p style="margin:8px 0 0"><button class="small-btn secondary" type="button" data-revoke-agent="' + esc(tk.id) + '">Revoke</button></p>'
+          : '') +
+        '</div>';
+    }).join('');
+    list.querySelectorAll('[data-revoke-agent]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        btn.disabled = true;
+        try {
+          await postJson('/api/agent-tokens/' + encodeURIComponent(btn.getAttribute('data-revoke-agent')) + '/revoke', {});
+          await loadAgentTokens();
+        } catch (e) {
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  document.getElementById('agentCreateBtn').addEventListener('click', async function () {
+    const input = document.getElementById('agentNameInput');
+    const statusEl = document.getElementById('agentCreateStatus');
+    const name = input.value.trim();
+    if (!name) {
+      statusEl.textContent = 'Give this token a name first — for example, “Homework helper”.';
+      return;
+    }
+    statusEl.textContent = 'Creating…';
+    try {
+      const data = await postJson('/api/agent-tokens', { name: name });
+      input.value = '';
+      statusEl.textContent = '';
+      agentOnceFor = currentProfile ? currentProfile.id : '';
+      document.getElementById('agentOnceValue').value = data.token || '';
+      document.getElementById('agentCopyStatus').textContent = '';
+      document.getElementById('agentOnceBox').hidden = false;
+      await loadAgentTokens();
+      document.getElementById('agentOnceBox').hidden = false;
+    } catch (e) {
+      statusEl.textContent = e.message;
+    }
+  });
+
+  document.getElementById('agentCopyBtn').addEventListener('click', async function () {
+    const input = document.getElementById('agentOnceValue');
+    const statusEl = document.getElementById('agentCopyStatus');
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(input.value);
+      } else {
+        input.select();
+        document.execCommand('copy');
+      }
+      statusEl.textContent = 'Copied.';
+    } catch (e) {
+      input.select();
+      statusEl.textContent = 'Select the token and copy it.';
+    }
+  });
 
   let currentHubs = [];
   let currentHubId = '';
