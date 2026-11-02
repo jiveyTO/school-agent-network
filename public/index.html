@@ -481,6 +481,68 @@
   }
   .small-btn.secondary { background: var(--wash); color: var(--pine-dark); border: 1px solid var(--line); }
   .small-btn:disabled { opacity: 0.55; cursor: wait; }
+  .add-material { display: grid; gap: 12px; }
+  .add-material .field { margin-bottom: 0; }
+  .pdf-picker {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 8px;
+    background: #fff;
+    font-weight: 400;
+  }
+  .pdf-picker:has(input:disabled) { opacity: 0.55; }
+  .pdf-picker input[type="file"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    overflow: hidden;
+  }
+  .pdf-picker input[type="file"]:focus-visible + .pdf-pick-btn {
+    outline: 2px solid var(--pine);
+    outline-offset: 2px;
+  }
+  .pdf-pick-btn {
+    flex: none;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--wash);
+    color: var(--pine-dark);
+    font-size: 14.5px;
+    font-weight: 700;
+    padding: 9px 15px;
+    cursor: pointer;
+  }
+  .pdf-file-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14.5px;
+    color: var(--muted);
+  }
+  .pdf-file-name.has-file { color: var(--ink); font-weight: 600; }
+  #addMaterialBtn {
+    width: 100%;
+    border: 0;
+    border-radius: 16px;
+    background: var(--pine);
+    color: #fff;
+    font: inherit;
+    font-weight: 800;
+    font-size: 17px;
+    padding: 15px 16px;
+    cursor: pointer;
+  }
+  #addMaterialBtn:disabled { opacity: 0.55; cursor: wait; }
+  .material-status-group { display: grid; gap: 6px; }
+  .material-status-group .hint { margin-left: 2px; margin-right: 2px; }
   .saved-note { font-size: 13.5px; color: var(--muted); }
   .setup-box { border: 1px dashed var(--amber-dark); border-radius: 16px; background: var(--amber-soft); padding: 14px; font-size: 14.5px; }
   .quiet-controls { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
@@ -647,7 +709,7 @@
       <button class="small-btn secondary" id="hubBackBtn" type="button">← Back to My hubs</button>
     </section>
 
-    <section aria-labelledby="newsletter-h">
+    <section id="newsletterSection" aria-labelledby="newsletter-h">
       <h2 id="newsletter-h">This week’s newsletter</h2>
       <div class="card">
         <p class="news-summary" id="newsSummary">Pizza orders and the uniform survey are due Friday. Picture Re-Take Day is Thursday, and the Fall Festival is Friday.</p>
@@ -656,7 +718,7 @@
       </div>
     </section>
 
-    <section aria-labelledby="run-h">
+    <section id="runSection" aria-labelledby="run-h">
       <h2 id="run-h">School updates</h2>
       <button id="runBtn" type="button">Check for school updates</button>
       <p class="hint" id="runStatus">Reads the newest newsletter and pulls out what matters.</p>
@@ -670,7 +732,7 @@
       <h2 id="hub-view-h">Hub</h2>
       <div class="card">
         <h3 id="hubTitle" style="margin:0 0 4px">Choose a hub</h3>
-        <p>Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.</p>
+        <p id="hubChooserText">Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.</p>
         <p class="hint" id="hubMeta"></p>
         <div class="card" id="placementCard" hidden style="margin-bottom:12px">
           <p style="margin:0"><b>Place your children in this hub</b></p>
@@ -702,18 +764,26 @@
           </div>
           <div>
             <p><b>Add material</b></p>
+            <div class="add-material">
             <label class="field">Paste a newsletter or notice
               <textarea id="materialText" placeholder="Paste the text here…"></textarea>
             </label>
-            <label class="field">Or add a PDF
-              <input type="file" id="materialPdf" accept="application/pdf">
-            </label>
-            <button class="small-btn" id="addMaterialBtn" type="button">Add it</button>
+            <div class="field">Or add a PDF
+              <div class="pdf-picker">
+                <input type="file" id="materialPdf" accept="application/pdf">
+                <label class="pdf-pick-btn" id="materialPdfBtn" for="materialPdf">Choose file</label>
+                <span class="pdf-file-name" id="materialPdfName">No file selected</span>
+              </div>
+            </div>
+            <button id="addMaterialBtn" type="button">Add it</button>
+            <div class="material-status-group">
             <div class="thinking-row">
               <div class="thinking-dots" id="materialDots" hidden aria-hidden="true"><span></span><span></span><span></span></div>
               <p class="hint thinking-label" id="materialStatus"></p>
             </div>
             <p class="hint" id="materialWaitNote" hidden>This can take up to a minute — you do not need to stay here. It will be in this hub when you come back.</p>
+            </div>
+            </div>
             <p style="margin-top:14px"><button class="small-btn secondary" id="inviteBtn" type="button">Invite a parent</button></p>
             <p class="hint" id="inviteLink" style="word-break:break-all"></p>
             <div id="inviteShare" hidden>
@@ -1347,6 +1417,10 @@
     markSelectedHub();
     showView('hub');
     if (currentHubId) await loadHubDetail(currentHubId);
+    else {
+      document.getElementById('hubTitle').textContent = 'Choose a hub';
+      document.getElementById('hubChooserText').hidden = false;
+    }
   }
 
   var onboardingMode = 'new';
@@ -1440,6 +1514,11 @@
     window.scrollTo(0, 0);
   }
 
+  function setHubDemoPanels(showDemo) {
+    document.getElementById('newsletterSection').hidden = !showDemo;
+    document.getElementById('runSection').hidden = !showDemo;
+  }
+
   async function applySchoolAudience(status) {
     const viewer = status && status.profile;
     if (viewer && !viewer.is_demo) {
@@ -1454,12 +1533,14 @@
       runBtn.disabled = true;
       runStatus.textContent = 'School updates appear under the demo family.';
       schoolError.hidden = true;
+      setHubDemoPanels(false);
       return false;
     }
     newsletterToggle.hidden = false;
     runBtn.disabled = false;
     runStatus.textContent = 'Reads the newest newsletter and pulls out what matters.';
     schoolError.hidden = true;
+    setHubDemoPanels(true);
     return true;
   }
 
@@ -1467,8 +1548,11 @@
     try {
       const nRes = await fetch('/api/newsletter');
       const nData = await nRes.json();
-      newsletterEl.textContent = nData.text || '(newsletter empty)';
+      const hasNewsletter = Boolean(nData.text && String(nData.text).trim());
+      document.getElementById('newsletterSection').hidden = !hasNewsletter;
+      newsletterEl.textContent = hasNewsletter ? nData.text : '';
     } catch (e) {
+      document.getElementById('newsletterSection').hidden = false;
       newsletterEl.textContent = 'Failed to load newsletter: ' + e.message;
     }
     try {
@@ -1764,6 +1848,7 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'That hub is unavailable.');
       document.getElementById('hubTitle').textContent = data.hub.name;
+      document.getElementById('hubChooserText').hidden = true;
       renderPlacementCard(data);
       const detailTeam = teamLine(data.hub);
       document.getElementById('hubMeta').textContent = data.member_count + ' families in this hub · you are ' +
@@ -1807,6 +1892,8 @@
         document.getElementById('hubRequests').innerHTML = '';
       }
     } catch (e) {
+      document.getElementById('hubTitle').textContent = 'Choose a hub';
+      document.getElementById('hubChooserText').hidden = false;
       document.getElementById('hubMeta').textContent = e.message;
       document.getElementById('hubDanger').hidden = true;
     }
@@ -2343,6 +2430,13 @@
     } finally {
       btn.disabled = false;
     }
+  });
+
+  document.getElementById('materialPdf').addEventListener('change', function () {
+    const nameEl = document.getElementById('materialPdfName');
+    const file = this.files && this.files[0];
+    nameEl.textContent = file ? file.name : 'No file selected';
+    nameEl.classList.toggle('has-file', Boolean(file));
   });
 
   document.getElementById('addMaterialBtn').addEventListener('click', async function () {

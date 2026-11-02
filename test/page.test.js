@@ -464,3 +464,91 @@ test('demo viewers get a demo bar with a path to their own family', () => {
   assert.ok(PAGE.includes("document.getElementById('startOverBtn').click()"), 'bar button reuses the reset flow');
   assert.ok(!PAGE.includes('>Start over</button>'), 'quiet control renamed to match');
 });
+
+test('newsletter section renders only with content: hidden for real families, shown for demo', () => {
+  assert.ok(PAGE.includes('id="newsletterSection"'), 'newsletter section carries a gate id');
+  const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
+  assert.ok(hubMarkup.includes('id="newsletterSection"'), 'gated section lives in the hub view');
+  assert.ok(hubMarkup.indexOf('id="newsletterSection"') < hubMarkup.indexOf('id="newsletter-h"'),
+    'gate wraps the heading so both hide together');
+  for (const token of ['setHubDemoPanels(false)', 'setHubDemoPanels(true)',
+    "getElementById('newsletterSection').hidden"]) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  const audienceFn = PAGE.slice(PAGE.indexOf('async function applySchoolAudience'),
+    PAGE.indexOf('async function applySchoolAudience') + 1400);
+  assert.ok(audienceFn.includes('setHubDemoPanels(false)'), 'real family hides the newsletter section');
+  assert.ok(audienceFn.includes('setHubDemoPanels(true)'), 'demo family shows the newsletter section');
+  assert.ok(PAGE.includes('hasNewsletter'), 'demo load checks for actual newsletter content');
+  assert.ok(PAGE.includes("document.getElementById('newsletterSection').hidden = !hasNewsletter"),
+    'empty demo newsletter hides the section; content shows it');
+});
+
+test('School updates panel is demo-only: hidden for real families, unchanged for demo', () => {
+  assert.ok(PAGE.includes('id="runSection"'), 'run panel carries a gate id');
+  const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
+  assert.ok(hubMarkup.includes('id="runSection"'), 'gated panel lives in the hub view');
+  assert.ok(hubMarkup.indexOf('id="runSection"') < hubMarkup.indexOf('id="runBtn"'),
+    'gate wraps the run button so both hide together');
+  assert.ok(PAGE.includes("getElementById('runSection').hidden"),
+    'panel visibility is toggled with the viewer');
+  const audienceFn = PAGE.slice(PAGE.indexOf('async function applySchoolAudience'),
+    PAGE.indexOf('async function applySchoolAudience') + 1400);
+  assert.ok(audienceFn.includes('setHubDemoPanels(false)'), 'real family omits the panel');
+  assert.ok(audienceFn.includes('setHubDemoPanels(true)'), 'demo family keeps the panel');
+  assert.ok(PAGE.includes('Check for school updates'), 'demo run button copy unchanged');
+  assert.ok(PAGE.includes('Reads the newest newsletter and pulls out what matters.'),
+    'demo hint copy unchanged');
+  assert.ok(PAGE.includes('School updates appear under the demo family.'),
+    'non-demo fallback message still set while hidden');
+});
+
+test('hub title shows the open hub name; picker text only with no hub open', () => {
+  assert.ok(PAGE.includes('id="hubChooserText"'), 'chooser explainer carries an id');
+  assert.ok(PAGE.includes('Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.'),
+    'chooser explainer copy unchanged');
+  const detailFn = PAGE.slice(PAGE.indexOf('async function loadHubDetail'),
+    PAGE.indexOf('async function loadHubDetail') + 3600);
+  assert.ok(detailFn.includes("getElementById('hubTitle').textContent = data.hub.name"),
+    'open hub titles the card with the hub name');
+  assert.ok(detailFn.includes("getElementById('hubChooserText').hidden = true"),
+    'open hub hides the generic chooser framing');
+  const openFn = PAGE.slice(PAGE.indexOf('async function openHub'),
+    PAGE.indexOf('async function openHub') + 500);
+  assert.ok(openFn.includes("'Choose a hub'"), 'picker title remains for the no-hub state');
+  assert.ok(openFn.includes("getElementById('hubChooserText').hidden = false"),
+    'picker state restores the chooser framing');
+  assert.ok(detailFn.includes("'Choose a hub'"), 'failed hub load falls back to the picker title');
+});
+
+test('add-material cluster is one tidy unit: styled picker, primary Add it, grouped status', () => {
+  for (const token of ['id="materialText"', 'id="materialPdf"', 'id="addMaterialBtn"', 'Add it',
+    'id="materialDots"', 'id="materialStatus"', 'id="materialWaitNote"',
+    'id="materialPdfName"', 'material-status-group', 'pdf-picker', 'pdf-pick-btn']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  assert.ok(!PAGE.includes('small-btn" id="addMaterialBtn"'),
+    'Add it is no longer a small pill button');
+  assert.ok(PAGE.includes('#addMaterialBtn {'), 'Add it has its own primary style');
+  const btnCss = PAGE.slice(PAGE.indexOf('#addMaterialBtn {'), PAGE.indexOf('#addMaterialBtn {') + 300);
+  assert.ok(btnCss.includes('background: var(--pine)'), 'Add it uses the deep-green primary style');
+  assert.ok(btnCss.includes('width: 100%'), 'Add it is sized like a primary action');
+  assert.ok(PAGE.includes('#addMaterialBtn:disabled'), 'busy/disabled state still reads clearly');
+  assert.ok(PAGE.includes('.pdf-file-name.has-file'), 'chosen file name shows clearly');
+  assert.ok(PAGE.includes("getElementById('materialPdf').addEventListener('change'"),
+    'picker updates the shown file name');
+  const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
+  const groupAt = hubMarkup.indexOf('material-status-group');
+  assert.ok(groupAt !== -1, 'status group lives in the hub view');
+  assert.ok(groupAt < hubMarkup.indexOf('id="materialDots"') &&
+    hubMarkup.indexOf('id="materialDots"') < hubMarkup.indexOf('id="materialStatus"') &&
+    hubMarkup.indexOf('id="materialStatus"') < hubMarkup.indexOf('id="materialWaitNote"'),
+    'dots, status label, and reassurance line sit in one aligned group');
+  for (const stage of ['Reading your material…', 'Sorting out what matters…', 'Saving to your hub…']) {
+    assert.ok(PAGE.includes(stage), `status label unchanged: ${stage}`);
+  }
+  assert.ok(PAGE.includes('This can take up to a minute — you do not need to stay here. It will be in this hub when you come back.'),
+    'reassurance wording unchanged');
+  assert.ok(PAGE.includes('.pdf-picker input[type="file"]'),
+    'native input is visually restyled inside the picker, not rendered as the raw OS control');
+});
