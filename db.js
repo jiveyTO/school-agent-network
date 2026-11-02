@@ -1210,6 +1210,10 @@ function completeGoogleSignIn(sessionId, sub, email) {
 // restores the most recently created profile with that email — profiles
 // carry no activity timestamp, so creation time is the available proxy
 // for "most recently active".
+// Brief 049: the lookup matches the family's Google-linked email as well
+// as its contact email — families created before brief 040 have no
+// contact email, and the Google-linked address was verified by Google
+// sign-in itself, so it carries the same mailbox-control proof.
 const RECOVERY_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 function hashRecoveryToken(raw) {
@@ -1220,8 +1224,8 @@ function findProfileByParentEmail(email) {
   const normalized = String(email || '').trim().toLowerCase();
   if (!normalized) return null;
   const row = one(
-    'SELECT * FROM profiles WHERE is_demo = 0 AND LOWER(TRIM(parent_email)) = ? ORDER BY created_at DESC LIMIT 1',
-    [normalized]
+    "SELECT * FROM profiles WHERE is_demo = 0 AND (LOWER(TRIM(COALESCE(parent_email, ''))) = ? OR LOWER(TRIM(COALESCE(google_email, ''))) = ?) ORDER BY created_at DESC LIMIT 1",
+    [normalized, normalized]
   );
   return rowToProfile(row);
 }
