@@ -20,8 +20,11 @@ for v in SCHOOL_AGENT_API_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET APP_DB_GCS_B
   eval "[ -n \"\$$v\" ]" || { echo "missing $v in .env"; exit 1; }
 done
 PAIRS=""
-for k in $(grep -oE '^[A-Z_]+(?==)' .env); do
+for k in $(grep -oE '^[A-Z_]+=' .env | tr -d '='); do
   eval "v=\$$k"; PAIRS="$PAIRS$k=$v,"
+done
+for v in SCHOOL_AGENT_API_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET APP_DB_GCS_BUCKET APP_DB_GCS_OBJECT; do
+  case "$PAIRS" in "$v="*|*",$v="*) ;; *) echo "missing $v in PAIRS"; exit 1;; esac
 done
 gcloud run deploy parentloop --source . --project=school-agent-network \
   --region=northamerica-northeast2 --allow-unauthenticated --max-instances=1 \
@@ -41,6 +44,12 @@ Rules (learned from brief 016, which broke live Google sign-in):
   `SCHOOL_AGENT_API_KEY`, silently dropping the Google vars, and
   revisions 00022–00025 repeated the same failure mode for the durable
   store vars (`APP_DB_GCS_BUCKET` / `APP_DB_GCS_OBJECT`, brief 021).
+- The key-extraction pattern must stay portable: `grep -oE '^[A-Z_]+='
+  ... | tr -d '='`. The old `(?==)` lookahead is unsupported by both BSD
+  and GNU grep, silently matched nothing, and revision 00026 shipped with
+  only `PUBLIC_BASE_URL` (auth + API key + durable vars all dropped). The
+  `case` check on `PAIRS` aborts the deploy if any required name is
+  missing from the built value — never remove it.
 
 Read secrets only from the local `.env` inside the deploy container; never
 print them. Remove `/tmp/parentloop-deploy` afterwards.
