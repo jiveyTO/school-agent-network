@@ -357,9 +357,11 @@ function rowToProfile(row) {
     is_demo: Boolean(row.is_demo),
     is_fictional_demo: Boolean(row.is_demo),
     school: '',
-    parent: { name: row.parent_name || '' },
+    parent: { name: row.parent_name || '', email: row.parent_email || '' },
     child: { name: firstName },
     children,
+    email: row.parent_email || '',
+    parent_email: row.parent_email || '',
     soul: {
       shared_core: SHARED_CORE.slice(),
       priorities: parseJson(row.priorities, []),
@@ -437,6 +439,7 @@ async function initDb() {
   run(`CREATE TABLE IF NOT EXISTS profiles (
     id TEXT PRIMARY KEY,
     parent_name TEXT NOT NULL,
+    parent_email TEXT DEFAULT '',
     child_name TEXT NOT NULL,
     grade TEXT,
     class_name TEXT,
@@ -585,6 +588,7 @@ async function initDb() {
   addColumnIfMissing('hubs', 'city', "city TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'province', "province TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'country', "country TEXT DEFAULT ''");
+  addColumnIfMissing('profiles', 'parent_email', "parent_email TEXT DEFAULT ''");
   addColumnIfMissing('profiles', 'google_sub', "google_sub TEXT DEFAULT ''");
   addColumnIfMissing('profiles', 'google_email', "google_email TEXT DEFAULT ''");
   addColumnIfMissing('sessions', 'google_sub', "google_sub TEXT DEFAULT ''");
@@ -1173,6 +1177,27 @@ function signOutSession(sessionId) {
   return getSession(sessionId);
 }
 
+// Brief 040: the family contact email. A plain contact/recovery identifier
+// on the profile — duplicates allowed, never an identity key, no
+// verification flow. Basic format check only.
+const PARENT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PARENT_EMAIL_ERROR =
+  'Please add a valid email — for example, you@example.com — so we can help you get back in if you are ever locked out.';
+
+function parentEmailOf(input) {
+  if (!input || typeof input !== 'object') return '';
+  const raw = input.parent_email != null ? input.parent_email
+    : input.email != null ? input.email
+    : input.parentEmail != null ? input.parentEmail
+    : input.parent && input.parent.email != null ? input.parent.email
+    : '';
+  return String(raw || '').trim();
+}
+
+function isValidParentEmail(value) {
+  return PARENT_EMAIL_RE.test(String(value || '').trim());
+}
+
 function createProfile(input) {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
@@ -1187,11 +1212,12 @@ function createProfile(input) {
   if (!names.length) names.push('');
   run(
     `INSERT INTO profiles
-       (id, parent_name, child_name, grade, class_name, school_name, priorities, nudge_style, actions, is_demo, created_at)
-     VALUES (?, ?, ?, '', '', '', ?, ?, ?, 0, ?)`,
+       (id, parent_name, parent_email, child_name, grade, class_name, school_name, priorities, nudge_style, actions, is_demo, created_at)
+     VALUES (?, ?, ?, ?, '', '', '', ?, ?, ?, 0, ?)`,
     [
       id,
       String(input.parent_name || '').trim(),
+      parentEmailOf(input),
       names[0],
       JSON.stringify(Array.isArray(input.priorities) ? input.priorities : []),
       String(input.nudge_style || 'one short message in the evening').trim(),
@@ -1233,11 +1259,35 @@ function createProfileForSession(sessionId, input) {
   return linked || profile;
 }
 
+// Brief 040: update the family contact email. The demo family is not
+// editable. Throws the shared email error on a missing/invalid address so
+// a typo fix can never save a bad address; duplicates are allowed.
+function updateProfileEmail(profileId, email) {
+  const row = getProfileRowById(profileId);
+  if (!row || row.is_demo) return null;
+  const value = String(email || '').trim();
+  if (!isValidParentEmail(value)) throw new Error(PARENT_EMAIL_ERROR);
+  run('UPDATE profiles SET parent_email = ? WHERE id = ?', [value, profileId]);
+  persist();
+  return rowToProfile(getProfileRowById(profileId));
+}
+
+function hasEmailInput(input) {
+  return Boolean(input) && typeof input === 'object' &&
+    (input.parent_email != null || input.email != null || input.parentEmail != null ||
+      (input.parent && input.parent.email != null));
+}
+
 // Rename/add/remove children by name. The demo family is not editable.
 // Returns the updated profile, or null when there is nothing to update.
 function updateProfileNames(profileId, input) {
   const row = getProfileRowById(profileId);
   if (!row || row.is_demo) return null;
+  if (hasEmailInput(input)) {
+    const value = parentEmailOf(input);
+    if (!isValidParentEmail(value)) throw new Error(PARENT_EMAIL_ERROR);
+    run('UPDATE profiles SET parent_email = ? WHERE id = ?', [value, profileId]);
+  }
   const parentName = String((input && input.parent_name) || '').trim();
   const raw = input && Array.isArray(input.children) ? input.children : [];
   const wanted = raw
@@ -2137,6 +2187,10 @@ module.exports = {
   createProfile,
   createProfileForSession,
   updateProfileNames,
+  updateProfileEmail,
+  parentEmailOf,
+  isValidParentEmail,
+  PARENT_EMAIL_ERROR,
   __testSetChildLegacy,
   updateProfileActions,
   ensurePlacements,

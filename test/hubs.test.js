@@ -157,6 +157,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
   await t.test('create hub → founder is admin; invite accept adds a member; join info leaks nothing', async () => {
     await post('/api/profile', {
       parent_name: 'Founder Pat',
+      parent_email: 'founder.pat@example.com',
       child_name: 'Pat Kid',
       grade: 'Grade 3',
       class_name: '3B',
@@ -189,6 +190,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
 
     await post('/api/profile', {
       parent_name: 'Joiner Jo',
+      parent_email: 'joiner.jo@example.com',
       child_name: 'Jo Kid',
       grade: 'Grade 3',
       class_name: '3B',
@@ -239,6 +241,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
 
     await post('/api/profile', {
       parent_name: 'Requester Ron',
+      parent_email: 'requester.ron@example.com',
       child_name: 'Ron Kid',
       grade: 'Grade 3',
       class_name: '3B',
@@ -300,6 +303,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     assert.equal(invite.res.status, 200);
     await post('/api/profile', {
       parent_name: 'Deleter Dan',
+      parent_email: 'deleter.dan@example.com',
       child_name: 'Dan Kid',
       grade: 'Grade 3',
       class_name: '3B',
@@ -312,6 +316,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     assert.equal(denied.res.status, 403, 'members cannot delete');
     await post('/api/profile', {
       parent_name: 'Outsider Eve',
+      parent_email: 'outsider.eve@example.com',
       child_name: 'Eve Kid',
       grade: 'Grade 3',
       class_name: '3B',
@@ -352,6 +357,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     assert.equal(samInvite.res.status, 200);
     await post('/api/profile', {
       parent_name: 'Text Scope Sam',
+      parent_email: 'text.scope.sam@example.com',
       child_name: 'Sam Kid',
       school_name: 'Maple Grove Elementary',
       priorities: [],
@@ -367,6 +373,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     assert.equal(scopedOut.res.status, 404, 'out-of-scope profiles cannot read the text');
     await post('/api/profile', {
       parent_name: 'Text Outsider Eve',
+      parent_email: 'text.outsider.eve@example.com',
       child_name: 'Eve Kid',
       grade: 'Grade 3',
       class_name: '3B',
@@ -415,6 +422,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
 
     await post('/api/profile', {
       parent_name: 'Requester Rae',
+      parent_email: 'requester.rae@example.com',
       child_name: 'Rae Kid',
       grade: 'Grade 3',
       class_name: '3B',
@@ -489,6 +497,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     const invite = await post(`/api/hubs/${hubA.id}/invites`, {});
     await post('/api/profile', {
       parent_name: 'Scope Sam',
+      parent_email: 'scope.sam@example.com',
       child_name: 'Sam Kid',
       school_name: 'Maple Grove Elementary',
       priorities: [],

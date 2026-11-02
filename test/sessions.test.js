@@ -102,6 +102,7 @@ test('per-visitor sessions are isolated between browsers', async (t) => {
 
     const beta = await browserB.post('/api/profile', {
       parent_name: 'Beta Parent',
+      parent_email: 'beta.parent@example.com',
       child_name: 'Beta Child',
       grade: 'Grade 2',
       class_name: '',
@@ -124,6 +125,7 @@ test('per-visitor sessions are isolated between browsers', async (t) => {
 
     const alpha = await browserA.post('/api/profile', {
       parent_name: 'Alpha Parent',
+      parent_email: 'alpha.parent@example.com',
       child_name: 'Alpha Child',
       grade: 'Grade 3',
       class_name: '3B',

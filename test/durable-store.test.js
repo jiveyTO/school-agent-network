@@ -196,6 +196,7 @@ test('hosted database survives instance replacement via the durable store', { ti
     const visitor = makeClient();
     const profile = await visitor.post('/api/profile', {
       parent_name: 'Durable Dana',
+      parent_email: 'durable.dana@example.com',
       children: [{ name: 'Cedar' }],
     });
     assert.equal(profile.res.status, 200, profile.text.slice(0, 300));
