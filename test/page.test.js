@@ -546,8 +546,10 @@ test('signed-in header is unchanged: identity plus sign out, no Start button', (
   for (const token of ['Signed in as', 'id="signedInAs"', 'id="signedInEmail"', 'id="signOutBtn"']) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
-  const authFn = PAGE.slice(PAGE.indexOf('async function loadAuth'), PAGE.indexOf('async function loadAuth') + 1200);
-  const signedInBranch = authFn.slice(authFn.indexOf('signed_in'), authFn.indexOf('} else {'));
+  // Brief 034 moved the branch from loadAuth into paintHeaderAuth (three
+  // states now); the signed-in expectations below are character-identical.
+  const authFn = pageFnSource('paintHeaderAuth');
+  const signedInBranch = authFn.slice(authFn.indexOf("state === 'signed-in'"), authFn.indexOf('} else if ('));
   assert.ok(signedInBranch.includes('signInBtn.hidden = true'), 'signed in hides Sign in');
   assert.ok(signedInBranch.includes('startFamilyBtn.hidden = true'), 'signed in hides Start too');
   assert.ok(signedInBranch.includes('signedInAs.hidden = false'), 'signed in shows the identity');
@@ -786,6 +788,182 @@ test('start-a-hub card holds one vertical rhythm before and after filling', () =
   }
   assert.ok(!PAGE.includes('overflow-x: hidden'),
     'no page-level overflow clipping masks unwrapped content');
+});
+
+function pageFnSource(name) {
+  const start = PAGE.indexOf('function ' + name + '(');
+  assert.ok(start !== -1, name + ' is defined on the page');
+  const open = PAGE.indexOf('{', start);
+  let depth = 0;
+  for (let i = open; i < PAGE.length; i++) {
+    if (PAGE[i] === '{') depth++;
+    else if (PAGE[i] === '}') {
+      depth--;
+      if (depth === 0) return PAGE.slice(start, i + 1);
+    }
+  }
+  assert.fail(name + ' body never closes');
+}
+
+function freshHeaderEls() {
+  return {
+    signInBtn: { hidden: true },
+    startFamilyBtn: { hidden: true },
+    signedInAs: { hidden: true },
+    signedInEmail: { textContent: '' },
+    signOutBtn: { hidden: true },
+    saveNoticeHubs: { hidden: true },
+    saveNoticeFamily: { hidden: true },
+  };
+}
+
+function runPaintHeader(auth, profile) {
+  const vm = require('node:vm');
+  const els = freshHeaderEls();
+  const src = pageFnSource('headerAuthState') + '\n' + pageFnSource('paintHeaderAuth') +
+    '\npaintHeaderAuth(auth, profile);';
+  vm.runInNewContext(src, {
+    document: { getElementById: (id) => els[id] },
+    auth,
+    profile,
+  });
+  return els;
+}
+
+function runPaintNotice(auth, profile, dismissed) {
+  const vm = require('node:vm');
+  const els = freshHeaderEls();
+  const src = pageFnSource('shouldShowSaveNotice') + '\n' + pageFnSource('paintSaveNotice') +
+    '\npaintSaveNotice(auth, profile, dismissed);';
+  vm.runInNewContext(src, {
+    document: { getElementById: (id) => els[id] },
+    auth,
+    profile,
+    dismissed,
+  });
+  return els;
+}
+
+function runHeaderState(auth, profile) {
+  const vm = require('node:vm');
+  return vm.runInNewContext(
+    pageFnSource('headerAuthState') + '\nheaderAuthState(auth, profile);',
+    { auth, profile }
+  );
+}
+
+function runShouldShow(auth, profile, dismissed) {
+  const vm = require('node:vm');
+  return vm.runInNewContext(
+    pageFnSource('shouldShowSaveNotice') + '\nshouldShowSaveNotice(auth, profile, dismissed);',
+    { auth, profile, dismissed }
+  );
+}
+
+test('header has three states: visitor, anonymous-with-family, signed-in', () => {
+  assert.equal(runHeaderState({ signed_in: false }, null), 'visitor');
+  assert.equal(runHeaderState({ signed_in: false }, { is_demo: true }), 'visitor');
+  assert.equal(runHeaderState({ signed_in: false }, { is_demo: false }), 'anonymous-family');
+  assert.equal(runHeaderState({ signed_in: true, email: 'a@example.com' }, { is_demo: false }), 'signed-in');
+
+  let els = runPaintHeader({ signed_in: false }, null);
+  assert.equal(els.startFamilyBtn.hidden, false, 'visitor sees Start with your own family');
+  assert.equal(els.signInBtn.hidden, false, 'visitor sees Sign in with Google');
+  assert.equal(els.signedInAs.hidden, true, 'visitor sees no identity');
+  assert.equal(els.signOutBtn.hidden, true, 'visitor sees no Sign out');
+
+  els = runPaintHeader({ signed_in: false }, { is_demo: true });
+  assert.equal(els.startFamilyBtn.hidden, false, 'demo viewer keeps the Start path (brief 026)');
+  assert.equal(els.signInBtn.hidden, false, 'demo viewer keeps Sign in (brief 026)');
+
+  els = runPaintHeader({ signed_in: false }, { is_demo: false });
+  assert.equal(els.startFamilyBtn.hidden, true, 'anonymous family hides Start — they already have one');
+  assert.equal(els.signInBtn.hidden, false, 'anonymous family is offered Sign in instead');
+  assert.equal(els.signedInAs.hidden, true, 'anonymous family sees no identity');
+  assert.equal(els.signOutBtn.hidden, true, 'anonymous family sees no Sign out');
+
+  els = runPaintHeader({ signed_in: true, email: 'a@example.com' }, { is_demo: false });
+  assert.equal(els.signInBtn.hidden, true, 'signed in hides Sign in (brief 026)');
+  assert.equal(els.startFamilyBtn.hidden, true, 'signed in hides Start too (brief 026)');
+  assert.equal(els.signedInAs.hidden, false, 'signed in shows the identity');
+  assert.equal(els.signOutBtn.hidden, false, 'signed in shows Sign out');
+
+  // The anonymous branch must hide Start while showing Sign in — the two
+  // pre-existing literals alone cannot prove the third state exists.
+  const paintSrc = pageFnSource('paintHeaderAuth');
+  const anonAt = paintSrc.indexOf("state === 'anonymous-family'");
+  assert.ok(anonAt !== -1, 'anonymous-family branch is explicit in paintHeaderAuth');
+  const anonBranch = paintSrc.slice(anonAt, paintSrc.indexOf('} else {', anonAt));
+  assert.ok(anonBranch.includes('startFamilyBtn.hidden = true'), 'anonymous branch hides Start');
+  assert.ok(anonBranch.includes('signInBtn.hidden = false'), 'anonymous branch shows Sign in');
+
+  // The new paint must run everywhere the profile or identity can change.
+  for (const token of ['refreshAuthChrome();']) {
+    assert.ok(PAGE.includes(token), 'header/notice repaint is wired');
+  }
+  assert.ok(PAGE.includes('currentAuth = { signed_in:'), 'loadAuth stores the identity for the paint');
+  assert.ok(PAGE.includes('currentProfile = status.profile || null'),
+    'boot hands the resolved profile to the header paint');
+});
+
+test('save-your-family notice shows only for an unlinked non-demo family', () => {
+  const anon = { signed_in: false };
+  const linked = { signed_in: true, email: 'a@example.com' };
+  const demo = { is_demo: true };
+  const own = { is_demo: false };
+  assert.equal(runShouldShow(anon, own, false), true, 'anonymous family sees the notice');
+  assert.equal(runShouldShow(anon, own, true), false, 'dismissed notice stays hidden for the session');
+  assert.equal(runShouldShow(anon, demo, false), false, 'demo family never sees the notice');
+  assert.equal(runShouldShow(anon, null, false), false, 'visitor with no family never sees the notice');
+  assert.equal(runShouldShow(linked, own, false), false, 'linked (signed-in) family never sees the notice');
+  assert.equal(runShouldShow(linked, demo, false), false, 'signed-in demo viewer never sees the notice');
+
+  let els = runPaintNotice(anon, own, false);
+  assert.equal(els.saveNoticeHubs.hidden, false, 'My hubs shows the notice');
+  assert.equal(els.saveNoticeFamily.hidden, false, 'My family shows the notice');
+  els = runPaintNotice(linked, own, false);
+  assert.equal(els.saveNoticeHubs.hidden, true, 'linking the family hides the hubs notice');
+  assert.equal(els.saveNoticeFamily.hidden, true, 'linking the family hides the family notice');
+  els = runPaintNotice(anon, demo, false);
+  assert.equal(els.saveNoticeHubs.hidden, true, 'demo hides the hubs notice');
+  assert.equal(els.saveNoticeFamily.hidden, true, 'demo hides the family notice');
+
+  for (const id of ['saveNoticeHubs', 'saveNoticeFamily', 'saveNoticeDismissHubs', 'saveNoticeDismissFamily']) {
+    assert.ok(PAGE.includes('id="' + id + '"'), id + ' is on the page');
+  }
+  assert.ok(PAGE.includes('id="saveNoticeHubs"'), 'notice lives on My hubs');
+  assert.ok(PAGE.includes('id="saveNoticeFamily"'), 'notice lives on My family');
+  const hubsAt = PAGE.indexOf('id="saveNoticeHubs"');
+  assert.ok(hubsAt > PAGE.indexOf('id="hubs-h"') && hubsAt < PAGE.indexOf('id="hubsList"'),
+    'hubs notice sits under the My hubs heading, above the list');
+});
+
+test('save notice copy is plain language with a sign-in button, no email capture', () => {
+  for (const token of ['Save your family.', 'saved only in this browser',
+    'Sign in with Google', 'tied to your account', 'get it back on any device',
+    'Dismiss for now', 'SAVE_NOTICE_DISMISS_KEY', 'parentloop.saveNoticeDismissed']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  for (const id of ['saveNoticeHubs', 'saveNoticeFamily']) {
+    const open = PAGE.indexOf('id="' + id + '"');
+    assert.ok(open !== -1, id + ' is on the page');
+    const close = PAGE.indexOf('</div>', PAGE.indexOf('save-notice-row', open));
+    const markup = PAGE.slice(open, close);
+    assert.ok(markup.includes('href="/api/auth/login"'),
+      id + ' button reaches the existing sign-in flow');
+    assert.ok(markup.includes('>Sign in with Google</a>'),
+      id + ' button keeps the existing sign-in label');
+    assert.ok(!markup.includes('<input'), id + ' collects nothing — no email-capture field');
+    assert.ok(!markup.toLowerCase().includes('email'), id + ' never asks for an email address');
+  }
+  assert.ok(PAGE.includes("getElementById('saveNoticeDismissHubs').addEventListener('click'"),
+    'hubs dismiss is wired');
+  assert.ok(PAGE.includes("getElementById('saveNoticeDismissFamily').addEventListener('click'"),
+    'family dismiss is wired');
+  const style = PAGE.slice(PAGE.indexOf('<style>'), PAGE.indexOf('</style>'));
+  assert.ok(style.includes('.save-notice[hidden]'), 'notice honors the hidden attribute');
+  assert.ok(!style.includes('.save-notice {') || !PAGE.slice(PAGE.indexOf('.save-notice {'), PAGE.indexOf('.save-notice {') + 300).includes('gradient'),
+    'notice styling stays flat — no gradient hero treatment');
 });
 
 test('onboarding action cluster breathes: one rhythm from child row to demo link', () => {

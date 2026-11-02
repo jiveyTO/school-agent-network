@@ -144,6 +144,26 @@
     margin: 12px 16px 0;
   }
   .demo-bar[hidden] { display: none; }
+  .save-notice {
+    background: var(--pine-soft);
+    border: 1px solid var(--pine);
+    border-radius: 16px;
+    padding: 12px 16px;
+    margin: 0 0 16px;
+  }
+  .save-notice[hidden] { display: none; }
+  .save-notice p {
+    margin: 0;
+    font-size: 15px;
+    color: var(--pine-dark);
+  }
+  .save-notice-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin-top: 10px;
+  }
   .demo-bar p {
     margin: 0;
     flex: 1 1 200px;
@@ -676,6 +696,13 @@
         <h2 id="hubs-h">My hubs</h2>
         <button class="small-btn" id="startHubToggle" type="button" hidden>+ Start a hub</button>
       </div>
+      <div class="save-notice" id="saveNoticeHubs" hidden>
+        <p><b>Save your family.</b> This family is saved only in this browser right now — if that browser data is lost, the family can’t be recovered. Sign in with Google so it’s tied to your account and you can get it back on any device.</p>
+        <div class="save-notice-row">
+          <a class="small-btn" href="/api/auth/login">Sign in with Google</a>
+          <button class="text-btn" id="saveNoticeDismissHubs" type="button">Dismiss for now</button>
+        </div>
+      </div>
       <div class="card" id="welcomeHubs" hidden>
         <h3 id="welcome-hubs-h" style="margin-top:0">Start your first hub</h3>
         <p>A hub is your class’s or team’s shared space for newsletters and notices. One parent starts it, everyone else joins by invite.</p>
@@ -907,6 +934,13 @@
     <div class="view" id="viewFamily" hidden>
     <section aria-labelledby="parent-h">
       <h2 id="parent-h">Your family</h2>
+      <div class="save-notice" id="saveNoticeFamily" hidden>
+        <p><b>Save your family.</b> This family is saved only in this browser right now — if that browser data is lost, the family can’t be recovered. Sign in with Google so it’s tied to your account and you can get it back on any device.</p>
+        <div class="save-notice-row">
+          <a class="small-btn" href="/api/auth/login">Sign in with Google</a>
+          <button class="text-btn" id="saveNoticeDismissFamily" type="button">Dismiss for now</button>
+        </div>
+      </div>
       <div class="family-card" id="familyCard">
         <h3>Loading your family…</h3>
       </div>
@@ -1335,9 +1369,19 @@
   let currentChildAll = 'Maya';
 
   var currentProfile = null;
+  var currentAuth = { signed_in: false, email: '' };
+  var SAVE_NOTICE_DISMISS_KEY = 'parentloop.saveNoticeDismissed';
 
   function renderFamily(profile) {
+    const prevId = currentProfile && currentProfile.id;
+    const nextId = profile && profile.id;
     currentProfile = profile || null;
+    if (prevId !== nextId) {
+      try {
+        sessionStorage.removeItem(SAVE_NOTICE_DISMISS_KEY);
+      } catch (e) {}
+    }
+    refreshAuthChrome();
     document.getElementById('editFamilyBtn').hidden = !(profile && !profile.is_demo);
     if (!profile) {
       familyCardEl.innerHTML = '<h3>Your Family</h3><p>Family details are unavailable right now.</p>';
@@ -1463,6 +1507,70 @@
   function paintDemoBar() {
     demoBar.hidden = !(demoViewing && !tabBar.hidden);
     document.getElementById('demoPill').hidden = !demoViewing;
+  }
+
+  // Brief 034: the header has three states — signed-in, anonymous WITH a
+  // family, and visitor (no family yet, or demo). An anonymous family lives
+  // only in this browser's session, so the header offers Sign in instead of
+  // Start. Pure helper so the rule is pinnable.
+  function headerAuthState(auth, profile) {
+    if (auth && auth.signed_in) return 'signed-in';
+    if (profile && !profile.is_demo) return 'anonymous-family';
+    return 'visitor';
+  }
+
+  function paintHeaderAuth(auth, profile) {
+    const signInBtn = document.getElementById('signInBtn');
+    const startFamilyBtn = document.getElementById('startFamilyBtn');
+    const signedInAs = document.getElementById('signedInAs');
+    const signedInEmail = document.getElementById('signedInEmail');
+    const signOutBtn = document.getElementById('signOutBtn');
+    const state = headerAuthState(auth, profile);
+    if (state === 'signed-in') {
+      signInBtn.hidden = true;
+      startFamilyBtn.hidden = true;
+      signedInEmail.textContent = (auth && auth.email) || 'your Google account';
+      signedInAs.hidden = false;
+      signOutBtn.hidden = false;
+    } else if (state === 'anonymous-family') {
+      signInBtn.hidden = false;
+      startFamilyBtn.hidden = true;
+      signedInAs.hidden = true;
+      signOutBtn.hidden = true;
+    } else {
+      signInBtn.hidden = false;
+      startFamilyBtn.hidden = false;
+      signedInAs.hidden = true;
+      signOutBtn.hidden = true;
+    }
+  }
+
+  // Brief 034: the save-your-family notice shows only for an unlinked
+  // non-demo family — never for the demo family or a signed-in family.
+  function shouldShowSaveNotice(auth, profile, dismissed) {
+    if (dismissed) return false;
+    if (!auth || auth.signed_in) return false;
+    if (!profile || profile.is_demo) return false;
+    return true;
+  }
+
+  function saveNoticeDismissed() {
+    try {
+      return sessionStorage.getItem(SAVE_NOTICE_DISMISS_KEY) === '1';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function paintSaveNotice(auth, profile, dismissed) {
+    const show = shouldShowSaveNotice(auth, profile, dismissed);
+    document.getElementById('saveNoticeHubs').hidden = !show;
+    document.getElementById('saveNoticeFamily').hidden = !show;
+  }
+
+  function refreshAuthChrome() {
+    paintHeaderAuth(currentAuth, currentProfile);
+    paintSaveNotice(currentAuth, currentProfile, saveNoticeDismissed());
   }
   const viewIds = ['viewHubs', 'viewHub', 'viewEvening', 'viewFamily'];
   const tabIds = { hubs: 'tabHubs', evening: 'tabEvening', family: 'tabFamily' };
@@ -2068,11 +2176,6 @@
   }
 
   async function loadAuth() {
-    const signInBtn = document.getElementById('signInBtn');
-    const startFamilyBtn = document.getElementById('startFamilyBtn');
-    const signedInAs = document.getElementById('signedInAs');
-    const signedInEmail = document.getElementById('signedInEmail');
-    const signOutBtn = document.getElementById('signOutBtn');
     const authError = document.getElementById('authError');
     try {
       const params = new URLSearchParams(window.location.search);
@@ -2082,24 +2185,11 @@
       }
       const aRes = await fetch('/api/auth/status');
       const auth = await aRes.json();
-      if (auth && auth.signed_in) {
-        signInBtn.hidden = true;
-        startFamilyBtn.hidden = true;
-        signedInEmail.textContent = auth.email || 'your Google account';
-        signedInAs.hidden = false;
-        signOutBtn.hidden = false;
-      } else {
-        signInBtn.hidden = false;
-        startFamilyBtn.hidden = false;
-        signedInAs.hidden = true;
-        signOutBtn.hidden = true;
-      }
+      currentAuth = { signed_in: Boolean(auth && auth.signed_in), email: (auth && auth.email) || '' };
     } catch (e) {
-      signInBtn.hidden = false;
-      startFamilyBtn.hidden = false;
-      signedInAs.hidden = true;
-      signOutBtn.hidden = true;
+      currentAuth = { signed_in: false, email: '' };
     }
+    refreshAuthChrome();
   }
 
   async function loadInitial() {
@@ -2117,6 +2207,8 @@
       const sRes = await fetch('/api/onboarding/status');
       status = await sRes.json();
       demoViewing = Boolean(status.profile && status.profile.is_demo);
+      currentProfile = status.profile || null;
+      refreshAuthChrome();
     } catch (e) {
       // Fall back to the main view below.
     }
@@ -2331,6 +2423,16 @@
     document.getElementById('startOverBtn').click();
   });
 
+  function dismissSaveNotice() {
+    try {
+      sessionStorage.setItem(SAVE_NOTICE_DISMISS_KEY, '1');
+    } catch (e) {}
+    paintSaveNotice(currentAuth, currentProfile, true);
+  }
+
+  document.getElementById('saveNoticeDismissHubs').addEventListener('click', dismissSaveNotice);
+  document.getElementById('saveNoticeDismissFamily').addEventListener('click', dismissSaveNotice);
+
   document.getElementById('startOverBtn').addEventListener('click', async function () {
     try {
       await postJson('/api/profile/reset', {});
@@ -2338,6 +2440,8 @@
       // Show setup either way; the next save will set the new family.
     }
     demoViewing = false;
+    currentProfile = null;
+    refreshAuthChrome();
     openOnboarding('new');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
