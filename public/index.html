@@ -490,6 +490,34 @@
   .small-btn:disabled { opacity: 0.55; cursor: wait; }
   .add-material { display: grid; gap: 12px; }
   .add-material .field { margin-bottom: 0; }
+  /* Start-a-hub card: one consistent vertical rhythm (12px field-to-field,
+     matching .field's own margin and the add-material grid), so the form
+     reads the same before and after autofill. */
+  #startHubCard { display: grid; gap: 14px; }
+  #startHubCard[hidden] { display: none; }
+  #startHubCard > * { min-width: 0; }
+  #startHubCard > p, #startHubFields > .hint { margin: 0; }
+  #startHubCard .field { margin-bottom: 0; }
+  #kindFieldWrap, #websiteFieldWrap, #startHubFields, #singleNameWrap,
+  #schoolNameWrap, #teamFieldsWrap { display: grid; gap: 12px; }
+  #kindFieldWrap[hidden], #websiteFieldWrap[hidden], #startHubFields[hidden],
+  #singleNameWrap[hidden], #schoolNameWrap[hidden], #teamFieldsWrap[hidden] { display: none; }
+  /* Autofill confirmation: a proper little notice in the app's existing
+     confirmation styling (soft pine background, rounded, readable size).
+     Breathing room above and below comes from the surrounding grid gap;
+     empty (no autofill yet) it takes no space. */
+  .autofill-note {
+    margin: 0;
+    border: 1px solid var(--pine);
+    border-radius: 12px;
+    background: var(--pine-soft);
+    color: var(--pine-dark);
+    padding: 10px 12px;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.45;
+  }
+  .autofill-note:empty { display: none; }
   .pdf-picker {
     position: relative;
     display: flex;
@@ -648,7 +676,7 @@
             <input type="url" id="hubWebsite" placeholder="https://" inputmode="url">
           </label>
           <button class="small-btn secondary" id="websiteFillBtn" type="button">Fill it in for me</button>
-          <p class="hint" id="parseLinkStatus"></p>
+          <p class="autofill-note" id="parseLinkStatus"></p>
         </div>
         <div id="startHubFields">
           <div id="singleNameWrap">

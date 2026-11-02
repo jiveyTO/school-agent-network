@@ -714,3 +714,31 @@ test('hub page fits phone width: long strings wrap, grid children shrink', () =>
   assert.ok(!PAGE.includes('overflow-x: hidden'),
     'no page-level overflow clipping masks unwrapped content');
 });
+
+test('start-a-hub autofill confirmation reads as a notice, not a wedged hint line', () => {
+  assert.ok(PAGE.includes('id="parseLinkStatus"'), 'confirmation keeps its id (no behavior change)');
+  assert.ok(PAGE.includes('Filled from ') && PAGE.includes('give it a quick check'),
+    'confirmation copy unchanged, character for character');
+  const at = PAGE.indexOf('id="parseLinkStatus"');
+  const tag = PAGE.slice(PAGE.lastIndexOf('<p', at), at);
+  assert.ok(tag.includes('autofill-note'), 'confirmation carries the notice class');
+  assert.ok(!tag.includes('hint'), 'confirmation is no longer a hint line wedged under the button');
+  for (const token of ['.autofill-note', 'background: var(--pine-soft)', 'border-radius: 12px',
+    'font-size: 15px', '.autofill-note:empty { display: none; }']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+});
+
+test('start-a-hub card holds one vertical rhythm before and after filling', () => {
+  for (const token of ['#startHubCard { display: grid;', '#startHubCard[hidden] { display: none; }',
+    '#startHubCard > * { min-width: 0; }', '#startHubCard .field { margin-bottom: 0; }',
+    '#schoolNameWrap', '#teamFieldsWrap', 'gap: 12px']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  for (const token of ['#websiteFieldWrap[hidden]', '#schoolNameWrap[hidden]', '#teamFieldsWrap[hidden]',
+    '#startHubFields[hidden]', '#singleNameWrap[hidden]']) {
+    assert.ok(PAGE.includes(token), `${token} must stay hidden under the grid rhythm`);
+  }
+  assert.ok(!PAGE.includes('overflow-x: hidden'),
+    'no page-level overflow clipping masks unwrapped content');
+});
