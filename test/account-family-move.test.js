@@ -174,6 +174,7 @@ test('signed-in POST /api/profile moves the link end to end', async (t) => {
   const browser = makeClient();
   const createdA = await browser.post('/api/profile', {
     parent_name: 'Willow Parent',
+    parent_email: 'willow.parent@example.com',
     child_name: 'Willow Child',
     priorities: [],
     nudge_style: 'one short message in the evening',
@@ -187,6 +188,7 @@ test('signed-in POST /api/profile moves the link end to end', async (t) => {
 
   const createdB = await browser.post('/api/profile', {
     parent_name: 'Aspen Parent',
+    parent_email: 'aspen.parent@example.com',
     child_name: 'Aspen Child',
     priorities: [],
     nudge_style: 'one short message in the evening',

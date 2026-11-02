@@ -80,6 +80,7 @@ test('hub membership is visible to members and every hub names a contact', async
   await t.test('founder sees the families list and the contact line', async () => {
     await post('/api/profile', {
       parent_name: 'Founder Pat',
+      parent_email: 'founder.pat@example.com',
       child_name: 'Pat Kid',
       grade: 'Grade 3',
       class_name: '3B',
@@ -111,6 +112,7 @@ test('hub membership is visible to members and every hub names a contact', async
     assert.equal(invite.res.status, 200);
     await post('/api/profile', {
       parent_name: 'Joiner Jo',
+      parent_email: 'joiner.jo@example.com',
       child_name: 'Jo Kid',
       grade: 'Grade 3',
       class_name: '3B',
@@ -138,6 +140,7 @@ test('hub membership is visible to members and every hub names a contact', async
   await t.test('a non-member session receives neither the list nor the contact', async () => {
     await post('/api/profile', {
       parent_name: 'Outsider Eve',
+      parent_email: 'outsider.eve@example.com',
       child_name: 'Eve Kid',
       grade: 'Grade 3',
       class_name: '3B',

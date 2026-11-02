@@ -230,6 +230,7 @@ test('onboarding and placements API', async (t) => {
   await t.test('multi-child onboarding: names only, no grade/class/school', async () => {
     const created = await me.post('/api/profile', {
       parent_name: 'Multi Mom',
+      parent_email: 'multi.mom@example.com',
       children: [{ name: 'Ann' }, { name: 'Beth' }],
     });
     assert.equal(created.res.status, 200);
@@ -242,14 +243,14 @@ test('onboarding and placements API', async (t) => {
     annId = created.data.profile.children[0].id;
     bethId = created.data.profile.children[1].id;
 
-    const bad = await me.post('/api/profile', { parent_name: 'No Kid', children: [{ name: '' }] });
+    const bad = await me.post('/api/profile', { parent_name: 'No Kid', parent_email: 'no.kid@example.com', children: [{ name: '' }] });
     assert.equal(bad.res.status, 400);
-    const bad2 = await me.post('/api/profile', { parent_name: '', children: [{ name: 'Kid' }] });
+    const bad2 = await me.post('/api/profile', { parent_name: '', parent_email: 'kid@example.com', children: [{ name: 'Kid' }] });
     assert.equal(bad2.res.status, 400);
 
     // Legacy single-child payloads keep working.
     const other = makeClient();
-    const legacy = await other.post('/api/profile', { parent_name: 'Solo Sam', child_name: 'Sam Jr' });
+    const legacy = await other.post('/api/profile', { parent_name: 'Solo Sam', parent_email: 'solo.sam@example.com', child_name: 'Sam Jr' });
     assert.equal(legacy.res.status, 200);
     assert.equal(legacy.data.profile.children[0].name, 'Sam Jr');
   });
@@ -285,7 +286,7 @@ test('onboarding and placements API', async (t) => {
 
   await t.test('joiner is asked for placement on first entry; prompt data present', async () => {
     const joiner = makeClient();
-    await joiner.post('/api/profile', { parent_name: 'Joiner Jo', children: [{ name: 'Jo Kid' }] });
+    await joiner.post('/api/profile', { parent_name: 'Joiner Jo', parent_email: 'joiner.jo@example.com', children: [{ name: 'Jo Kid' }] });
     const invite = await me.post(`/api/hubs/${schoolHubId}/invites`, {});
     assert.equal(invite.res.status, 200);
     const accepted = await joiner.post(`/api/join/${invite.data.token}/accept`, {});
@@ -356,7 +357,7 @@ test('onboarding and placements API', async (t) => {
     // then even as a hub member (400 — that child is not in their family).
     const intruder = makeClient();
     const iprof = await intruder.post('/api/profile', {
-      parent_name: 'Intruder', children: [{ name: 'Ivy' }],
+      parent_name: 'Intruder', parent_email: 'intruder@example.com', children: [{ name: 'Ivy' }],
     });
     assert.equal(iprof.res.status, 200);
     const stranger = await intruder.del(`/api/hubs/${hubId}/placements/${ann.id}`);

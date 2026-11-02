@@ -683,6 +683,11 @@
         <label class="field">Your name
           <input type="text" id="obParentName" placeholder="e.g. Alex Rivera" autocomplete="name">
         </label>
+        <label class="field">Your email
+          <input type="email" id="obParentEmail" placeholder="e.g. you@example.com" autocomplete="email">
+        </label>
+        <p class="hint">We’ll only use this to help you get back into your family — no account, no password.</p>
+        <p class="hint" id="obEmailError" role="alert" hidden></p>
         <div id="obChildrenWrap">
           <p class="hint">Your children — names only. Grades come later, inside each school hub.</p>
           <div id="obChildrenList"></div>
@@ -976,6 +981,17 @@
         <h3>Loading your family…</h3>
       </div>
       <p style="margin-top:8px"><button class="text-btn" id="editFamilyBtn" type="button" hidden>Edit family names</button></p>
+      <div class="card" id="familyEmailBox" hidden style="margin-top:12px">
+        <p style="margin-top:0"><b>Your email</b></p>
+        <div id="familyEmailPrompt" hidden>
+          <p>One quick thing — add your email so we can help you get back into your family if you’re ever locked out. You can keep using ParentLoop either way.</p>
+        </div>
+        <label class="field">Email
+          <input type="email" id="familyEmailInput" placeholder="e.g. you@example.com" autocomplete="email">
+        </label>
+        <p style="margin:8px 0 0"><button class="small-btn" id="familyEmailSaveBtn" type="button">Save email</button></p>
+        <p class="hint" id="familyEmailStatus"></p>
+      </div>
     </section>
 
     <section aria-labelledby="place-h" id="placementSection">
@@ -1416,6 +1432,8 @@
     document.getElementById('editFamilyBtn').hidden = !(profile && !profile.is_demo);
     if (!profile) {
       familyCardEl.innerHTML = '<h3>Your Family</h3><p>Family details are unavailable right now.</p>';
+      const emailBox = document.getElementById('familyEmailBox');
+      if (emailBox) emailBox.hidden = true;
       return;
     }
     const kids = (profile.children && profile.children.length ? profile.children : [profile.child || {}]);
@@ -1425,10 +1443,33 @@
     currentChildAll = allFirsts.length ? allFirsts.join(' and ') : 'your family';
     parentStatus.textContent = 'One calm summary of what’s still open for ' + currentChildFirst + ' tonight.';
     const parentLast = (profile.parent.name || '').trim().split(' ').slice(-1)[0] || 'Your';
+    const familyEmail = (profile.parent && profile.parent.email) || profile.parent_email || profile.email || '';
     familyCardEl.innerHTML =
       '<h3>The ' + esc(parentLast) + ' Family</h3>' +
       '<p><b>' + esc(profile.parent.name || '') + '</b></p>' +
+      (familyEmail ? '<p>' + esc(familyEmail) + '</p>' : '') +
       kids.map(function (k) { return '<p>' + esc(k.name || '') + '</p>'; }).join('');
+    paintFamilyEmail(profile, familyEmail);
+  }
+
+  function familyEmailOf(profile) {
+    if (!profile) return '';
+    return (profile.parent && profile.parent.email) || profile.parent_email || profile.email || '';
+  }
+
+  function needsFamilyEmail(profile) {
+    return Boolean(profile && !profile.is_demo && !familyEmailOf(profile));
+  }
+
+  function paintFamilyEmail(profile, email) {
+    const box = document.getElementById('familyEmailBox');
+    if (!box) return;
+    const value = email != null ? email : familyEmailOf(profile);
+    const show = Boolean(profile && !profile.is_demo);
+    box.hidden = !show;
+    document.getElementById('familyEmailPrompt').hidden = !needsFamilyEmail(profile);
+    const input = document.getElementById('familyEmailInput');
+    if (document.activeElement !== input) input.value = value || '';
   }
 
   var eveningUid = { count: 0 };
@@ -1679,15 +1720,34 @@
 
   function clearObForm() {
     document.getElementById('obParentName').value = '';
+    const emailEl = document.getElementById('obParentEmail');
+    if (emailEl) emailEl.value = '';
+    const emailError = document.getElementById('obEmailError');
+    if (emailError) { emailError.hidden = true; emailError.textContent = ''; }
     document.getElementById('obChildrenList').innerHTML = '';
     addObChildRow('');
     document.getElementById('obProfileStatus').textContent = '';
+  }
+
+  var PARENT_EMAIL_ERROR = 'Please add a valid email — for example, you@example.com — so we can help you get back in if you are ever locked out.';
+
+  function isValidParentEmail(value) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+  }
+
+  function showObEmailError(message) {
+    const emailError = document.getElementById('obEmailError');
+    const statusEl = document.getElementById('obProfileStatus');
+    if (emailError) { emailError.textContent = message; emailError.hidden = false; }
+    if (statusEl) statusEl.textContent = message;
   }
 
   function fillObForm(profile) {
     clearObForm();
     if (!profile) return;
     document.getElementById('obParentName').value = (profile.parent && profile.parent.name) || '';
+    const obEmailEl = document.getElementById('obParentEmail');
+    if (obEmailEl) obEmailEl.value = familyEmailOf(profile);
     const kids = (profile.children && profile.children.length ? profile.children : [profile.child || {}]);
     document.getElementById('obChildrenList').innerHTML = '';
     kids.forEach(function (k) { addObChildRow(k.name || ''); });
@@ -2480,9 +2540,18 @@
     btn.disabled = true;
     statusEl.textContent = 'Saving your family…';
     try {
+      const obEmail = document.getElementById('obParentEmail').value.trim();
+      if (!isValidParentEmail(obEmail)) {
+        showObEmailError(PARENT_EMAIL_ERROR);
+        btn.disabled = false;
+        return;
+      }
+      const emailErrorEl = document.getElementById('obEmailError');
+      if (emailErrorEl) { emailErrorEl.hidden = true; emailErrorEl.textContent = ''; }
       if (onboardingMode === 'edit') {
         const data = await postJson('/api/profile/update', {
           parent_name: document.getElementById('obParentName').value,
+          parent_email: obEmail,
           children: obChildEntries(),
         });
         renderFamily(data.profile);
@@ -2494,6 +2563,7 @@
       }
       const data = await postJson('/api/profile', {
         parent_name: document.getElementById('obParentName').value,
+        parent_email: obEmail,
         children: obChildEntries(),
         priorities: ['never miss a food-order deadline', 'keep evenings calm — one combined nudge'],
         nudge_style: 'one short message in the evening',
@@ -2522,8 +2592,26 @@
       showMain();
     } catch (e) {
       statusEl.textContent = e.message;
+      if (/email/i.test(e.message || '')) showObEmailError(e.message);
     } finally {
       btn.disabled = false;
+    }
+  });
+
+  document.getElementById('familyEmailSaveBtn').addEventListener('click', async function () {
+    const statusEl = document.getElementById('familyEmailStatus');
+    const value = document.getElementById('familyEmailInput').value.trim();
+    if (!isValidParentEmail(value)) {
+      statusEl.textContent = PARENT_EMAIL_ERROR;
+      return;
+    }
+    statusEl.textContent = 'Saving…';
+    try {
+      const data = await postJson('/api/profile/update', { parent_email: value });
+      renderFamily(data.profile);
+      document.getElementById('familyEmailStatus').textContent = 'Saved.';
+    } catch (e) {
+      statusEl.textContent = e.message;
     }
   });
 

@@ -70,6 +70,7 @@ function makeClient() {
 async function makeFamily(client, parentName, childName) {
   const created = await client.post('/api/profile', {
     parent_name: parentName,
+    parent_email: 'family@example.com',
     child_name: childName,
     priorities: [],
     nudge_style: 'one short message in the evening',

@@ -1165,6 +1165,8 @@ const server = http.createServer(async (req, res) => {
         isDemo: Boolean(active && active.is_demo),
         is_demo: Boolean(active && active.is_demo),
         needsOnboarding: !(active && !active.is_demo),
+        needsEmail: Boolean(active && !active.is_demo && !(active.parent && active.parent.email)),
+        needs_email: Boolean(active && !active.is_demo && !(active.parent && active.parent.email)),
         profile: active,
         auth: store.getSessionIdentity(session),
       });
@@ -1261,8 +1263,14 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: 'Please add a parent name and at least one child name.' });
         return;
       }
+      const parentEmail = store.parentEmailOf(body);
+      if (!store.isValidParentEmail(parentEmail)) {
+        sendJson(res, 400, { error: store.PARENT_EMAIL_ERROR });
+        return;
+      }
       const profile = store.createProfileForSession(session.id, {
         parent_name: parentName,
+        parent_email: parentEmail,
         children: kidNames.map((name) => ({ name })),
         priorities: body.priorities,
         nudge_style: body.nudge_style,
@@ -1280,10 +1288,16 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         const body = await readJsonBody(req);
-        const profile = store.updateProfileNames(active.id, {
-          parent_name: body.parent_name,
-          children: body.children,
-        });
+        const hasEmail = body.parent_email != null || body.email != null || body.parentEmail != null ||
+          (body.parent && body.parent.email != null);
+        const hasNames = body.parent_name != null || body.children != null;
+        const profile = hasEmail && !hasNames
+          ? store.updateProfileEmail(active.id, store.parentEmailOf(body))
+          : store.updateProfileNames(active.id, {
+              parent_name: body.parent_name,
+              parent_email: hasEmail ? store.parentEmailOf(body) : undefined,
+              children: body.children,
+            });
         if (!profile) {
           sendJson(res, 400, { error: 'Switch to your own family first, then edit it.' });
           return;

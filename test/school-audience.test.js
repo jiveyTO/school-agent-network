@@ -79,6 +79,7 @@ test('school demo strip is hidden from real non-demo profiles', async (t) => {
   // A real profile sees no demo feed and cannot rewrite it through /api/run.
   await post('/api/profile', {
     parent_name: 'Audience Parent',
+    parent_email: 'audience.parent@example.com',
     child_name: 'Audience Child',
     grade: 'Grade 3',
     class_name: '3A',

@@ -133,6 +133,7 @@ test('invite joins never capture the demo family', async (t) => {
   await t.test('a real family founds a hub and mints an invite', async () => {
     const founder = await post('/api/profile', {
       parent_name: 'Invite Irene',
+      parent_email: 'invite.irene@example.com',
       child_name: 'Irene Kid',
       priorities: [],
       nudge_style: 'one short message in the evening',
@@ -182,6 +183,7 @@ test('invite joins never capture the demo family', async (t) => {
     await post('/api/auth/logout', {});
     const created = await post('/api/profile', {
       parent_name: 'Joiner Jo',
+      parent_email: 'joiner.jo@example.com',
       child_name: 'Jo Kid',
       priorities: [],
       nudge_style: 'one short message in the evening',

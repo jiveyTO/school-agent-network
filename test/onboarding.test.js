@@ -99,6 +99,7 @@ test('onboarding, sources, Gmail safety, and demo flow', async (t) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         parent_name: 'Jordan Lee',
+        parent_email: 'jordan.lee@example.com',
         children: [{ name: 'Sam Lee' }, { name: 'Robin Lee' }],
         priorities: ['never miss a food-order deadline'],
         nudge_style: 'one short message in the evening',

@@ -156,6 +156,7 @@ test('hub simplification: sources, website, and one-box adding', async (t) => {
     assert.equal(tokenRes.res.status, 200);
     await post('/api/profile', {
       parent_name: 'Member Meg',
+      parent_email: 'member.meg@example.com',
       child_name: 'Meg Kid',
       grade: 'Grade 3',
       class_name: '3B',

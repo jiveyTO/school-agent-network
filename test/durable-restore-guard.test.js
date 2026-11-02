@@ -141,6 +141,7 @@ function makeClient() {
 async function createFamily(client, parentName, childName) {
   const res = await client.post('/api/profile', {
     parent_name: parentName,
+    parent_email: 'family@example.com',
     children: [{ name: childName }],
   });
   assert.equal(res.res.status, 200, res.text.slice(0, 300));

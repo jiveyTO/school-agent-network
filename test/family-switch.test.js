@@ -138,6 +138,7 @@ test('switching families mid-session moves placements and the parent run to fami
   // Family A, signed in, with a placed school hub.
   const createdA = await post('/api/profile', {
     parent_name: 'Rowan Parent',
+    parent_email: 'rowan.parent@example.com',
     children: [{ name: 'Rowan Child' }],
     priorities: [],
     nudge_style: 'one short message in the evening',
@@ -158,6 +159,7 @@ test('switching families mid-session moves placements and the parent run to fami
   // Switch: create family B on the same signed-in session.
   const createdB = await post('/api/profile', {
     parent_name: 'Sorrel Parent',
+    parent_email: 'sorrel.parent@example.com',
     children: [{ name: 'Sorrel Child' }],
     priorities: [],
     nudge_style: 'one short message in the evening',
