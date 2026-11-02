@@ -16,7 +16,7 @@ from inside that directory:
 
 ```sh
 set -a; . ./.env; set +a
-for v in SCHOOL_AGENT_API_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET; do
+for v in SCHOOL_AGENT_API_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET APP_DB_GCS_BUCKET APP_DB_GCS_OBJECT; do
   eval "[ -n \"\$$v\" ]" || { echo "missing $v in .env"; exit 1; }
 done
 PAIRS=""
@@ -33,11 +33,14 @@ Rules (learned from brief 016, which broke live Google sign-in):
 
 - The `--set-env-vars` value is always built mechanically from EVERY key in
   the project `.env` (at minimum `SCHOOL_AGENT_API_KEY`,
-  `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) plus the hardcoded public
+  `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `APP_DB_GCS_BUCKET`,
+  `APP_DB_GCS_OBJECT`) plus the hardcoded public
   `PUBLIC_BASE_URL`. Never deploy with a hand-written partial variable
   list, and never use a carry-forward list that enumerates only some
   variables — brief 016's deploy carried forward only
-  `SCHOOL_AGENT_API_KEY`, silently dropping the Google vars.
+  `SCHOOL_AGENT_API_KEY`, silently dropping the Google vars, and
+  revisions 00022–00025 repeated the same failure mode for the durable
+  store vars (`APP_DB_GCS_BUCKET` / `APP_DB_GCS_OBJECT`, brief 021).
 
 Read secrets only from the local `.env` inside the deploy container; never
 print them. Remove `/tmp/parentloop-deploy` afterwards.
@@ -49,6 +52,9 @@ print them. Remove `/tmp/parentloop-deploy` afterwards.
    callback URI.
 3. Demo evening check still exactly 2 nudges, 3 conflicts, 28 relevant,
    1 set aside, PRIVACY CHECK line present.
+4. Durability: boot logs show the durable store restore line (e.g.
+   "database restored from hosted storage") and the ENGAGED line, and a
+   fresh Google sign-in restores the account's family (not demo).
 
 ## Privacy (hard rules)
 

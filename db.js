@@ -66,6 +66,13 @@ function isDurableStoreEnabled() {
   return Boolean(durableConfig());
 }
 
+// One unambiguous boot line so the durable store state is never silent.
+function durableStatusLine() {
+  const cfg = durableConfig();
+  if (cfg) return `durable store: ENGAGED (bucket="${cfg.bucket}" object="${cfg.object}")`;
+  return 'durable store: DISABLED (APP_DB_GCS_BUCKET not set)';
+}
+
 async function durableAccessToken() {
   if (durableToken && Date.now() < durableTokenExpiresAt - 60000) return durableToken;
   const res = await fetch(
@@ -294,6 +301,7 @@ function seedDemoIfNeeded() {
 
 async function initDb() {
   if (db) return;
+  console.log(durableStatusLine());
   const restored = await restoreDurableStore();
   if (restored) console.log('durable store: database restored from hosted storage');
   const SQL = await initSqlJs({
@@ -1812,6 +1820,7 @@ module.exports = {
   HOCKEY_FACTS,
   initDb,
   isDurableStoreEnabled,
+  durableStatusLine,
   flushDurableStore,
   getActiveProfile,
   getDemoProfile,
