@@ -1291,6 +1291,15 @@
       } else if (m.may_have_unread_pictures) {
         body += '<p class="hint" style="margin:6px 0">Part of this document may be inside pictures, so we couldn\'t read it. If something looks missing, have a look at the original.</p>';
       }
+      if (m.can_remove) {
+        body += '<div class="material-remove">' +
+          '<p style="margin:6px 0"><button class="text-btn danger" type="button" data-remove-material="' + esc(m.id) + '">Remove</button></p>' +
+          '<div data-remove-confirm="' + esc(m.id) + '" hidden>' +
+          '<p class="hint">Remove this material? This cannot be undone.</p>' +
+          '<p style="margin:8px 0"><button class="small-btn" type="button" data-remove-yes="' + esc(m.id) + '">Yes, remove it</button> ' +
+          '<button class="small-btn secondary" type="button" data-remove-no="' + esc(m.id) + '">Keep it</button></p>' +
+          '<p class="hint" data-remove-status="' + esc(m.id) + '"></p></div></div>';
+      }
       if (!items.length) {
         body += m.status === 'failed'
           ? '<p class="facts-empty">We couldn\'t pull any notes out of that one — try pasting it again.</p>'
@@ -1354,6 +1363,44 @@
         const hidden = quotes.hidden;
         quotes.hidden = !hidden;
         btn.textContent = hidden ? 'Hide sources' : 'Show sources';
+      });
+    });
+    listEl.querySelectorAll('[data-remove-material]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const wrap = btn.closest('.material-remove');
+        if (!wrap) return;
+        btn.hidden = true;
+        const confirm = wrap.querySelector('[data-remove-confirm]');
+        if (confirm) confirm.hidden = false;
+      });
+    });
+    listEl.querySelectorAll('[data-remove-no]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const wrap = btn.closest('.material-remove');
+        if (!wrap) return;
+        const confirm = wrap.querySelector('[data-remove-confirm]');
+        if (confirm) confirm.hidden = true;
+        const open = wrap.querySelector('[data-remove-material]');
+        if (open) open.hidden = false;
+      });
+    });
+    listEl.querySelectorAll('[data-remove-yes]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        const mid = btn.getAttribute('data-remove-yes');
+        const wrap = btn.closest('.material-remove');
+        const statusEl = wrap ? wrap.querySelector('[data-remove-status]') : null;
+        btn.disabled = true;
+        if (statusEl) statusEl.textContent = 'Removing…';
+        try {
+          const res = await fetch('/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(mid), { method: 'DELETE' });
+          const data = await res.json().catch(function () { return {}; });
+          if (!res.ok) throw new Error(data.error || 'That material couldn’t be removed.');
+          delete fullTextCache[mid];
+          await loadHubDetail(currentHubId);
+        } catch (e) {
+          if (statusEl) statusEl.textContent = e.message;
+          btn.disabled = false;
+        }
       });
     });
     listEl.querySelectorAll('[data-full-text]').forEach(function (btn) {

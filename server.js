@@ -2241,6 +2241,7 @@ const server = http.createServer(async (req, res) => {
     const hubPlacementsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/placements$/);
     const hubPlacementMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/placements\/([^/]+)$/);
     const hubMaterialsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials$/);
+    const hubMaterialMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)$/);
     const hubMaterialTextMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)\/text$/);
     const hubMaterialFileMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)\/file$/);
     const hubInvitesMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/invites$/);
@@ -2439,7 +2440,15 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         hub: { ...hub, role: store.getMemberRole(hub.id, actor.id), member_count: members.length },
         facts: store.listFacts(hub.id, actor.id),
-        materials: store.listMaterials(hub.id, actor.id),
+        materials: store.listMaterials(hub.id, actor.id).map((m) => {
+          const { uploaded_by, ...rest } = m;
+          return {
+            ...rest,
+            can_remove: Boolean(
+              !hub.is_demo && (uploaded_by === actor.id || store.getMemberRole(hub.id, actor.id) === 'admin')
+            ),
+          };
+        }),
         member_count: members.length,
         members,
         contacts,
@@ -2482,6 +2491,21 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         sendJson(res, 400, { error: err && err.message ? err.message : String(err) });
       }
+      return;
+    }
+    if (req.method === 'DELETE' && hubMaterialMatch) {
+      const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
+      const hub = store.getHub(hubMaterialMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can read this hub.' }); return; }
+      const material = store.getMaterial(hubMaterialMatch[2]);
+      if (!material || material.hub_id !== hub.id) { sendJson(res, 404, { error: 'That material is not available.' }); return; }
+      if (hub.is_demo) { sendJson(res, 403, { error: 'Demo materials can’t be removed — the demo stays as it is.' }); return; }
+      const isUploader = material.uploaded_by === actor.id;
+      const isAdmin = store.getMemberRole(hub.id, actor.id) === 'admin';
+      if (!isUploader && !isAdmin) { sendJson(res, 403, { error: 'Only the parent who added this, or a hub admin, can remove it.' }); return; }
+      store.deleteMaterial(material.id);
+      sendJson(res, 200, { ok: true });
       return;
     }
     if (req.method === 'GET' && hubMaterialTextMatch) {

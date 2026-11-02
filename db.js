@@ -1689,6 +1689,18 @@ function getMaterialText(materialId, profileId) {
   return { id: row.id, hub_id: row.hub_id, kind: row.kind, title: row.title, text: row.raw_text || '' };
 }
 
+// Remove one material from its hub: the material row (which also holds
+// the retained file bytes), and every fact extracted from it. Sibling
+// materials and their facts are untouched.
+function deleteMaterial(materialId) {
+  if (!materialId) return false;
+  if (!one('SELECT id FROM materials WHERE id = ?', [materialId])) return false;
+  run('DELETE FROM facts WHERE material_id = ?', [materialId]);
+  run('DELETE FROM materials WHERE id = ?', [materialId]);
+  persist();
+  return true;
+}
+
 function deleteHub(hubId) {
   if (!hubId) return false;
   if (!getHubRow(hubId)) return false;
@@ -2199,6 +2211,7 @@ function scopedMaterialRow(r) {
   return {
     id: r.id,
     hub_id: r.hub_id,
+    uploaded_by: r.uploaded_by || '',
     kind: r.kind,
     title: r.title,
     created_at: r.created_at,
@@ -2480,6 +2493,7 @@ module.exports = {
   listJoinRequests,
   decideJoinRequest,
   createMaterial,
+  deleteMaterial,
   getMaterial,
   getMaterialText,
   getMaterialFile,
