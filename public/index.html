@@ -567,7 +567,7 @@
 <body>
 <div class="phone">
   <header>
-    <span class="demo-badge">Demo — fictional school &amp; family</span>
+    <span class="demo-badge" id="demoPill" hidden>Demo — fictional school &amp; family</span>
     <h1>ParentLoop</h1>
     <p class="tagline">You’re always in the loop.</p>
     <div id="authArea">
@@ -1406,6 +1406,7 @@
 
   function paintDemoBar() {
     demoBar.hidden = !(demoViewing && !tabBar.hidden);
+    document.getElementById('demoPill').hidden = !demoViewing;
   }
   const viewIds = ['viewHubs', 'viewHub', 'viewEvening', 'viewFamily'];
   const tabIds = { hubs: 'tabHubs', evening: 'tabEvening', family: 'tabFamily' };
@@ -2224,6 +2225,7 @@
     } catch (e) {
       // Show setup either way; the next save will set the new family.
     }
+    demoViewing = false;
     openOnboarding('new');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });

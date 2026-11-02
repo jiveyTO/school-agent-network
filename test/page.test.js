@@ -503,6 +503,18 @@ test('School updates panel is demo-only: hidden for real families, unchanged for
     'non-demo fallback message still set while hidden');
 });
 
+test('demo pill shows only to the demo viewer, never to a signed-in family', () => {
+  assert.ok(PAGE.includes('id="demoPill"'), 'pill carries a gate id');
+  assert.ok(PAGE.includes('Demo — fictional school &amp; family'), 'pill copy unchanged');
+  const pillMarkup = PAGE.slice(PAGE.indexOf('id="demoPill"') - 60, PAGE.indexOf('id="demoPill"') + 60);
+  assert.ok(pillMarkup.includes('hidden'), 'pill starts hidden so real families never see a flash of it');
+  assert.ok(PAGE.includes('demoViewing = Boolean(status.profile && status.profile.is_demo)'),
+    'viewer identity comes from the profile, same source as the School updates gate');
+  assert.ok(PAGE.includes("getElementById('demoPill').hidden = !demoViewing"),
+    'pill is present when the viewer is the demo family and absent otherwise');
+  assert.ok(PAGE.includes('demoViewing = false;'), 'leaving the demo (new family or reset) clears the viewer flag');
+});
+
 test('hub title shows the open hub name; picker text only with no hub open', () => {
   assert.ok(PAGE.includes('id="hubChooserText"'), 'chooser explainer carries an id');
   assert.ok(PAGE.includes('Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.'),
