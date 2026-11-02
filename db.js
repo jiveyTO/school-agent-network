@@ -1057,6 +1057,30 @@ function createProfile(input) {
   return rowToProfile(getProfileRowById(id));
 }
 
+// Session-scoped family creation. When the creating session is signed in
+// (its session row carries a Google identity), the account link MOVES to the
+// new family: any other non-demo profile holding this account's link has it
+// cleared, and the new profile is attached via the standard
+// setProfileGoogleLink path, all persisted together. The previous family
+// keeps its data, hubs, and memberships — only the link moves. When the
+// account owned no family this is an immediate attach (same end state as
+// signing in afterward). Anonymous creation changes nothing; the demo family
+// is never linkable.
+function createProfileForSession(sessionId, input) {
+  const profile = createProfile(input);
+  const session = sessionId ? getSession(sessionId) : null;
+  const sub = session ? String(session.google_sub || '') : '';
+  if (!profile || !sub) return profile;
+  const email = String(session.google_email || '');
+  const prev = getProfileByGoogleSub(sub);
+  if (prev && !prev.is_demo && prev.id !== profile.id) {
+    run('UPDATE profiles SET google_sub = ?, google_email = ? WHERE id = ?', ['', '', prev.id]);
+  }
+  const linked = setProfileGoogleLink(profile.id, sub, email);
+  persist();
+  return linked || profile;
+}
+
 // Rename/add/remove children by name. The demo family is not editable.
 // Returns the updated profile, or null when there is nothing to update.
 function updateProfileNames(profileId, input) {
@@ -1832,6 +1856,7 @@ module.exports = {
   setSessionProfile,
   getSessionViewer,
   getProfileByGoogleSub,
+  getProfileRowById,
   setProfileGoogleLink,
   getSessionIdentity,
   setSessionIdentity,
@@ -1840,6 +1865,7 @@ module.exports = {
   completeGoogleSignIn,
   signOutSession,
   createProfile,
+  createProfileForSession,
   updateProfileNames,
   __testSetChildLegacy,
   updateProfileActions,

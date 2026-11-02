@@ -1218,7 +1218,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: 'Please add a parent name and at least one child name.' });
         return;
       }
-      const profile = store.createProfile({
+      const profile = store.createProfileForSession(session.id, {
         parent_name: parentName,
         children: kidNames.map((name) => ({ name })),
         priorities: body.priorities,
