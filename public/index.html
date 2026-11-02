@@ -1224,6 +1224,11 @@
       const noteWord = items.length === 1 ? 'note' : 'notes';
       let body = '<summary><b>' + esc(m.title) + '</b> ' +
         '<span class="added">Added ' + esc(humanDate(m.created_at)) + ' · ' + items.length + ' ' + noteWord + '</span></summary>';
+      if (m.has_file) {
+        body += '<div class="group-actions" style="margin:6px 0">' +
+          '<a class="toggle-btn" href="/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(m.id) + '/file" target="_blank" rel="noopener">View original PDF</a>' +
+          '</div>';
+      }
       if (!items.length) {
         body += m.status === 'failed'
           ? '<p class="facts-empty">We couldn\'t pull any notes out of that one — try pasting it again.</p>'
@@ -3018,6 +3023,7 @@
         });
         data = await postJson('/api/hubs/' + encodeURIComponent(hubId) + '/materials', {
           kind: 'pdf',
+          fileName: file.name,
           fileBase64: base64,
         });
       } else {
