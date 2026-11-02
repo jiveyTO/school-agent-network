@@ -1286,7 +1286,9 @@
             '</div>';
         }
       }
-      if (m.may_have_unread_pictures) {
+      if (m.pictures_read_with_ocr) {
+        body += '<p class="hint" style="margin:6px 0">Some pages were pictures — read with OCR.</p>';
+      } else if (m.may_have_unread_pictures) {
         body += '<p class="hint" style="margin:6px 0">Part of this document may be inside pictures, so we couldn\'t read it. If something looks missing, have a look at the original.</p>';
       }
       if (!items.length) {

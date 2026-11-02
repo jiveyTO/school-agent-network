@@ -569,7 +569,8 @@ async function initDb() {
     file_name TEXT,
     file_size INTEGER,
     file_mime TEXT,
-    may_have_unread_pictures INTEGER DEFAULT 0
+    may_have_unread_pictures INTEGER DEFAULT 0,
+    pictures_read_with_ocr INTEGER DEFAULT 0
   )`);
   run(`CREATE TABLE IF NOT EXISTS facts (
     id TEXT PRIMARY KEY,
@@ -606,6 +607,7 @@ async function initDb() {
   addColumnIfMissing('materials', 'file_size', 'file_size INTEGER DEFAULT 0');
   addColumnIfMissing('materials', 'file_mime', "file_mime TEXT DEFAULT ''");
   addColumnIfMissing('materials', 'may_have_unread_pictures', 'may_have_unread_pictures INTEGER DEFAULT 0');
+  addColumnIfMissing('materials', 'pictures_read_with_ocr', 'pictures_read_with_ocr INTEGER DEFAULT 0');
   addColumnIfMissing('facts', 'scope', "scope TEXT DEFAULT 'school'");
   addColumnIfMissing('facts', 'scope_value', "scope_value TEXT DEFAULT ''");
   addColumnIfMissing('facts', 'group_label', "group_label TEXT DEFAULT ''");
@@ -2062,8 +2064,8 @@ function createMaterial(hubId, uploadedBy, kind, title, rawText, status, scope, 
   const id = crypto.randomUUID();
   const fileData = file && file.data ? new Uint8Array(file.data) : null;
   run(
-    'INSERT INTO materials (id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_data, file_name, file_size, file_mime, may_have_unread_pictures) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, hubId, uploadedBy || '', kind || 'paste', title || '', rawText || '', new Date().toISOString(), status || 'stored', scope || 'school', scopeValue || '', fileData, fileData ? String(file.name || '') : '', fileData ? fileData.length : 0, fileData ? String(file.mime || '') : '', file && file.pictureRisk ? 1 : 0]
+    'INSERT INTO materials (id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_data, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, hubId, uploadedBy || '', kind || 'paste', title || '', rawText || '', new Date().toISOString(), status || 'stored', scope || 'school', scopeValue || '', fileData, fileData ? String(file.name || '') : '', fileData ? fileData.length : 0, fileData ? String(file.mime || '') : '', file && file.pictureRisk ? 1 : 0, file && file.picturesReadWithOcr ? 1 : 0]
   );
   persist();
   return getMaterial(id);
@@ -2077,11 +2079,11 @@ function updateMaterialScope(id, scope, scopeValue) {
 function getMaterial(id) {
   if (!id) return null;
   const row = one(
-    "SELECT id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, (file_data IS NOT NULL) AS has_file FROM materials WHERE id = ?",
+    "SELECT id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, (file_data IS NOT NULL) AS has_file FROM materials WHERE id = ?",
     [id]
   );
   if (!row) return null;
-  return { ...row, has_file: Boolean(row.has_file), may_have_unread_pictures: Boolean(row.may_have_unread_pictures) };
+  return { ...row, has_file: Boolean(row.has_file), may_have_unread_pictures: Boolean(row.may_have_unread_pictures), pictures_read_with_ocr: Boolean(row.pictures_read_with_ocr) };
 }
 
 // The retained original file behind a material (brief 042 PDF uploads and
@@ -2116,7 +2118,7 @@ function updateMaterialStatus(id, status) {
 }
 
 function listMaterials(hubId, profileId) {
-  const rows = all("SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, (file_data IS NOT NULL) AS has_file FROM materials WHERE hub_id = ? ORDER BY created_at ASC", [hubId]).map(scopedMaterialRow);
+  const rows = all("SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, (file_data IS NOT NULL) AS has_file FROM materials WHERE hub_id = ? ORDER BY created_at ASC", [hubId]).map(scopedMaterialRow);
   if (!profileId) return rows;
   return rows.filter((m) => rowInScope(m, placementScopeSets(profileId, hubId)));
 }
@@ -2204,6 +2206,7 @@ function scopedMaterialRow(r) {
     file_size: r.file_size || 0,
     file_mime: r.file_mime || '',
     may_have_unread_pictures: Boolean(r.may_have_unread_pictures),
+    pictures_read_with_ocr: Boolean(r.pictures_read_with_ocr),
   };
 }
 
