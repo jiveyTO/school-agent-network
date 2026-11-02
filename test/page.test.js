@@ -1064,3 +1064,53 @@ test('invite landing and account choice hide the demo pill for the demo viewer (
   assert.ok(pageFnSource('showJoinChoice').includes('showJoin()'),
     'account choice re-enters the join view (and its pill-hidden paint)');
 });
+
+test('invite account choice reads as two separated option blocks (brief 038)', () => {
+  // Copy, order, ids, and behaviour unchanged — visual spacing only.
+  for (const token of ['id="joinChoice"', 'id="joinChoiceText"', 'id="joinSignInBtn"',
+    'id="joinSetupBtn"', 'Already have an account?', 'New here?',
+    'Sign in with Google', 'Set up your family',
+    'Your invite is saved — after you sign in or finish setup, you’ll land in the hub automatically. No need to re-click the link.',
+    'href="/api/auth/login"']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  const choiceMarkup = PAGE.slice(PAGE.indexOf('id="joinChoice"'), PAGE.indexOf('id="joinStatus"'));
+  assert.equal((choiceMarkup.match(/class="join-choice"/g) || []).length, 2,
+    'exactly two option blocks, one per path');
+  const introAt = choiceMarkup.indexOf('id="joinChoiceText"');
+  const firstAt = choiceMarkup.indexOf('Already have an account?');
+  const signInAt = choiceMarkup.indexOf('id="joinSignInBtn"');
+  const secondAt = choiceMarkup.indexOf('New here?');
+  const setupAt = choiceMarkup.indexOf('id="joinSetupBtn"');
+  const closingAt = choiceMarkup.indexOf('Your invite is saved');
+  assert.ok(introAt !== -1 && introAt < firstAt && firstAt < signInAt && signInAt < secondAt &&
+    secondAt < setupAt && setupAt < closingAt,
+    'order unchanged: intro, sign-in choice, setup choice, closing line');
+  // Each block pairs its question heading with its own button, nothing else.
+  const blocks = choiceMarkup.split('<div class="join-choice">').slice(1);
+  assert.ok(blocks[0].includes('Already have an account?') && blocks[0].includes('id="joinSignInBtn"'),
+    'first block pairs its heading with Sign in with Google');
+  assert.ok(!blocks[0].includes('New here?'), 'first block holds only the first choice');
+  assert.ok(blocks[1].includes('New here?') && blocks[1].includes('id="joinSetupBtn"'),
+    'second block pairs its heading with Set up your family');
+  // One grid rhythm separates intro, blocks, and closing line (briefs 029/033);
+  // inside a block the heading and button stay close as one unit.
+  for (const token of ['#joinChoice { display: grid; gap: 18px; }',
+    '#joinChoice[hidden] { display: none; }',
+    '#joinChoice > * { min-width: 0; }',
+    '#joinChoiceText, #joinChoice .hint { margin: 0 2px; }',
+    '.join-choice { display: grid; gap: 8px; }',
+    '.join-choice > p { margin: 0; }',
+    '.join-choice .small-btn { justify-self: start; }']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  // Handlers unchanged: sign-in stashes the invite, setup opens onboarding.
+  assert.ok(pageFnSource('showJoinChoice').includes("getElementById('joinChoice').hidden = false"),
+    'account choice still reveals the choice area');
+  assert.ok(PAGE.includes("getElementById('joinSetupBtn').addEventListener('click'"),
+    'setup button keeps its handler');
+  assert.ok(PAGE.includes("getElementById('joinSignInBtn').addEventListener('click'"),
+    'sign-in link keeps its handler');
+  assert.ok(!PAGE.includes('overflow-x: hidden'),
+    'no page-level overflow clipping masks unwrapped content');
+});
