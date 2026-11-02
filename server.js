@@ -1909,12 +1909,31 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && joinAcceptMatch) {
       const info = store.getInvite(joinAcceptMatch[1]);
       if (!info) { sendJson(res, 404, { error: 'That invite link is no longer available.' }); return; }
-      const active = store.getSessionViewer(session);
-      if (!active) {
-        sendJson(res, 400, { error: 'Set up your family first, then accept the invite.', needsOnboarding: true, needs_onboarding: true });
+      // A session that already holds a real (non-demo) family joins
+      // immediately. A demo viewer (or a session with no family yet) is
+      // NOT joined here — the client shows the account question instead,
+      // and the invite completes after sign-in or family setup. The demo
+      // profile must never become a member of a non-demo hub.
+      const own = store.getSessionOwnProfile(session);
+      if (!own || own.is_demo) {
+        sendJson(res, 409, {
+          error: 'To join this hub, sign in or set up your family first — your invite is saved.',
+          needsAccountChoice: true,
+          needs_account_choice: true,
+          hub_name: info.hub_name,
+          hubName: info.hub_name,
+          kind: info.kind,
+          inviter_first_name: info.inviter_first_name,
+          member_count: info.member_count,
+        });
         return;
       }
-      store.addMember(info.hub_id, active.id, 'member', 'invite');
+      try {
+        store.addMember(info.hub_id, own.id, 'member', 'invite');
+      } catch (err) {
+        sendJson(res, 403, { error: err && err.message ? err.message : String(err) });
+        return;
+      }
       sendJson(res, 200, { ok: true, hub: store.getHub(info.hub_id) });
       return;
     }
@@ -1941,7 +1960,13 @@ const server = http.createServer(async (req, res) => {
       const hub = store.getHub(hubRequestDecideMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || store.getMemberRole(hub.id, actor.id) !== 'admin') { sendJson(res, 403, { error: 'Only hub admins can decide requests.' }); return; }
-      const updated = store.decideJoinRequest(hub.id, hubRequestDecideMatch[2], actor.id, hubRequestDecideMatch[3] === 'approve');
+      let updated = null;
+      try {
+        updated = store.decideJoinRequest(hub.id, hubRequestDecideMatch[2], actor.id, hubRequestDecideMatch[3] === 'approve');
+      } catch (err) {
+        sendJson(res, 403, { error: err && err.message ? err.message : String(err) });
+        return;
+      }
       if (!updated) { sendJson(res, 404, { error: 'That request could not be found.' }); return; }
       sendJson(res, 200, { ok: true, request: updated, requests: store.listJoinRequests(hub.id), hub: store.getHub(hub.id) });
       return;

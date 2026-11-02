@@ -468,6 +468,7 @@ async function initDb() {
   backfillSchoolKeys();
   persist();
   seedDemoHubs();
+  purgeDemoMemberships();
   restampDemoFactScopes();
   backfillSeedGroups();
   // First boot with the durable store enabled uploads the seeded database so
@@ -943,6 +944,16 @@ function getSessionViewer(session) {
   return getDemoProfile();
 }
 
+// The session's own family, or null when the session holds none (a fresh
+// session with no family yet, or a signed-out one). Unlike
+// getSessionViewer, this never falls back to the shared demo profile —
+// invite accepts use it to tell a real family apart from a demo viewer.
+function getSessionOwnProfile(session) {
+  if (!session || !session.active_profile_id) return null;
+  const row = getProfileRowById(session.active_profile_id);
+  return rowToProfile(row);
+}
+
 // Account login (Google identity <-> family linking). The link lives on the
 // family profile row (google_sub + email) so it survives in the same durable
 // store as everything else; the signed-in identity also lives on the session
@@ -1387,12 +1398,56 @@ function getDemoHub() {
   return rowToHub(one('SELECT * FROM hubs WHERE is_demo = 1 AND name = ? LIMIT 1', [DEMO_HUB_A_NAME]));
 }
 
+// The shared demo profile must never hold membership in a non-demo
+// (real) hub: anyone exploring the demo would otherwise see the real
+// school's name and shared hub contents in the demo's hub list. Enforced
+// here so every path that adds memberships (invite accepts, approved join
+// requests) is covered, not just the invite page.
+function assertMembershipAllowed(hubId, profileId) {
+  const hub = hubId ? getHubRow(hubId) : null;
+  const profile = profileId ? getProfileRowById(profileId) : null;
+  if (hub && profile && Number(profile.is_demo) === 1 && Number(hub.is_demo) !== 1) {
+    throw new Error('Demo families cannot join this hub. Sign in or set up your family first.');
+  }
+}
+
 function addMember(hubId, profileId, role, joinedVia) {
+  assertMembershipAllowed(hubId, profileId);
   run(
     'INSERT OR IGNORE INTO hub_members (hub_id, profile_id, role, joined_via, joined_at) VALUES (?, ?, ?, ?, ?)',
     [hubId, profileId, role || 'member', joinedVia || 'invite', new Date().toISOString()]
   );
   persist();
+}
+
+// Membership removal used by cleanup flows. Deletes the row; never throws
+// when there is nothing to remove.
+function removeMember(hubId, profileId) {
+  if (!hubId || !profileId || !db) return false;
+  run('DELETE FROM hub_members WHERE hub_id = ? AND profile_id = ?', [hubId, profileId]);
+  const removed = db.getRowsModified() > 0;
+  persist();
+  return removed;
+}
+
+// Repairs membership rows that predate the addMember guard (e.g. a demo
+// invite accept that joined the demo profile to a real hub). Runs on every
+// boot so a stale durable copy self-heals; returns the removed rows for
+// logging. Idempotent.
+function purgeDemoMemberships() {
+  if (!tableColumns('hubs').includes('is_demo') || !tableColumns('profiles').includes('is_demo')) return [];
+  const rows = all(
+    `SELECT m.hub_id AS hub_id, m.profile_id AS profile_id, h.name AS hub_name
+     FROM hub_members m
+     JOIN profiles p ON p.id = m.profile_id AND p.is_demo = 1
+     JOIN hubs h ON h.id = m.hub_id AND COALESCE(h.is_demo, 0) != 1`
+  );
+  for (const r of rows) {
+    run('DELETE FROM hub_members WHERE hub_id = ? AND profile_id = ?', [r.hub_id, r.profile_id]);
+  }
+  if (rows.length) persist();
+  if (rows.length) console.log(`demo membership sweep: removed ${rows.length} demo membership(s) from non-demo hub(s)`);
+  return rows;
 }
 
 function isMember(hubId, profileId) {
@@ -1547,18 +1602,18 @@ function listJoinRequests(hubId) {
 function decideJoinRequest(hubId, requestId, adminId, approve) {
   const req = one('SELECT * FROM join_requests WHERE hub_id = ? AND id = ?', [hubId, requestId]);
   if (!req) return null;
+  if (approve) {
+    // Membership first: a refused add (e.g. the demo profile can never
+    // join a non-demo hub) throws here and leaves the request pending
+    // instead of recording a phantom approval.
+    addMember(hubId, req.profile_id, 'member', 'request');
+  }
   run('UPDATE join_requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?', [
     approve ? 'approved' : 'declined',
     adminId,
     new Date().toISOString(),
     requestId,
   ]);
-  if (approve) {
-    run(
-      'INSERT OR IGNORE INTO hub_members (hub_id, profile_id, role, joined_via, joined_at) VALUES (?, ?, ?, ?, ?)',
-      [hubId, req.profile_id, 'member', 'request', new Date().toISOString()]
-    );
-  }
   persist();
   return one('SELECT * FROM join_requests WHERE id = ?', [requestId]);
 }
@@ -1910,6 +1965,9 @@ module.exports = {
   splitComposedName,
   findSchoolHubConflict,
   addMember,
+  removeMember,
+  purgeDemoMemberships,
+  getSessionOwnProfile,
   isMember,
   getMemberRole,
   createHub,
