@@ -787,3 +787,43 @@ test('start-a-hub card holds one vertical rhythm before and after filling', () =
   assert.ok(!PAGE.includes('overflow-x: hidden'),
     'no page-level overflow clipping masks unwrapped content');
 });
+
+test('onboarding action cluster breathes: one rhythm from child row to demo link', () => {
+  // Labels, order, and structure unchanged — visual spacing only.
+  for (const token of ['id="obChildrenWrap"', 'id="obChildrenList"', 'id="obAddChildBtn"',
+    'id="createProfileBtn"', 'id="useDemoBtn"', 'ob-child-row', 'obRemoveChild',
+    '+ Add another child', 'Save my family and continue', 'Use the demo family instead',
+    'names only. Grades come later']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  const addAt = PAGE.indexOf('id="obAddChildBtn"');
+  const saveAt = PAGE.indexOf('id="createProfileBtn"');
+  const demoAt = PAGE.indexOf('id="useDemoBtn"');
+  assert.ok(addAt !== -1 && saveAt !== -1 && demoAt !== -1 && addAt < saveAt && saveAt < demoAt,
+    'order unchanged: Add another child, then Save, then the demo link');
+  // Every child row shares one breathing rule; the lists gap rows uniformly.
+  for (const token of ['#onboardingView .field { margin-bottom: 0; }',
+    '#obChildrenWrap { display: grid; gap: 12px; }',
+    '#obChildrenList { display: grid; gap: 12px; }',
+    '.ob-child-row { display: grid; gap: 8px; }',
+    '.ob-child-row .obRemoveChild { justify-self: start; }',
+    '#obAddChildBtn { justify-self: start; }',
+    '#createProfileBtn { justify-self: start; margin-top: 8px; }',
+    '#useDemoBtn { justify-self: center; }',
+    '#obChildrenWrap > .hint,']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  // Empty list and empty status take no space, so the rhythm holds with one child or many.
+  for (const token of ['#obChildrenList:empty { display: none; }',
+    '#obProfileStatus:empty { display: none; }']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  // Phone width: single-column grid children shrink, nothing clips.
+  for (const token of ['#onboardingView .card { display: grid; gap: 14px; }',
+    '#onboardingView .card > * { min-width: 0; }',
+    '#obChildrenWrap > * { min-width: 0; }']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  assert.ok(!PAGE.includes('overflow-x: hidden'),
+    'no page-level overflow clipping masks unwrapped content');
+});
