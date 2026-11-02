@@ -54,6 +54,11 @@ const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 const LOGIN_SCOPES = 'openid email profile';
 const TEST_AUTH_ENABLED = process.env.PARENTLOOP_TEST_AUTH === '1';
+// Largest PDF whose original bytes are retained with its material. The JSON
+// body limit (12 MB in readJsonBody) carries base64, so 5 MB of PDF (~6.7 MB
+// encoded) fits comfortably; the cap also bounds how much one material can
+// grow the durable database file, which is written back whole on each save.
+const MAX_PDF_BYTES = 5 * 1024 * 1024;
 
 const FACT_TYPES = ['deadline', 'event', 'requirement', 'change', 'announcement'];
 
@@ -1691,6 +1696,7 @@ const server = http.createServer(async (req, res) => {
     const hubPlacementMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/placements\/([^/]+)$/);
     const hubMaterialsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials$/);
     const hubMaterialTextMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)\/text$/);
+    const hubMaterialFileMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)\/file$/);
     const hubInvitesMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/invites$/);
     const hubInviteRevokeMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/invites\/revoke$/);
     const hubRequestsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/join-requests$/);
@@ -1916,6 +1922,23 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, doc);
       return;
     }
+    if (req.method === 'GET' && hubMaterialFileMatch) {
+      const actor = store.getSessionViewer(session);
+      const hub = store.getHub(hubMaterialFileMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can read this hub.' }); return; }
+      const doc = store.getMaterialFile(hubMaterialFileMatch[2], actor.id);
+      if (!doc || doc.hub_id !== hub.id) { sendJson(res, 404, { error: 'That material is not available.' }); return; }
+      const safeName = String(doc.file_name || 'material.pdf').replace(/["\r\n\\]/g, '').trim() || 'material.pdf';
+      res.writeHead(200, {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `inline; filename="${safeName}"`,
+        'Content-Length': doc.data.length,
+        'Cache-Control': 'private, no-store',
+      });
+      res.end(doc.data);
+      return;
+    }
     if (req.method === 'POST' && hubMaterialsMatch) {
       const actor = store.getSessionViewer(session);
       const hub = store.getHub(hubMaterialsMatch[1]);
@@ -1928,23 +1951,34 @@ const server = http.createServer(async (req, res) => {
         if (!API_KEY) throw new Error('SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.');
         let text = '';
         let kind = body.kind === 'pdf' ? 'pdf' : 'paste';
+        let pdfFile = null;
         if (kind === 'pdf') {
           if (!body.fileBase64) throw new Error('Choose a PDF file first.');
-          const parsed = await pdfParse(Buffer.from(String(body.fileBase64), 'base64'));
+          const pdfBuffer = Buffer.from(String(body.fileBase64), 'base64');
+          if (pdfBuffer.length > MAX_PDF_BYTES) {
+            throw new Error('That PDF is too large — the limit is 5 MB. Choose a smaller file.');
+          }
+          // Hand the parser a fresh Uint8Array: small Buffers can be slices
+          // of a shared pool, which the bundled pdf.js misreads.
+          const parsed = await pdfParse(new Uint8Array(pdfBuffer));
           text = String(parsed.text || '').trim();
           if (!text) throw new Error('That PDF did not include readable text.');
+          pdfFile = {
+            data: pdfBuffer,
+            name: String(body.fileName || '').replace(/["\r\n\\]/g, '').trim().slice(0, 200) || 'material.pdf',
+          };
         } else {
           text = String(body.text || '').trim();
           if (!text) throw new Error('Paste a newsletter or notice first.');
         }
         const override = resolveAudience(actor, body.audience, hub.id);
         const suppliedTitle = String(body.title || '').trim();
-        material = store.createMaterial(hub.id, actor.id, kind, suppliedTitle || deriveMaterialTitle(text), text, 'stored');
+        material = store.createMaterial(hub.id, actor.id, kind, suppliedTitle || deriveMaterialTitle(text), text, 'stored', undefined, undefined, pdfFile);
         const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true);
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
           ok: true,
-          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at },
+          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(pdfFile) },
           facts,
           facts_added: facts.length,
           count: facts.length,

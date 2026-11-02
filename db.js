@@ -555,7 +555,10 @@ async function initDb() {
     created_at TEXT NOT NULL,
     status TEXT,
     scope TEXT,
-    scope_value TEXT
+    scope_value TEXT,
+    file_data BLOB,
+    file_name TEXT,
+    file_size INTEGER
   )`);
   run(`CREATE TABLE IF NOT EXISTS facts (
     id TEXT PRIMARY KEY,
@@ -587,6 +590,9 @@ async function initDb() {
   rebuildSourcesWithoutCredentials();
   addColumnIfMissing('materials', 'scope', "scope TEXT DEFAULT 'school'");
   addColumnIfMissing('materials', 'scope_value', "scope_value TEXT DEFAULT ''");
+  addColumnIfMissing('materials', 'file_data', 'file_data BLOB');
+  addColumnIfMissing('materials', 'file_name', "file_name TEXT DEFAULT ''");
+  addColumnIfMissing('materials', 'file_size', 'file_size INTEGER DEFAULT 0');
   addColumnIfMissing('facts', 'scope', "scope TEXT DEFAULT 'school'");
   addColumnIfMissing('facts', 'scope_value', "scope_value TEXT DEFAULT ''");
   addColumnIfMissing('facts', 'group_label', "group_label TEXT DEFAULT ''");
@@ -1955,14 +1961,15 @@ function decideJoinRequest(hubId, requestId, adminId, approve) {
   return one('SELECT * FROM join_requests WHERE id = ?', [requestId]);
 }
 
-function createMaterial(hubId, uploadedBy, kind, title, rawText, status, scope, scopeValue) {
+function createMaterial(hubId, uploadedBy, kind, title, rawText, status, scope, scopeValue, file) {
   const id = crypto.randomUUID();
+  const fileData = file && file.data ? new Uint8Array(file.data) : null;
   run(
-    'INSERT INTO materials (id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, hubId, uploadedBy || '', kind || 'paste', title || '', rawText || '', new Date().toISOString(), status || 'stored', scope || 'school', scopeValue || '']
+    'INSERT INTO materials (id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_data, file_name, file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, hubId, uploadedBy || '', kind || 'paste', title || '', rawText || '', new Date().toISOString(), status || 'stored', scope || 'school', scopeValue || '', fileData, fileData ? String(file.name || '') : '', fileData ? fileData.length : 0]
   );
   persist();
-  return one('SELECT * FROM materials WHERE id = ?', [id]);
+  return getMaterial(id);
 }
 
 function updateMaterialScope(id, scope, scopeValue) {
@@ -1971,7 +1978,33 @@ function updateMaterialScope(id, scope, scopeValue) {
 }
 
 function getMaterial(id) {
-  return id ? one('SELECT * FROM materials WHERE id = ?', [id]) : null;
+  if (!id) return null;
+  const row = one(
+    "SELECT id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_name, file_size, (file_data IS NOT NULL) AS has_file FROM materials WHERE id = ?",
+    [id]
+  );
+  if (!row) return null;
+  return { ...row, has_file: Boolean(row.has_file) };
+}
+
+// The retained original file behind a material (PDF uploads only), with the
+// same per-profile scope gate as getMaterialText. Returns the raw bytes as a
+// Buffer; null when the material is missing, out of scope, or has no file.
+function getMaterialFile(materialId, profileId) {
+  const row = materialId
+    ? one('SELECT id, hub_id, kind, title, scope, scope_value, file_name, file_size, file_data FROM materials WHERE id = ?', [materialId])
+    : null;
+  if (!row || !row.file_data) return null;
+  if (profileId && !rowInScope(row, placementScopeSets(profileId, row.hub_id))) return null;
+  return {
+    id: row.id,
+    hub_id: row.hub_id,
+    kind: row.kind,
+    title: row.title,
+    file_name: row.file_name || '',
+    file_size: row.file_size || row.file_data.length,
+    data: Buffer.from(row.file_data),
+  };
 }
 
 function findMaterial(hubId, title) {
@@ -1984,7 +2017,7 @@ function updateMaterialStatus(id, status) {
 }
 
 function listMaterials(hubId, profileId) {
-  const rows = all('SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value FROM materials WHERE hub_id = ? ORDER BY created_at ASC', [hubId]).map(scopedMaterialRow);
+  const rows = all("SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value, file_name, file_size, (file_data IS NOT NULL) AS has_file FROM materials WHERE hub_id = ? ORDER BY created_at ASC", [hubId]).map(scopedMaterialRow);
   if (!profileId) return rows;
   return rows.filter((m) => rowInScope(m, placementScopeSets(profileId, hubId)));
 }
@@ -2067,6 +2100,9 @@ function scopedMaterialRow(r) {
     status: r.status,
     scope: r.scope || 'school',
     scope_value: r.scope_value || '',
+    has_file: Boolean(r.has_file),
+    file_name: r.file_name || '',
+    file_size: r.file_size || 0,
   };
 }
 
@@ -2332,6 +2368,7 @@ module.exports = {
   createMaterial,
   getMaterial,
   getMaterialText,
+  getMaterialFile,
   findMaterial,
   updateMaterialStatus,
   updateMaterialScope,
