@@ -2069,6 +2069,24 @@
     }
   });
 
+  // Evening check only: the run is a read-only computation, so a dropped
+  // response (fetch rejects with no HTTP response — e.g. Safari "Load
+  // failed") is safe to retry identically once after a short pause. HTTP
+  // error responses resolve with a status and keep today's handling — no
+  // retry. Other POSTs (Add material, placements, invites) stay
+  // single-attempt: a dropped response can mean the server already saved,
+  // and retrying could double-add.
+  async function fetchWithEveningRetry(url, options, delayMs) {
+    try {
+      return await fetch(url, options);
+    } catch (firstErr) {
+      await new Promise(function (resolve) {
+        setTimeout(resolve, delayMs == null ? 2000 : delayMs);
+      });
+      return fetch(url, options);
+    }
+  }
+
   parentRunBtn.addEventListener('click', async function () {
     parentRunBtn.disabled = true;
     parentRunBtn.textContent = 'Checking…';
@@ -2084,7 +2102,11 @@
       { at: new Date().toISOString(), message: 'simulated time: Thursday, November 5, 2026, 7:30 PM' },
     ]);
     try {
-      const res = await fetch('/api/parent/run', { method: 'POST' });
+      // Wait state (thinking dots + staged status) stays up across the
+      // silent retry: no error card, no flicker, no new copy. A retry
+      // success renders exactly like a first-try success; a second
+      // network failure falls into the existing failure card below.
+      const res = await fetchWithEveningRetry('/api/parent/run', { method: 'POST' });
       const data = await res.json();
       renderParentLogs(data.logs || []);
       if (!data.ok) {
