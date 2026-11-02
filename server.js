@@ -9,6 +9,7 @@ const path = require('path');
 const store = require('./db');
 const { sendRecoveryEmail, isRecoveryMailConfigured } = require('./recovery-mail');
 const pdfParse = require('pdf-parse');
+const zlib = require('zlib');
 const { mergeSameEventFacts, detectConflicts } = require('./event-dedupe');
 
 const ROOT = __dirname;
@@ -122,6 +123,181 @@ function assessPdfPictureRisk(pageTexts, text, fileBytes) {
   if (perPage.length >= 1 && totalChars / perPage.length < PICTURE_RISK_AVG_CHARS_PER_PAGE) return true;
   if (fileBytes > 0 && totalChars > 0 && totalChars < 2000 && fileBytes / totalChars > PICTURE_RISK_BYTES_PER_CHAR) return true;
   return false;
+}
+
+// Brief 048: OCR pass caps, in line with the file-size caps above. Only
+// flagged pages are read, at most this many, one vision call per page.
+const MAX_OCR_PAGES = 10;
+// OCR text at or above this many non-whitespace characters counts as a
+// substantial recovery: the picture caution is replaced by the OCR note.
+const OCR_SUBSTANTIAL_CHARS = PICTURE_RISK_PAGE_CHARS;
+
+// 1-based page numbers the OCR pass should read: near-zero-text pages
+// first; when the document is flagged only by an aggregate signal, the
+// low-density pages (or, failing those, every page).
+function flaggedPdfPages(pageTexts, text, fileBytes) {
+  if (!assessPdfPictureRisk(pageTexts, text, fileBytes)) return [];
+  const perPage = (pageTexts || []).map((t) => String(t || '').replace(/\s/g, '').length);
+  let pages = perPage.map((n, i) => (n < PICTURE_RISK_PAGE_CHARS ? i + 1 : 0)).filter(Boolean);
+  if (!pages.length) pages = perPage.map((n, i) => (n < PICTURE_RISK_AVG_CHARS_PER_PAGE ? i + 1 : 0)).filter(Boolean);
+  if (!pages.length) pages = perPage.map((_, i) => i + 1);
+  return pages.slice(0, MAX_OCR_PAGES);
+}
+
+// --- Page pictures -> PNG -------------------------------------------------
+// This stack has no rasterizer (Node stdlib + the pdf.js bundled with
+// pdf-parse; no canvas/poppler). A picture-carried page in a school PDF
+// is an embedded image, so "rendering" a flagged page means: pull the
+// page's largest embedded image out with pdf.js and re-encode its decoded
+// pixels as a PNG (pure JS: zlib + CRC32 below) for the vision call.
+// Pages with no embedded image yield nothing and the caller degrades to
+// today's text-layer behavior.
+
+const CRC_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c;
+  }
+  return table;
+})();
+
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const out = Buffer.alloc(12 + data.length);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, 'ascii');
+  data.copy(out, 8);
+  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
+  return out;
+}
+
+// pdf.js image kinds: 1 = 1bpp grayscale, 2 = RGB 24bpp, 3 = RGBA 32bpp.
+// Anything else is inferred from the decoded data length.
+function encodeImageAsPng(img) {
+  if (!img || !img.width || !img.height || !img.data || !img.data.length) return null;
+  const { width, height } = img;
+  let kind = img.kind;
+  if (kind !== 1 && kind !== 2 && kind !== 3) {
+    if (img.data.length >= width * height * 4) kind = 3;
+    else if (img.data.length >= width * height * 3) kind = 2;
+    else if (img.data.length >= width * height) kind = 4; // 8-bit grayscale
+    else return null;
+  }
+  let colorType;
+  let rows;
+  if (kind === 2) {
+    colorType = 2;
+    rows = Buffer.alloc(height * (1 + width * 3));
+    for (let y = 0; y < height; y++) {
+      rows[y * (1 + width * 3)] = 0;
+      Buffer.from(img.data.buffer, img.data.byteOffset + y * width * 3, width * 3).copy(rows, y * (1 + width * 3) + 1);
+    }
+  } else if (kind === 3) {
+    colorType = 6;
+    rows = Buffer.alloc(height * (1 + width * 4));
+    for (let y = 0; y < height; y++) {
+      rows[y * (1 + width * 4)] = 0;
+      Buffer.from(img.data.buffer, img.data.byteOffset + y * width * 4, width * 4).copy(rows, y * (1 + width * 4) + 1);
+    }
+  } else if (kind === 1) {
+    colorType = 0;
+    const rowBytes = Math.ceil(width / 8);
+    rows = Buffer.alloc(height * (1 + width));
+    for (let y = 0; y < height; y++) {
+      rows[y * (1 + width)] = 0;
+      for (let x = 0; x < width; x++) {
+        const byte = img.data[y * rowBytes + (x >> 3)] || 0;
+        rows[y * (1 + width) + 1 + x] = byte & (0x80 >> (x & 7)) ? 0 : 255;
+      }
+    }
+  } else {
+    colorType = 0;
+    rows = Buffer.alloc(height * (1 + width));
+    for (let y = 0; y < height; y++) {
+      rows[y * (1 + width)] = 0;
+      Buffer.from(img.data.buffer, img.data.byteOffset + y * width, width).copy(rows, y * (1 + width) + 1);
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = colorType;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(rows)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+let pdfJsLibCache = undefined;
+function pdfJsLib() {
+  if (pdfJsLibCache !== undefined) return pdfJsLibCache;
+  try {
+    // Same pdf.js build pdf-parse uses by default. The binding must not
+    // be named PDFJS: the bundle references that as a global and a
+    // same-named local const puts it in the temporal dead zone.
+    pdfJsLibCache = require('pdf-parse/lib/pdf.js/v1.10.100/build/pdf.js');
+    pdfJsLibCache.disableWorker = true;
+  } catch {
+    pdfJsLibCache = null;
+  }
+  return pdfJsLibCache;
+}
+
+// Largest embedded image on each requested page, as PNG bytes.
+// Returns a Map of 1-based page number -> Buffer. Never throws.
+async function extractPageImages(pdfBuffer, pageNumbers) {
+  const images = new Map();
+  const lib = pdfJsLib();
+  if (!lib || !pageNumbers.length) return images;
+  let doc = null;
+  try {
+    const task = lib.getDocument(new Uint8Array(pdfBuffer));
+    doc = await (task && task.promise ? task.promise : task);
+    const imageOps = new Set(
+      [lib.OPS.paintImageXObject, lib.OPS.paintInlineImageXObject, lib.OPS.paintJpegXObject]
+        .filter((v) => typeof v === 'number')
+    );
+    for (const pageNumber of pageNumbers) {
+      try {
+        const page = await doc.getPage(pageNumber);
+        const opList = await page.getOperatorList();
+        let best = null;
+        for (let i = 0; i < opList.fnArray.length; i++) {
+          if (!imageOps.has(opList.fnArray[i])) continue;
+          const arg = (opList.argsArray[i] || [])[0];
+          let img = null;
+          if (arg && typeof arg === 'object' && arg.data) {
+            img = arg; // inline image
+          } else if (typeof arg === 'string') {
+            try { img = page.objs.get(arg); } catch { img = null; }
+            if (!img) { try { img = doc.commonObjs.get(arg); } catch { img = null; } }
+          }
+          if (img && img.width && img.height && (!best || img.width * img.height > best.width * best.height)) best = img;
+        }
+        if (best) {
+          const png = encodeImageAsPng(best);
+          if (png) images.set(pageNumber, png);
+        }
+      } catch {
+        // One unreadable page must not sink the others.
+      }
+    }
+  } catch {
+    // Fall through with whatever was collected (possibly nothing).
+  } finally {
+    if (doc) { try { doc.destroy(); } catch { /* already gone */ } }
+  }
+  return images;
 }
 
 const FACT_TYPES = ['deadline', 'event', 'requirement', 'change', 'announcement'];
@@ -377,6 +553,58 @@ async function callMetaApiImage(accompanyingText, image) {
     { type: 'image_url', image_url: { url: dataUrl } },
   ];
   return postMetaChat(system, user, 32768);
+}
+
+// Brief 048: the OCR read. Same vision transport as brief 044's image
+// pipeline (postMetaChat with an image_url part), but it asks only for a
+// verbatim transcription; the recovered words then feed the SAME text
+// extraction as the PDF's text layer, so facts stay grounded in quotes.
+async function callMetaApiOcr(image) {
+  const system = [
+    'You are reading a picture of a school document page for ParentLoop.',
+    'Transcribe every word visible in the attached image exactly as written, in reading order.',
+    'Return ONLY the transcribed text. No commentary, no markdown, no JSON.',
+    'Preserve names, dates, times, and places exactly. If a word is unreadable, leave it out rather than guessing.',
+    'If the image contains no readable text, return an empty response.',
+  ].join('\n');
+  const dataUrl = `data:${image.mime};base64,${Buffer.from(image.data).toString('base64')}`;
+  const user = [
+    { type: 'text', text: 'Transcribe all text in this page image verbatim.' },
+    { type: 'image_url', image_url: { url: dataUrl } },
+  ];
+  return postMetaChat(system, user, 8192);
+}
+
+// Read the flagged pages of a picture-risk PDF as images. Returns the
+// recovered text and whether it is substantial. Never throws: any
+// failure (no extractable image, vision error) yields empty text and
+// the caller keeps today's text-layer-only behavior.
+async function readFlaggedPagesWithOcr(pdfBuffer, pageTexts, text, logs) {
+  const push = logs ? (m) => logs.push({ at: nowIso(), message: m }) : () => {};
+  const pages = flaggedPdfPages(pageTexts, text, pdfBuffer ? pdfBuffer.length : 0);
+  if (!pages.length) return { ocrText: '', picturesRead: false, pages: [] };
+  let images;
+  try {
+    images = await extractPageImages(pdfBuffer, pages);
+  } catch {
+    return { ocrText: '', picturesRead: false, pages };
+  }
+  const recovered = [];
+  for (const pageNumber of pages) {
+    const png = images.get(pageNumber);
+    if (!png) continue;
+    try {
+      const raw = await callMetaApiOcr({ data: png, mime: 'image/png' });
+      const pageText = String(raw || '').trim();
+      if (pageText) recovered.push(pageText);
+    } catch (err) {
+      push(`picture read failed for page ${pageNumber}: ${err && err.message ? err.message : String(err)}`);
+    }
+  }
+  const ocrText = recovered.join('\n\n');
+  const substantial = ocrText.replace(/\s/g, '').length >= OCR_SUBSTANTIAL_CHARS;
+  if (substantial) push(`pictures read with OCR: ${recovered.length} page(s) recovered text`);
+  return { ocrText, picturesRead: substantial, pages };
 }
 
 function extractJsonObject(text) {
@@ -2347,11 +2575,28 @@ const server = http.createServer(async (req, res) => {
             pagerender: collectingPagerender(pageTexts),
           });
           text = String(parsed.text || '').trim();
+          const pictureRisk = assessPdfPictureRisk(pageTexts, text, pdfBuffer.length);
+          // Brief 048: picture-risk PDFs get their flagged pages read as
+          // images. Recovered text merges with the text layer and feeds
+          // the same extraction below. Any failure leaves text untouched.
+          let picturesReadWithOcr = false;
+          if (pictureRisk) {
+            try {
+              const ocr = await readFlaggedPagesWithOcr(pdfBuffer, pageTexts, text, logs);
+              if (ocr.ocrText) {
+                text = text ? text + '\n\n' + ocr.ocrText : ocr.ocrText;
+                picturesReadWithOcr = ocr.picturesRead;
+              }
+            } catch {
+              picturesReadWithOcr = false;
+            }
+          }
           if (!text) throw new Error('That PDF did not include readable text.');
           pdfFile = {
             data: pdfBuffer,
             name: String(body.fileName || '').replace(/["\r\n\\]/g, '').trim().slice(0, 200) || 'material.pdf',
-            pictureRisk: assessPdfPictureRisk(pageTexts, text, pdfBuffer.length),
+            pictureRisk,
+            picturesReadWithOcr,
           };
         } else {
           text = String(body.text || '').trim();
@@ -2370,7 +2615,7 @@ const server = http.createServer(async (req, res) => {
         if (bearerAuth) logs.push({ at: nowIso(), message: 'material added via agent: ' + bearerAuth.token.name });
         sendJson(res, 200, {
           ok: true,
-          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(retainedFile), file_name: retainedFile ? retainedFile.name : '', file_mime: retainedFile && retainedFile.mime ? retainedFile.mime : '', may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk) },
+          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(retainedFile), file_name: retainedFile ? retainedFile.name : '', file_mime: retainedFile && retainedFile.mime ? retainedFile.mime : '', may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk), pictures_read_with_ocr: Boolean(pdfFile && pdfFile.picturesReadWithOcr) },
           facts,
           facts_added: facts.length,
           count: facts.length,
