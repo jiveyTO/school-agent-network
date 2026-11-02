@@ -1783,11 +1783,21 @@ const server = http.createServer(async (req, res) => {
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can see this hub.' }); return; }
       const placement = store.placementStatus(hub.id, actor.id);
+      const members = store.listHubMembers(hub.id);
+      const contacts = store.listHubContacts(hub.id);
+      const contactNames = contacts.map((c) => c.parent_name);
+      const contactLine = contactNames.join(', ');
       sendJson(res, 200, {
-        hub: { ...hub, role: store.getMemberRole(hub.id, actor.id) },
+        hub: { ...hub, role: store.getMemberRole(hub.id, actor.id), member_count: members.length },
         facts: store.listFacts(hub.id, actor.id),
         materials: store.listMaterials(hub.id, actor.id),
-        member_count: hub.member_count,
+        member_count: members.length,
+        members,
+        contacts,
+        contact_names: contactNames,
+        hub_contact: contactLine,
+        hub_contacts: contacts,
+        point_of_contact: contactLine,
         children: actor.children || [],
         placements: placement.placements,
         needs_placement: placement.needs_placement,

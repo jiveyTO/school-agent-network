@@ -849,6 +849,11 @@
         <h3 id="hubTitle" style="margin:0 0 4px">Choose a hub</h3>
         <p id="hubChooserText">Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.</p>
         <p class="hint" id="hubMeta"></p>
+        <p class="hint" id="hubContact" hidden></p>
+        <div id="hubMembers" hidden style="margin:12px 0">
+          <p style="margin:0 0 6px"><b>Families in this hub</b></p>
+          <div id="hubMembersList"></div>
+        </div>
         <div class="card" id="placementCard" hidden style="margin-bottom:12px">
           <p style="margin:0"><b>Place your children in this hub</b></p>
           <p class="hint">Which grade is each child in at this school? Class is optional. Skip it if you like — you’ll only see whole-school notes until it’s set.</p>
@@ -2102,6 +2107,43 @@
     }
   }
 
+  function memberRoleLabel(m) {
+    if (!m) return 'Member';
+    const raw = String(m.role_label || m.role || '').toLowerCase();
+    if (raw === 'founder' || m.is_founder) return 'Founder';
+    if (raw === 'admin' || m.is_admin) return 'Admin';
+    return 'Member';
+  }
+
+  function renderHubMembers(data) {
+    const members = (data && data.members) || [];
+    const contactNames = (data && data.contact_names) ||
+      ((data && data.contacts) || []).map(function (c) { return c.parent_name || c.name || c; });
+    const contactEl = document.getElementById('hubContact');
+    if (contactNames.length) {
+      contactEl.textContent = 'Hub contact: ' + contactNames.join(', ');
+      contactEl.hidden = false;
+    } else if (data && data.hub_contact) {
+      contactEl.textContent = 'Hub contact: ' + data.hub_contact;
+      contactEl.hidden = false;
+    } else {
+      contactEl.textContent = '';
+      contactEl.hidden = true;
+    }
+    const box = document.getElementById('hubMembers');
+    const list = document.getElementById('hubMembersList');
+    if (!members.length) {
+      box.hidden = true;
+      list.innerHTML = '';
+      return;
+    }
+    box.hidden = false;
+    list.innerHTML = members.map(function (m) {
+      const name = m.parent_name || m.display_name || m.family_name || m.name || '';
+      return '<p class="hint" style="margin:4px 0">' + esc(name) + ' · ' + esc(memberRoleLabel(m)) + '</p>';
+    }).join('');
+  }
+
   async function loadHubDetail(hubId) {
     currentHubId = hubId;
     markSelectedHub();
@@ -2116,6 +2158,7 @@
       document.getElementById('hubMeta').textContent = data.member_count + ' families in this hub · you are ' +
         (data.hub.role === 'admin' ? 'an admin' : 'a member') +
         (detailTeam ? ' · ' + detailTeam : '');
+      renderHubMembers(data);
       document.getElementById('hubDanger').hidden = data.hub.role !== 'admin';
       document.getElementById('deleteHubConfirm').hidden = true;
       document.getElementById('deleteHubStatus').textContent = '';
@@ -2157,6 +2200,7 @@
       document.getElementById('hubTitle').textContent = 'Choose a hub';
       document.getElementById('hubChooserText').hidden = false;
       document.getElementById('hubMeta').textContent = e.message;
+      renderHubMembers({ members: [], contact_names: [] });
       document.getElementById('hubDanger').hidden = true;
     }
   }

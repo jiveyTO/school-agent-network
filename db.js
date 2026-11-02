@@ -1584,6 +1584,80 @@ function getMemberRole(hubId, profileId) {
   return row ? row.role : null;
 }
 
+// Membership identity projected into a hub: only the parent's name and
+// their hub role. No child names, grades, classes, placements, emails, or
+// any other family-profile data ever leaves through here. Founder is an
+// admin who joined as founder; other admins are Admin; everyone else is
+// Member. Ordered founder/admins first, then members.
+function listHubMembers(hubId) {
+  if (!hubId) return [];
+  const hub = getHubRow(hubId);
+  if (!hub) return [];
+  const rows = all(
+    `SELECT p.parent_name AS parent_name, m.role AS role, m.joined_via AS joined_via,
+            m.joined_at AS joined_at, m.profile_id AS profile_id
+     FROM hub_members m
+     JOIN profiles p ON p.id = m.profile_id
+     WHERE m.hub_id = ?
+     ORDER BY m.joined_at ASC, p.parent_name ASC`,
+    [hubId]
+  );
+  const members = rows.map((r) => {
+    const isFounder = r.role === 'admin' && r.joined_via === 'founder';
+    const isAdmin = r.role === 'admin';
+    const role = isFounder ? 'founder' : isAdmin ? 'admin' : 'member';
+    const roleLabel = isFounder ? 'Founder' : isAdmin ? 'Admin' : 'Member';
+    const parentName = r.parent_name || '';
+    return {
+      parent_name: parentName,
+      name: parentName,
+      family_name: parentName,
+      display_name: parentName,
+      role,
+      role_label: roleLabel,
+      is_founder: isFounder,
+      is_admin: isAdmin,
+      _rank: isFounder ? 0 : isAdmin ? 1 : 2,
+      _isCreator: hub.created_by && r.profile_id === hub.created_by ? 1 : 0,
+      _joined: r.joined_at || '',
+    };
+  });
+  members.sort((a, b) => a._rank - b._rank || String(a._joined).localeCompare(String(b._joined)) || a.parent_name.localeCompare(b.parent_name));
+  const creatorNames = new Set(rows.filter((r) => hub.created_by && r.profile_id === hub.created_by).map((r) => r.parent_name || ''));
+  const pub = members.map(publicMember);
+  pub._creatorNames = creatorNames;
+  pub._adminNames = new Set(members.filter((m) => m.is_admin).map((m) => m.parent_name));
+  return pub;
+}
+
+function publicMember(m) {
+  return {
+    parent_name: m.parent_name,
+    name: m.name,
+    family_name: m.family_name,
+    display_name: m.display_name,
+    role: m.role,
+    role_label: m.role_label,
+    is_founder: m.is_founder,
+    is_admin: m.is_admin,
+  };
+}
+
+// Point of contact: the founder/admin(s). If a hub somehow has no admin
+// (e.g. a seeded hub whose founder holds a member role), the hub's
+// creator is the contact so every hub still names someone.
+function listHubContacts(hubId) {
+  const members = listHubMembers(hubId);
+  let contacts = members.filter((m) => m.is_admin);
+  if (!contacts.length) contacts = members.filter((m) => members._creatorNames && members._creatorNames.has(m.parent_name));
+  return contacts.map((m) => ({
+    parent_name: m.parent_name,
+    name: m.name,
+    role: m.role,
+    role_label: m.role_label,
+  }));
+}
+
 function createHub(profileId, name, kind, extra) {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -2094,6 +2168,8 @@ module.exports = {
   getSessionOwnProfile,
   isMember,
   getMemberRole,
+  listHubMembers,
+  listHubContacts,
   createHub,
   setHubWebsite,
   deleteHub,
