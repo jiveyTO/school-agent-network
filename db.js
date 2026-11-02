@@ -817,6 +817,23 @@ function setPlacements(hubId, profileId, list) {
   return placementStatus(hubId, profileId);
 }
 
+// Remove one child's placement row in one hub. The child simply has no
+// placement there afterwards: grade/class read back blank and grade- or
+// class-scoped facts stay hidden, exactly like a child never placed.
+function deletePlacement(hubId, profileId, childId) {
+  const hub = hubId ? getHubRow(hubId) : null;
+  if (!hub) throw new Error('That hub could not be found.');
+  if ((hub.kind || 'other') === 'team') {
+    throw new Error("Team hubs don't use grade or class placements — the hub's own level already covers it.");
+  }
+  const id = childId ? String(childId) : '';
+  const kids = getChildren(profileId);
+  if (!id || !kids.some((k) => k.id === id)) throw new Error('That child is not in your family.');
+  run('DELETE FROM placements WHERE hub_id = ? AND child_id = ?', [hubId, id]);
+  persist();
+  return placementStatus(hubId, profileId);
+}
+
 function placementScopeSets(profileId, hubId) {
   ensurePlacements(hubId, profileId);
   const rows = listPlacements(hubId, profileId);
@@ -1874,6 +1891,7 @@ module.exports = {
   effectivePlacements,
   placementStatus,
   setPlacements,
+  deletePlacement,
   listSources,
   saveSource,
   setSourceStatus,

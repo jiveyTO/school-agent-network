@@ -1610,6 +1610,7 @@ const server = http.createServer(async (req, res) => {
     const hubMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)$/);
     const hubWebsiteMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/website$/);
     const hubPlacementsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/placements$/);
+    const hubPlacementMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/placements\/([^/]+)$/);
     const hubMaterialsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials$/);
     const hubMaterialTextMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)\/text$/);
     const hubInvitesMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/invites$/);
@@ -1794,6 +1795,23 @@ const server = http.createServer(async (req, res) => {
       try {
         const body = await readJsonBody(req);
         const placement = store.setPlacements(hub.id, actor.id, body.placements);
+        sendJson(res, 200, { ok: true, placements: placement.placements, needs_placement: placement.needs_placement });
+      } catch (err) {
+        sendJson(res, 400, { error: err && err.message ? err.message : String(err) });
+      }
+      return;
+    }
+    if (req.method === 'DELETE' && hubPlacementMatch) {
+      const actor = store.getSessionViewer(session);
+      const hub = store.getHub(hubPlacementMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || actor.is_demo) {
+        sendJson(res, 400, { error: 'Switch to your own family first, then edit it.' });
+        return;
+      }
+      if (!store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can update placements.' }); return; }
+      try {
+        const placement = store.deletePlacement(hub.id, actor.id, decodeURIComponent(hubPlacementMatch[2]));
         sendJson(res, 200, { ok: true, placements: placement.placements, needs_placement: placement.needs_placement });
       } catch (err) {
         sendJson(res, 400, { error: err && err.message ? err.message : String(err) });

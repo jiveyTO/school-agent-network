@@ -1658,11 +1658,12 @@
     return raw;
   }
 
-  function placementRowHtml(p) {
+  function placementRowHtml(p, opts) {
     const selected = canonicalGradeLabel(p.grade || '');
     const options = '<option value="">Select grade…</option>' + GRADE_OPTIONS.map(function (g) {
       return '<option value="' + g + '"' + (g === selected ? ' selected' : '') + '>' + g + '</option>';
     }).join('');
+    const removable = Boolean(opts && opts.remove);
     return '<div class="place-row" data-child-id="' + esc(p.child_id || '') + '">' +
       '<p style="margin:6px 0 0"><b>' + esc(p.child_name || '') + '</b></p>' +
       '<label class="field">Grade' +
@@ -1670,7 +1671,15 @@
       '</label>' +
       '<label class="field">Class <span style="font-weight:400;color:var(--muted)">(optional)</span>' +
       '<input type="text" class="placeClass" placeholder="e.g. 3B" value="' + esc(p.class || '') + '">' +
-      '</label></div>';
+      '</label>' +
+      (removable
+        ? '<p style="margin:6px 0 0"><button class="text-btn danger placeRemoveBtn" type="button" data-child-id="' + esc(p.child_id || '') + '">Remove placement</button></p>' +
+          '<div class="placeRemoveConfirm" hidden>' +
+          '<p class="hint">Remove ' + esc(p.child_name || 'this child') + '’s placement in this hub? They’ll count as not placed here until you save a grade again.</p>' +
+          '<p style="margin:8px 0"><button class="small-btn placeRemoveYesBtn" type="button" data-child-id="' + esc(p.child_id || '') + '">Yes, remove it</button> ' +
+          '<button class="small-btn secondary placeRemoveNoBtn" type="button">Keep it</button></p></div>'
+        : '') +
+      '</div>';
   }
 
   function collectPlacements(container) {
@@ -1749,7 +1758,7 @@
       }));
       cards.push('<div class="card place-hub" data-hub-id="' + esc(hub.id) + '" style="margin-bottom:10px">' +
         '<p style="margin:0"><b>' + esc(hub.name) + '</b></p>' +
-        '<div class="place-fields">' + rows.map(placementRowHtml).join('') + '</div>' +
+        '<div class="place-fields">' + rows.map(function (p) { return placementRowHtml(p, { remove: true }); }).join('') + '</div>' +
         '<p style="margin-top:8px"><button class="small-btn placeSaveBtn" type="button">Save placements</button></p>' +
         '<p class="hint placeStatus"></p></div>');
     }
@@ -1768,6 +1777,40 @@
             placements: collectPlacements(card),
           });
           statusEl.textContent = 'Saved.';
+        } catch (e) {
+          statusEl.textContent = e.message;
+        }
+      });
+    });
+    box.querySelectorAll('.placeRemoveBtn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const row = btn.closest('.place-row');
+        if (!row) return;
+        btn.hidden = true;
+        row.querySelector('.placeRemoveConfirm').hidden = false;
+      });
+    });
+    box.querySelectorAll('.placeRemoveNoBtn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const row = btn.closest('.place-row');
+        if (!row) return;
+        row.querySelector('.placeRemoveConfirm').hidden = true;
+        row.querySelector('.placeRemoveBtn').hidden = false;
+      });
+    });
+    box.querySelectorAll('.placeRemoveYesBtn').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        const card = btn.closest('.place-hub');
+        const row = btn.closest('.place-row');
+        if (!card || !row) return;
+        const statusEl = card.querySelector('.placeStatus');
+        statusEl.textContent = 'Removing…';
+        try {
+          const res = await fetch('/api/hubs/' + encodeURIComponent(card.getAttribute('data-hub-id')) +
+            '/placements/' + encodeURIComponent(btn.getAttribute('data-child-id') || ''), { method: 'DELETE' });
+          const data = await res.json().catch(function () { return {}; });
+          if (!res.ok) throw new Error(data.error || 'That placement couldn’t be removed.');
+          await loadFamilyPlacements();
         } catch (e) {
           statusEl.textContent = e.message;
         }

@@ -190,6 +190,7 @@ function makeClient() {
   return {
     post: (p, body) => req(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }),
     get: (p) => req(p),
+    del: (p) => req(p, { method: 'DELETE' }),
   };
 }
 
@@ -315,5 +316,66 @@ test('onboarding and placements API', async (t) => {
     await demo.post('/api/profile/demo', {});
     const denied = await demo.post('/api/profile/update', { parent_name: 'X', children: [{ name: 'Y' }] });
     assert.equal(denied.res.status, 400);
+  });
+
+  await t.test('placements can be removed per child; foreign and demo deletes rejected', async () => {
+    const prof = await me.get('/api/family-profile');
+    assert.equal(prof.res.status, 200);
+    const ann = prof.data.profile.children.find((k) => k.name === 'Ann');
+    const cal = prof.data.profile.children.find((k) => k.name === 'Cal');
+    assert.ok(ann && cal, 'Ann and Cal exist from the rename step');
+    const made = await me.post('/api/hubs', {
+      school_name: 'Removal School', city: 'Removalton', province: 'Ontario', country: 'Canada', kind: 'school',
+    });
+    assert.equal(made.res.status, 200);
+    const hubId = made.data.hub.id;
+    const saved = await me.post(`/api/hubs/${hubId}/placements`, {
+      placements: [
+        { child_id: ann.id, grade: 'Grade 2', class: '' },
+        { child_id: cal.id, grade: 'Grade 5', class: '' },
+      ],
+    });
+    assert.equal(saved.res.status, 200);
+
+    // Own placement deletes: Ann's grade is gone, Cal's stays, hub needs placement again.
+    const gone = await me.del(`/api/hubs/${hubId}/placements/${ann.id}`);
+    assert.equal(gone.res.status, 200);
+    const detail = await me.get(`/api/hubs/${hubId}`);
+    assert.equal(detail.res.status, 200);
+    const annRow = detail.data.placements.find((p) => p.child_id === ann.id);
+    const calRow = detail.data.placements.find((p) => p.child_id === cal.id);
+    assert.equal(annRow.grade, '', 'removed placement reads back blank (unplaced)');
+    assert.equal(calRow.grade, 'Grade 5', 'other child keeps their placement');
+    assert.equal(detail.data.needs_placement, true);
+
+    // Unknown hub → 404.
+    const missing = await me.del(`/api/hubs/no-such-hub/placements/${ann.id}`);
+    assert.equal(missing.res.status, 404);
+
+    // Another family cannot delete this family's placement: stranger first (403),
+    // then even as a hub member (400 — that child is not in their family).
+    const intruder = makeClient();
+    const iprof = await intruder.post('/api/profile', {
+      parent_name: 'Intruder', children: [{ name: 'Ivy' }],
+    });
+    assert.equal(iprof.res.status, 200);
+    const stranger = await intruder.del(`/api/hubs/${hubId}/placements/${ann.id}`);
+    assert.equal(stranger.res.status, 403);
+    const invite = await me.post(`/api/hubs/${hubId}/invites`, {});
+    assert.equal(invite.res.status, 200);
+    const accepted = await intruder.post(`/api/join/${invite.data.token}/accept`, {});
+    assert.equal(accepted.res.status, 200);
+    const meddle = await intruder.del(`/api/hubs/${hubId}/placements/${cal.id}`);
+    assert.equal(meddle.res.status, 400);
+    // The intruder can still delete their own child's placement.
+    const ivyId = iprof.data.profile.children[0].id;
+    const selfDel = await intruder.del(`/api/hubs/${hubId}/placements/${ivyId}`);
+    assert.equal(selfDel.res.status, 200);
+
+    // Demo placement delete → rejected.
+    const demo = makeClient();
+    await demo.post('/api/profile/demo', {});
+    const demoDel = await demo.del(`/api/hubs/${hubId}/placements/${cal.id}`);
+    assert.equal(demoDel.res.status, 400);
   });
 });
