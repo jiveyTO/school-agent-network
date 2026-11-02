@@ -1827,6 +1827,32 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { hubs: actor ? store.listHubsForProfile(actor.id) : [] });
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/api/hubs/lookup') {
+      const school = String(url.searchParams.get('school') || url.searchParams.get('school_name') || '').trim();
+      const city = String(url.searchParams.get('city') || '').trim();
+      const province = String(url.searchParams.get('province') || '').trim();
+      const country = String(url.searchParams.get('country') || '').trim();
+      if (!school) { sendJson(res, 400, { error: 'Add the school name.' }); return; }
+      if (!city) { sendJson(res, 400, { error: 'Add the city.' }); return; }
+      if (!province) { sendJson(res, 400, { error: 'Add the state or province.' }); return; }
+      if (!country) { sendJson(res, 400, { error: 'Add the country.' }); return; }
+      const conflict = store.findSchoolHubConflict(school, city, province, country);
+      if (!conflict) { sendJson(res, 200, { match: 'none', hub: null }); return; }
+      const hub = store.getHub(conflict.id);
+      if (!hub) { sendJson(res, 200, { match: 'none', hub: null }); return; }
+      sendJson(res, 200, {
+        match: conflict.match_type,
+        hub: {
+          name: hub.name,
+          city: hub.city,
+          province: hub.province,
+          country: hub.country,
+          families: hub.member_count,
+          founder_first_name: conflict.founder_first_name,
+        },
+      });
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/hubs/parse-link') {
       const body = await readJsonBody(req);
       const urlStr = String(body.url || '').trim();
