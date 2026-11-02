@@ -1509,10 +1509,19 @@
   const tabBar = document.getElementById('tabBar');
   const demoBar = document.getElementById('demoBar');
   let demoViewing = false;
+  let joinFlowActive = false;
 
   function paintDemoBar() {
     demoBar.hidden = !(demoViewing && !tabBar.hidden);
-    document.getElementById('demoPill').hidden = !demoViewing;
+    var inJoinFlow = false;
+    try { inJoinFlow = typeof joinFlowActive !== 'undefined' && Boolean(joinFlowActive); } catch (e) {}
+    if (!inJoinFlow) {
+      try {
+        var joinEl = document.getElementById('joinView');
+        if (joinEl && !joinEl.hidden) inJoinFlow = true;
+      } catch (e) {}
+    }
+    document.getElementById('demoPill').hidden = !demoViewing || inJoinFlow;
   }
 
   // Brief 034: the header has three states — signed-in, anonymous WITH a
@@ -1678,6 +1687,7 @@
   }
 
   function showMain() {
+    joinFlowActive = false;
     onboardingView.hidden = true;
     document.getElementById('joinView').hidden = true;
     tabBar.hidden = false;
@@ -1686,6 +1696,7 @@
   }
 
   function showJoin() {
+    joinFlowActive = true;
     onboardingView.hidden = true;
     tabBar.hidden = true;
     viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
