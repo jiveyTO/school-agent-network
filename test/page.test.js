@@ -452,17 +452,61 @@ test('grade and class live in hub placements, editable from the hub view or My f
   }
 });
 
-test('demo viewers get a demo bar with a path to their own family', () => {
-  for (const token of ['id="demoBar"', 'id="demoBarBtn"', 'demoViewing', 'paintDemoBar',
-    'You’re exploring as the demo family.', 'Start with your own family']) {
+test('demo viewers get a text-only demo bar; the Start path lives in the header', () => {
+  for (const token of ['id="demoBar"', 'demoViewing', 'paintDemoBar',
+    'You’re exploring as the demo family.']) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
+  assert.ok(!PAGE.includes('id="demoBarBtn"'), 'banner button is gone — no duplicate Start path in the banner');
+  const barOpen = PAGE.indexOf('id="demoBar"');
+  const barClose = PAGE.indexOf('</div>', barOpen);
+  const barMarkup = PAGE.slice(barOpen, barClose);
+  assert.ok(!barMarkup.includes('<button'), 'demo bar contains no button, only the notice sentence');
   const barAt = PAGE.indexOf('id="demoBar"');
   const tabAt = PAGE.indexOf('id="tabBar"');
   assert.ok(barAt !== -1 && barAt < tabAt, 'demo bar sits under the header, above the tab row');
   assert.ok(PAGE.includes('demoBar.hidden = !(demoViewing && !tabBar.hidden)'), 'bar shows for demo viewers in main views only');
-  assert.ok(PAGE.includes("document.getElementById('startOverBtn').click()"), 'bar button reuses the reset flow');
   assert.ok(!PAGE.includes('>Start over</button>'), 'quiet control renamed to match');
+});
+
+test('signed-out header pairs Start with Sign in on one row, Start first', () => {
+  for (const token of ['id="authArea"', 'id="startFamilyBtn"', 'id="signInBtn"',
+    'Start with your own family', 'Sign in with Google']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  const areaOpen = PAGE.indexOf('id="authArea"');
+  const areaClose = PAGE.indexOf('</div>', areaOpen);
+  const areaMarkup = PAGE.slice(areaOpen, areaClose);
+  const startAt = areaMarkup.indexOf('id="startFamilyBtn"');
+  const signInAt = areaMarkup.indexOf('id="signInBtn"');
+  assert.ok(startAt !== -1 && signInAt !== -1, 'both actions live in the one header row container');
+  assert.ok(startAt < signInAt, 'Start with your own family comes first, Sign in with Google second');
+  assert.ok(areaMarkup.includes('>Start with your own family</button>'), 'Start label unchanged, character for character');
+  assert.ok(areaMarkup.includes('>Sign in with Google</a>'), 'Sign in label unchanged, character for character');
+  assert.ok(PAGE.includes("document.getElementById('startFamilyBtn').addEventListener('click'"),
+    'header Start button keeps the existing onboarding action');
+  assert.ok(PAGE.includes("document.getElementById('startOverBtn').click()"), 'header Start reuses the reset flow');
+  assert.ok(PAGE.includes('startFamilyBtn.hidden = false'), 'signed-out state shows the Start button');
+  assert.ok(PAGE.includes('startFamilyBtn.hidden = true'), 'signed-in state hides the Start button');
+  const style = PAGE.slice(PAGE.indexOf('<style>'), PAGE.indexOf('</style>'));
+  assert.ok(/#startFamilyBtn\[hidden\]\s*\{[^}]*display:\s*none/.test(style),
+    'Start button honors the hidden attribute like every other hideable header element');
+  assert.ok(style.includes('#authArea') && style.includes('flex-wrap: wrap'),
+    'header action row wraps to a second row instead of overflowing at phone width');
+  assert.ok(!PAGE.includes('overflow-x: hidden'),
+    'no page-level overflow clipping masks unwrapped content');
+});
+
+test('signed-in header is unchanged: identity plus sign out, no Start button', () => {
+  for (const token of ['Signed in as', 'id="signedInAs"', 'id="signedInEmail"', 'id="signOutBtn"']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  const authFn = PAGE.slice(PAGE.indexOf('async function loadAuth'), PAGE.indexOf('async function loadAuth') + 1200);
+  const signedInBranch = authFn.slice(authFn.indexOf('signed_in'), authFn.indexOf('} else {'));
+  assert.ok(signedInBranch.includes('signInBtn.hidden = true'), 'signed in hides Sign in');
+  assert.ok(signedInBranch.includes('startFamilyBtn.hidden = true'), 'signed in hides Start too');
+  assert.ok(signedInBranch.includes('signedInAs.hidden = false'), 'signed in shows the identity');
+  assert.ok(signedInBranch.includes('signOutBtn.hidden = false'), 'signed in shows Sign out');
 });
 
 test('newsletter section renders only with content: hidden for real families, shown for demo', () => {

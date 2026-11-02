@@ -129,7 +129,7 @@
     color: #fff;
   }
   #signedInAs { font-size: 14px; font-weight: 600; color: #dcefe3; }
-  #signedInAs[hidden], #signInBtn[hidden], #signOutBtn[hidden] { display: none; }
+  #signedInAs[hidden], #signInBtn[hidden], #signOutBtn[hidden], #startFamilyBtn[hidden] { display: none; }
   .auth-error { margin: 10px 0 0; font-size: 14px; color: #ffe1a8; }
   .auth-error[hidden] { display: none; }
   .demo-bar {
@@ -572,6 +572,7 @@
     <h1>ParentLoop</h1>
     <p class="tagline">You’re always in the loop.</p>
     <div id="authArea">
+      <button class="auth-btn" id="startFamilyBtn" type="button" hidden>Start with your own family</button>
       <a class="auth-btn" id="signInBtn" href="/api/auth/login" hidden>Sign in with Google</a>
       <span id="signedInAs" hidden>Signed in as <span id="signedInEmail"></span></span>
       <button class="auth-btn secondary" id="signOutBtn" type="button" hidden>Sign out</button>
@@ -580,7 +581,6 @@
   </header>
   <div id="demoBar" class="demo-bar" hidden>
     <p>You’re exploring as the demo family.</p>
-    <button class="small-btn" id="demoBarBtn" type="button">Start with your own family</button>
   </div>
   <nav id="tabBar" aria-label="ParentLoop views" hidden>
     <button class="tab active" id="tabHubs" type="button" data-view="hubs">My hubs</button>
@@ -1963,6 +1963,7 @@
 
   async function loadAuth() {
     const signInBtn = document.getElementById('signInBtn');
+    const startFamilyBtn = document.getElementById('startFamilyBtn');
     const signedInAs = document.getElementById('signedInAs');
     const signedInEmail = document.getElementById('signedInEmail');
     const signOutBtn = document.getElementById('signOutBtn');
@@ -1977,16 +1978,19 @@
       const auth = await aRes.json();
       if (auth && auth.signed_in) {
         signInBtn.hidden = true;
+        startFamilyBtn.hidden = true;
         signedInEmail.textContent = auth.email || 'your Google account';
         signedInAs.hidden = false;
         signOutBtn.hidden = false;
       } else {
         signInBtn.hidden = false;
+        startFamilyBtn.hidden = false;
         signedInAs.hidden = true;
         signOutBtn.hidden = true;
       }
     } catch (e) {
       signInBtn.hidden = false;
+      startFamilyBtn.hidden = false;
       signedInAs.hidden = true;
       signOutBtn.hidden = true;
     }
@@ -2216,7 +2220,7 @@
     switchToDemo().catch(function () {});
   });
 
-  document.getElementById('demoBarBtn').addEventListener('click', function () {
+  document.getElementById('startFamilyBtn').addEventListener('click', function () {
     document.getElementById('startOverBtn').click();
   });
 
