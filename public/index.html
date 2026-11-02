@@ -547,6 +547,20 @@
   #createProfileBtn { justify-self: start; margin-top: 8px; }
   #onboardingView .card > #obProfileStatus:empty { display: none; }
   #useDemoBtn { justify-self: center; }
+  /* Invite account choice: the two paths read as two self-contained
+     blocks on the same grid-gap rhythm as briefs 029/033 — room between
+     the intro line and the first choice, between the two choices, and
+     between the second choice and the closing saved-invite line. Within
+     a block the question and its button stay close (8px); between blocks
+     the gap opens up (18px). Single-column grid, no fixed widths, so it
+     holds at phone width and desktop width. */
+  #joinChoice { display: grid; gap: 18px; }
+  #joinChoice[hidden] { display: none; }
+  #joinChoice > * { min-width: 0; }
+  #joinChoiceText, #joinChoice .hint { margin: 0 2px; }
+  .join-choice { display: grid; gap: 8px; }
+  .join-choice > p { margin: 0; }
+  .join-choice .small-btn { justify-self: start; }
   /* Autofill confirmation: a proper little notice in the app's existing
      confirmation styling (soft pine background, rounded, readable size).
      Breathing room above and below comes from the surrounding grid gap;
@@ -687,9 +701,15 @@
         <p id="joinText" style="margin-top:0">Loading your invitation…</p>
         <button class="small-btn" id="joinAcceptBtn" type="button">Join this hub</button>
         <div id="joinChoice" hidden>
-          <p id="joinChoiceText" style="margin-top:0"></p>
-          <p><b>Already have an account?</b><br><a class="small-btn" id="joinSignInBtn" href="/api/auth/login">Sign in with Google</a></p>
-          <p><b>New here?</b><br><button class="small-btn" id="joinSetupBtn" type="button">Set up your family</button></p>
+          <p id="joinChoiceText"></p>
+          <div class="join-choice">
+            <p><b>Already have an account?</b></p>
+            <a class="small-btn" id="joinSignInBtn" href="/api/auth/login">Sign in with Google</a>
+          </div>
+          <div class="join-choice">
+            <p><b>New here?</b></p>
+            <button class="small-btn" id="joinSetupBtn" type="button">Set up your family</button>
+          </div>
           <p class="hint">Your invite is saved — after you sign in or finish setup, you’ll land in the hub automatically. No need to re-click the link.</p>
         </div>
         <p class="hint" id="joinStatus"></p>
