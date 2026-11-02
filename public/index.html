@@ -67,7 +67,13 @@
   .tab.active { background: var(--pine); border-color: var(--pine); color: #fff; }
   .view[hidden] { display: none; }
   .hub-grid { display: grid; gap: 16px; }
+  .hub-grid > * { min-width: 0; }
+  main > * { min-width: 0; }
   pre, p, h1, h2, h3 { overflow-wrap: break-word; }
+  /* Long unbroken strings (URLs, source lines) must wrap inside the
+     viewport instead of forcing the page wider at phone width. */
+  li, summary, a, .chip, .quote { overflow-wrap: break-word; }
+  .hold-card > div:last-child { min-width: 0; }
   header {
     background: var(--pine);
     color: #fff;

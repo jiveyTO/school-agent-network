@@ -552,3 +552,16 @@ test('add-material cluster is one tidy unit: styled picker, primary Add it, grou
   assert.ok(PAGE.includes('.pdf-picker input[type="file"]'),
     'native input is visually restyled inside the picker, not rendered as the raw OS control');
 });
+
+test('hub page fits phone width: long strings wrap, grid children shrink', () => {
+  assert.ok(PAGE.includes('li, summary, a, .chip, .quote { overflow-wrap: break-word; }'),
+    'bullets, summaries, links, chips, and quotes wrap long unbroken strings');
+  assert.ok(PAGE.includes('.hub-grid > * { min-width: 0; }'),
+    'hub grid columns may shrink below content width');
+  assert.ok(PAGE.includes('main > * { min-width: 0; }'),
+    'top-level sections may shrink below content width');
+  assert.ok(PAGE.includes('.hold-card > div:last-child { min-width: 0; }'),
+    'evening hold-card text may shrink beside the calendar block');
+  assert.ok(!PAGE.includes('overflow-x: hidden'),
+    'no page-level overflow clipping masks unwrapped content');
+});
