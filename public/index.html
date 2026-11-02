@@ -622,6 +622,22 @@
     color: var(--muted);
   }
   .pdf-file-name.has-file { color: var(--ink); font-weight: 600; }
+  .paste-image-chip {
+    display: flex; align-items: center; gap: 10px;
+    border: 1px solid var(--line); border-radius: 12px; padding: 8px; background: #fff;
+  }
+  .paste-image-chip[hidden] { display: none; }
+  .paste-image-chip img {
+    width: 48px; height: 48px; object-fit: cover; border-radius: 8px; flex: none; background: var(--wash);
+  }
+  .paste-image-meta { flex: 1; min-width: 0; font-size: 14.5px; }
+  .paste-image-meta b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .paste-image-meta span { color: var(--muted); font-size: 13.5px; }
+  .paste-image-remove {
+    flex: none; border: 1px solid var(--line); border-radius: 999px; background: var(--wash);
+    color: var(--pine-dark); width: 32px; height: 32px; font-size: 18px; line-height: 1; cursor: pointer;
+  }
+  .material-source-image { max-width: 100%; max-height: 320px; border-radius: 12px; display: block; margin: 6px 0; }
   #addMaterialBtn {
     width: 100%;
     border: 0;
@@ -906,11 +922,16 @@
             <p><b>Add material</b></p>
             <div class="add-material">
             <label class="field">Paste a newsletter or notice
-              <textarea id="materialText" placeholder="Paste the text here…"></textarea>
+              <textarea id="materialText" placeholder="Paste the text here — or paste a screenshot…"></textarea>
             </label>
-            <div class="field">Or add a PDF
+            <div class="paste-image-chip" id="materialImageChip" hidden>
+              <img id="materialImageThumb" alt="Attached image preview">
+              <div class="paste-image-meta"><b id="materialImageName"></b><span id="materialImageSize"></span></div>
+              <button class="paste-image-remove" id="materialImageRemove" type="button" aria-label="Remove image">×</button>
+            </div>
+            <div class="field">Or add a PDF or photo
               <div class="pdf-picker">
-                <input type="file" id="materialPdf" accept="application/pdf">
+                <input type="file" id="materialPdf" accept="application/pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp">
                 <label class="pdf-pick-btn" id="materialPdfBtn" for="materialPdf">Choose file</label>
                 <span class="pdf-file-name" id="materialPdfName">No file selected</span>
               </div>
@@ -1225,9 +1246,17 @@
       let body = '<summary><b>' + esc(m.title) + '</b> ' +
         '<span class="added">Added ' + esc(humanDate(m.created_at)) + ' · ' + items.length + ' ' + noteWord + '</span></summary>';
       if (m.has_file) {
-        body += '<div class="group-actions" style="margin:6px 0">' +
-          '<a class="toggle-btn" href="/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(m.id) + '/file" target="_blank" rel="noopener">View original PDF</a>' +
-          '</div>';
+        var fileUrl = '/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(m.id) + '/file';
+        if (m.kind === 'image') {
+          body += '<img class="material-source-image" src="' + fileUrl + '" alt="' + esc(m.title || 'Attached image') + '">' +
+            '<div class="group-actions" style="margin:6px 0">' +
+            '<a class="toggle-btn" href="' + fileUrl + '" target="_blank" rel="noopener">View original image</a>' +
+            '</div>';
+        } else {
+          body += '<div class="group-actions" style="margin:6px 0">' +
+            '<a class="toggle-btn" href="' + fileUrl + '" target="_blank" rel="noopener">View original PDF</a>' +
+            '</div>';
+        }
       }
       if (m.may_have_unread_pictures) {
         body += '<p class="hint" style="margin:6px 0">Part of this document may be inside pictures, so we couldn\'t read it. If something looks missing, have a look at the original.</p>';
@@ -2988,9 +3017,107 @@
     }
   });
 
+  // Brief 044: one attached image per material, whether pasted into the
+  // box or picked as a photo. It rides along with (or instead of) text.
+  var attachedMaterialImage = null;
+
+  function formatImageSize(bytes) {
+    var n = Number(bytes) || 0;
+    if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    if (n >= 1024) return Math.round(n / 1024) + ' KB';
+    return n + ' bytes';
+  }
+
+  function renderMaterialImageChip() {
+    var chip = document.getElementById('materialImageChip');
+    if (!attachedMaterialImage) {
+      chip.hidden = true;
+      document.getElementById('materialImageThumb').removeAttribute('src');
+      return;
+    }
+    document.getElementById('materialImageThumb').src = attachedMaterialImage.dataUrl;
+    document.getElementById('materialImageName').textContent = attachedMaterialImage.name;
+    document.getElementById('materialImageSize').textContent = formatImageSize(attachedMaterialImage.size);
+    chip.hidden = false;
+  }
+
+  function clearMaterialImage() {
+    attachedMaterialImage = null;
+    renderMaterialImageChip();
+  }
+
+  function clearMaterialPdf() {
+    var input = document.getElementById('materialPdf');
+    input.value = '';
+    var nameEl = document.getElementById('materialPdfName');
+    nameEl.textContent = 'No file selected';
+    nameEl.classList.remove('has-file');
+  }
+
+  function attachMaterialImage(file, fallbackName) {
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var dataUrl = String(reader.result || '');
+      var mime = file.type || (dataUrl.match(/^data:([^;,]+)/) || [])[1] || 'image/png';
+      var ext = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
+      attachedMaterialImage = {
+        name: file.name || fallbackName || ('pasted-image.' + ext),
+        size: file.size || 0,
+        mime: mime,
+        dataUrl: dataUrl,
+        base64: dataUrl.split(',')[1] || '',
+      };
+      // One file per material: an image replaces any picked PDF.
+      clearMaterialPdf();
+      renderMaterialImageChip();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  document.getElementById('materialImageRemove').addEventListener('click', function () {
+    clearMaterialImage();
+  });
+
+  document.getElementById('materialText').addEventListener('paste', function (event) {
+    var clipboardData = event.clipboardData || window.clipboardData;
+    if (!clipboardData) return;
+    var imageFile = null;
+    var files = clipboardData.files;
+    if (files && files.length) {
+      for (var i = 0; i < files.length; i++) {
+        if (files[i].type && files[i].type.indexOf('image/') === 0) { imageFile = files[i]; break; }
+      }
+    }
+    if (!imageFile && clipboardData.items) {
+      for (var j = 0; j < clipboardData.items.length; j++) {
+        var item = clipboardData.items[j];
+        if (item.type && item.type.indexOf('image/') === 0) { imageFile = item.getAsFile(); break; }
+      }
+    }
+    if (!imageFile) return; // Plain-text paste behaves exactly as before.
+    attachMaterialImage(imageFile, 'pasted-image.png');
+    // Keep any pasted text flowing into the box; stop the browser from
+    // also trying to drop the picture itself into the textarea.
+    var pastedText = '';
+    try { pastedText = clipboardData.getData('text/plain') || ''; } catch (e) { pastedText = ''; }
+    if (!pastedText) event.preventDefault();
+  });
+
   document.getElementById('materialPdf').addEventListener('change', function () {
     const nameEl = document.getElementById('materialPdfName');
     const file = this.files && this.files[0];
+    var isImage = Boolean(file) && (
+      (file.type && file.type.indexOf('image/') === 0) ||
+      /\.(png|jpe?g|webp)$/i.test(file.name || '')
+    );
+    if (isImage) {
+      nameEl.textContent = 'No file selected';
+      nameEl.classList.remove('has-file');
+      attachMaterialImage(file);
+      return;
+    }
+    if (file) clearMaterialImage();
     nameEl.textContent = file ? file.name : 'No file selected';
     nameEl.classList.toggle('has-file', Boolean(file));
   });
@@ -3017,7 +3144,16 @@
     try {
       const file = document.getElementById('materialPdf').files[0];
       let data;
-      if (file) {
+      if (attachedMaterialImage) {
+        data = await postJson('/api/hubs/' + encodeURIComponent(hubId) + '/materials', {
+          kind: 'image',
+          text: document.getElementById('materialText').value,
+          fileName: attachedMaterialImage.name,
+          mimeType: attachedMaterialImage.mime,
+          imageBase64: attachedMaterialImage.base64,
+          fileBase64: attachedMaterialImage.base64,
+        });
+      } else if (file) {
         const base64 = await new Promise(function (resolve, reject) {
           const reader = new FileReader();
           reader.onload = function () { resolve(String(reader.result).split(',')[1] || ''); };
@@ -3037,6 +3173,8 @@
       }
       statusEl.textContent = 'Added — ' + data.facts_added + ' shared notes found.';
       document.getElementById('materialText').value = '';
+      clearMaterialImage();
+      clearMaterialPdf();
       // The extraction request is never cancelled by view changes, so a
       // background finish still lands: refresh the list, and re-render the
       // detail only if the viewer is still on this hub. Returning to the hub

@@ -59,6 +59,24 @@ const TEST_AUTH_ENABLED = process.env.PARENTLOOP_TEST_AUTH === '1';
 // encoded) fits comfortably; the cap also bounds how much one material can
 // grow the durable database file, which is written back whole on each save.
 const MAX_PDF_BYTES = 5 * 1024 * 1024;
+// Brief 044: pasted/picked images follow the same size convention as PDFs.
+const MAX_IMAGE_BYTES = MAX_PDF_BYTES;
+
+// The image type is decided by the bytes themselves, never by a claimed
+// name or MIME type: PNG, JPEG, and WebP are the accepted formats.
+function sniffImageMime(buffer) {
+  if (!buffer || buffer.length < 12) return '';
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return 'image/png';
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+  if (buffer.toString('latin1', 0, 4) === 'RIFF' && buffer.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  return '';
+}
+
+function imageExtForMime(mime) {
+  if (mime === 'image/jpeg') return 'jpg';
+  if (mime === 'image/webp') return 'webp';
+  return 'png';
+}
 
 // A page with fewer non-whitespace characters than this carried almost no
 // readable text — in a school PDF that usually means a flyer or graphic
@@ -314,6 +332,50 @@ async function postMetaChat(system, user, maxTokens) {
 
 async function callMetaApi(newsletterText) {
   const { system, user } = buildPrompt(newsletterText);
+  return postMetaChat(system, user, 32768);
+}
+
+// Brief 044: the same extraction pipeline, reading an image. The image is
+// sent as a vision (image_url data-URL) part alongside any pasted text, and
+// facts are held to the same standard: grounded in what the image shows,
+// with source_text transcribed exactly from the image (or pasted text).
+function buildImagePrompt(accompanyingText) {
+  const system = [
+    'You are the School Agent for a school hub in ParentLoop.',
+    'Read the attached image of a school newsletter or notice, plus any pasted text sent with it, and extract every discrete fact.',
+    'Return ONLY a JSON array. No markdown fences, no commentary.',
+    'Each element must have exactly these fields (same names, no extras):',
+    'id (string), type (one of: deadline, event, requirement, change, announcement),',
+    'title (string), detail (string), date (ISO date YYYY-MM-DD or ""), time (string or ""),',
+    'applies_to (string), action_required (boolean), action (string), link (URL string or ""),',
+    'source_document (string), source_text (the exact words from the image or pasted text the fact came from, transcribed verbatim),',
+    'published_at (ISO datetime or ""), extracted_at (leave "" — the server fills it),',
+    'confidence (number 0-1), supersedes (string, "" unless this fact replaces an earlier one),',
+    'group_label (string: the short heading of the section this item came from, in the source’s own words; "" if none).',
+    'group_summary (string: one plain sentence saying what that section is about; "" if the item has no group).',
+    'Rules:',
+    '- Only extract what the image or pasted text actually shows. Do not invent facts, dates, or details you cannot read.',
+    '- source_text must be transcribed verbatim from the image or pasted text for every fact.',
+    '- Rules, dress codes, and conduct guidelines are informational facts, not actions: set action_required false for them unless the source names a form, an order, a payment, or a deadline.',
+    '- confidence reflects how certain the extraction is (1.0 = clearly readable in the image).',
+    '- Resolve relative dates ("Friday", "November 18") to ISO dates in 2026 when the source gives a year context; otherwise keep the clearest ISO date the source supports.',
+    '- applies_to must name the audience explicitly: "all students" for whole-school items, "Grade N" or "Grades N-M" when the source targets a grade, "Class X" when it targets a specific class or teacher. Default to the school-wide audience; when ambiguous, choose the narrower one.',
+    '- If a fact has no date, use "" for date. Do not omit any field.',
+  ].join('\n');
+  const text = String(accompanyingText || '').trim();
+  const userText = text
+    ? 'Pasted text sent with the image:\n\n' + text + '\n\nNow read the attached image and extract every fact from the image and the pasted text together.'
+    : 'Read the attached image and extract every fact it shows.';
+  return { system, userText };
+}
+
+async function callMetaApiImage(accompanyingText, image) {
+  const { system, userText } = buildImagePrompt(accompanyingText);
+  const dataUrl = `data:${image.mime};base64,${Buffer.from(image.data).toString('base64')}`;
+  const user = [
+    { type: 'text', text: userText },
+    { type: 'image_url', image_url: { url: dataUrl } },
+  ];
   return postMetaChat(system, user, 32768);
 }
 
@@ -761,24 +823,28 @@ const EMPTY_EXTRACTION_MESSAGE =
 // name — replacing whatever the model returned for that field (it copies the
 // extraction prompt's Maple Grove example). The demo school run passes no flag,
 // so seeded/demo labels stay exactly as they are.
-async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride, stampSource) {
+async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride, stampSource, image) {
   const push = (message) => logs.push({ at: nowIso(), message });
+  const hasImage = Boolean(image && image.data && image.mime);
+  const callModel = () => (hasImage ? callMetaApiImage(newsletterText, image) : callMetaApi(newsletterText));
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
-  let content = await callMetaApi(newsletterText);
+  let content = await callModel();
   push('API responded — parsing facts');
   let rawFacts = extractJsonArray(content);
   // The model sometimes returns a valid but empty fact list for a
   // non-trivial source. Retry the model call ONCE before giving up, so one
-  // flaky reply cannot silently save zero facts as a success.
+  // flaky reply cannot silently save zero facts as a success. An image
+  // counts as a non-trivial source on its own.
   const nonWhitespace = String(newsletterText || '').replace(/\s/g, '').length;
-  if (rawFacts.length === 0 && nonWhitespace > 100) {
+  const nonTrivial = nonWhitespace > 100 || hasImage;
+  if (rawFacts.length === 0 && nonTrivial) {
     push('no facts parsed from a non-trivial source — retrying the model call once');
     push(`API called: POST ${API_URL} (model: ${MODEL})`);
-    content = await callMetaApi(newsletterText);
+    content = await callModel();
     push('API responded — parsing facts');
     rawFacts = extractJsonArray(content);
   }
-  if (rawFacts.length === 0 && nonWhitespace > 100) {
+  if (rawFacts.length === 0 && nonTrivial) {
     // Every material route marks the material 'failed' on a throw and
     // returns this message, so the hub list shows the failure instead of
     // an empty success. Tiny pastes keep today's behavior below.
@@ -1975,9 +2041,13 @@ const server = http.createServer(async (req, res) => {
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can read this hub.' }); return; }
       const doc = store.getMaterialFile(hubMaterialFileMatch[2], actor.id);
       if (!doc || doc.hub_id !== hub.id) { sendJson(res, 404, { error: 'That material is not available.' }); return; }
-      const safeName = String(doc.file_name || 'material.pdf').replace(/["\r\n\\]/g, '').trim() || 'material.pdf';
+      const sniffed = sniffImageMime(doc.data);
+      const isImage = Boolean(sniffed) || String(doc.file_mime || '').startsWith('image/');
+      const contentType = isImage ? (sniffed || doc.file_mime) : 'application/pdf';
+      const fallbackName = isImage ? `material.${imageExtForMime(contentType)}` : 'material.pdf';
+      const safeName = String(doc.file_name || fallbackName).replace(/["\r\n\\]/g, '').trim() || fallbackName;
       res.writeHead(200, {
-        'Content-Type': 'application/pdf',
+        'Content-Type': contentType,
         'Content-Disposition': `inline; filename="${safeName}"`,
         'Content-Length': doc.data.length,
         'Cache-Control': 'private, no-store',
@@ -1996,9 +2066,43 @@ const server = http.createServer(async (req, res) => {
       try {
         if (!API_KEY) throw new Error('SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.');
         let text = '';
-        let kind = body.kind === 'pdf' ? 'pdf' : 'paste';
+        const requestedKind = String(body.kind || '').trim().toLowerCase();
+        // Brief 044 image payloads: accept the image under any of the
+        // field names the client (or a test) may use for it.
+        let imageBase64 = String(body.imageBase64 || body.image_base64 || '').trim();
+        let imageDataUrl = String(body.imageDataUrl || body.dataUrl || body.image_data_url || '').trim();
+        if (!imageBase64 && imageDataUrl) {
+          const m = imageDataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+          if (m) imageBase64 = String(m[3] || '').trim();
+        }
+        if (!imageBase64 && imageDataUrl && !imageDataUrl.startsWith('data:')) imageBase64 = imageDataUrl;
+        if (!imageBase64 && (requestedKind === 'image' || requestedKind === 'photo' || requestedKind === 'screenshot')) {
+          imageBase64 = String(body.fileBase64 || '').trim();
+        }
+        if (!imageBase64 && body.fileBase64 && requestedKind !== 'pdf') {
+          imageBase64 = String(body.fileBase64 || '').trim();
+        }
+        const hasImage = Boolean(imageBase64) || requestedKind === 'image' || requestedKind === 'photo' || requestedKind === 'screenshot';
+        let kind = requestedKind === 'pdf' && !hasImage ? 'pdf' : hasImage ? 'image' : 'paste';
         let pdfFile = null;
-        if (kind === 'pdf') {
+        let imageFile = null;
+        if (kind === 'image') {
+          if (!imageBase64) throw new Error('Paste or choose an image first.');
+          const cleaned = imageBase64.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+          const imageBuffer = Buffer.from(cleaned, 'base64');
+          if (!imageBuffer.length) throw new Error('Paste or choose an image first.');
+          if (imageBuffer.length > MAX_IMAGE_BYTES) {
+            throw new Error('That image is too large — the limit is 5 MB. Choose a smaller image.');
+          }
+          const mime = sniffImageMime(imageBuffer);
+          if (!mime) {
+            throw new Error('That file isn’t an image we can read — choose a PNG, JPEG, or WebP image.');
+          }
+          const rawName = String(body.fileName || body.imageName || body.name || '').replace(/["\r\n\\]/g, '').trim().slice(0, 200);
+          const fallbackName = `pasted-image.${imageExtForMime(mime)}`;
+          imageFile = { data: imageBuffer, name: rawName || fallbackName, mime };
+          text = String(body.text || '').trim();
+        } else if (kind === 'pdf') {
           if (!body.fileBase64) throw new Error('Choose a PDF file first.');
           const pdfBuffer = Buffer.from(String(body.fileBase64), 'base64');
           if (pdfBuffer.length > MAX_PDF_BYTES) {
@@ -2023,12 +2127,17 @@ const server = http.createServer(async (req, res) => {
         }
         const override = resolveAudience(actor, body.audience, hub.id);
         const suppliedTitle = String(body.title || '').trim();
-        material = store.createMaterial(hub.id, actor.id, kind, suppliedTitle || deriveMaterialTitle(text), text, 'stored', undefined, undefined, pdfFile);
-        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true);
+        const retainedFile = pdfFile || imageFile;
+        const imageTitle = imageFile
+          ? String(imageFile.name || '').replace(/\.[a-z0-9]+$/i, '').trim() || deriveMaterialTitle(text)
+          : '';
+        const materialTitle = suppliedTitle || (text ? deriveMaterialTitle(text) : imageTitle);
+        material = store.createMaterial(hub.id, actor.id, kind, materialTitle, text, 'stored', undefined, undefined, retainedFile);
+        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, imageFile);
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
           ok: true,
-          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(pdfFile), may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk) },
+          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(retainedFile), file_name: retainedFile ? retainedFile.name : '', file_mime: retainedFile && retainedFile.mime ? retainedFile.mime : '', may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk) },
           facts,
           facts_added: facts.length,
           count: facts.length,
