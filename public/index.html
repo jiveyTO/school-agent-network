@@ -504,6 +504,29 @@
   #schoolNameWrap, #teamFieldsWrap { display: grid; gap: 12px; }
   #kindFieldWrap[hidden], #websiteFieldWrap[hidden], #startHubFields[hidden],
   #singleNameWrap[hidden], #schoolNameWrap[hidden], #teamFieldsWrap[hidden] { display: none; }
+  /* Onboarding form: the action cluster under the child name field keeps the
+     same grid-gap rhythm as the start-a-hub form (brief 029/030), so Remove,
+     "+ Add another child", Save, and the demo link read as a clear sequence.
+     Every child row breathes the same way; the primary Save button keeps a
+     decisive extra gap so it reads as THE action, and the demo link sits
+     apart, centered, below it. Single-column grid, no fixed widths, so the
+     cluster reads cleanly at phone width too. */
+  #onboardingView .card { display: grid; gap: 14px; }
+  #onboardingView .card > * { min-width: 0; }
+  #onboardingView .card > p, #obChildrenWrap > .hint,
+  #onboardingView .card > #obProfileStatus { margin: 0 2px; }
+  #onboardingView .field { margin-bottom: 0; }
+  #obChildrenWrap { display: grid; gap: 12px; }
+  #obChildrenWrap > * { min-width: 0; }
+  #obChildrenList { display: grid; gap: 12px; }
+  #obChildrenList:empty { display: none; }
+  .ob-child-row { display: grid; gap: 8px; }
+  .ob-child-row .field { margin-bottom: 0; }
+  .ob-child-row .obRemoveChild { justify-self: start; }
+  #obAddChildBtn { justify-self: start; }
+  #createProfileBtn { justify-self: start; margin-top: 8px; }
+  #onboardingView .card > #obProfileStatus:empty { display: none; }
+  #useDemoBtn { justify-self: center; }
   /* Autofill confirmation: a proper little notice in the app's existing
      confirmation styling (soft pine background, rounded, readable size).
      Breathing room above and below comes from the surrounding grid gap;
@@ -627,7 +650,7 @@
           <input type="text" id="obParentName" placeholder="e.g. Alex Rivera" autocomplete="name">
         </label>
         <div id="obChildrenWrap">
-          <p class="hint" style="margin:8px 2px 0">Your children — names only. Grades come later, inside each school hub.</p>
+          <p class="hint">Your children — names only. Grades come later, inside each school hub.</p>
           <div id="obChildrenList"></div>
           <button class="small-btn secondary" id="obAddChildBtn" type="button">+ Add another child</button>
         </div>
