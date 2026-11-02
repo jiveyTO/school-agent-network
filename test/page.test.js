@@ -690,6 +690,18 @@ test('add-material cluster is one tidy unit: styled picker, primary Add it, grou
     'native input is visually restyled inside the picker, not rendered as the raw OS control');
 });
 
+test('family placements can be removed per child with a two-click confirm', () => {
+  for (const token of ['Remove placement', 'placeRemoveBtn', 'placeRemoveConfirm',
+    'placeRemoveYesBtn', 'placeRemoveNoBtn', 'Yes, remove it', 'data-child-id']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+  assert.ok(PAGE.includes("Keep it"), 'remove confirm keeps the existing Keep-it wording');
+  assert.ok(PAGE.includes('/placements/') && PAGE.includes("method: 'DELETE'"),
+    'removal calls a DELETE placement URL');
+  assert.ok(PAGE.includes('loadFamilyPlacements()'),
+    'the family list re-renders after a removal');
+});
+
 test('hub page fits phone width: long strings wrap, grid children shrink', () => {
   assert.ok(PAGE.includes('li, summary, a, .chip, .quote { overflow-wrap: break-word; }'),
     'bullets, summaries, links, chips, and quotes wrap long unbroken strings');
