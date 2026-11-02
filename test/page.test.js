@@ -515,6 +515,87 @@ test('demo pill shows only to the demo viewer, never to a signed-in family', () 
   assert.ok(PAGE.includes('demoViewing = false;'), 'leaving the demo (new family or reset) clears the viewer flag');
 });
 
+test('demo pill tracks the live viewer through the real boot sequence', () => {
+  // Brief 023: Toggling the `hidden` property was a visual no-op because the
+  // author rule `.demo-badge { display: inline-block }` beats the UA
+  // `[hidden] { display: none }`. Every other hideable element on the page
+  // carries an explicit `[hidden]` override; the pill must too, or no JS
+  // gating can ever hide it.
+  const style = PAGE.slice(PAGE.indexOf('<style>'), PAGE.indexOf('</style>'));
+  assert.ok(/\.demo-badge\[hidden\]\s*\{\s*display:\s*none/.test(style),
+    'pill CSS honors the hidden attribute, or the pill renders while hidden');
+
+  // Run the page's REAL paintDemoBar (extracted verbatim, not re-typed)
+  // against stub elements, in the page's real call order.
+  function pageFunctionBody(name) {
+    const start = PAGE.indexOf('function ' + name + '(');
+    assert.ok(start !== -1, name + ' is defined on the page');
+    const open = PAGE.indexOf('{', start);
+    let depth = 0;
+    for (let i = open; i < PAGE.length; i++) {
+      if (PAGE[i] === '{') depth++;
+      else if (PAGE[i] === '}') {
+        depth--;
+        if (depth === 0) return PAGE.slice(open + 1, i);
+      }
+    }
+    assert.fail(name + ' body never closes');
+  }
+  const paintBody = pageFunctionBody('paintDemoBar');
+  assert.ok(paintBody.includes("getElementById('demoPill').hidden = !demoViewing"),
+    'paintDemoBar drives the pill from the current viewer flag');
+  function repaint(els, demoViewing) {
+    const fn = new Function('document', 'demoBar', 'tabBar', 'demoViewing', paintBody);
+    fn({ getElementById: (id) => els[id] }, els.demoBar, els.tabBar, demoViewing);
+  }
+  // Fresh markup state: pill, demo bar, and tabs all start hidden.
+  function freshEls() {
+    return { demoPill: { hidden: true }, demoBar: { hidden: true }, tabBar: { hidden: true } };
+  }
+  // showMain(): tabs unhide, then repaint — the same order as the page.
+  function showMain(els, demoViewing) {
+    els.tabBar.hidden = false;
+    repaint(els, demoViewing);
+  }
+
+  // Boot as a signed-in non-demo family: module init (demoViewing = false),
+  // then the profile resolves non-demo, then the main view paints.
+  let els = freshEls();
+  let demoViewing = false;
+  demoViewing = Boolean({ is_demo: false } && { is_demo: false }.is_demo);
+  showMain(els, demoViewing);
+  assert.equal(els.demoPill.hidden, true, 'signed-in family boot ends with the pill hidden');
+  assert.equal(els.demoBar.hidden, true, 'signed-in family boot ends with the demo bar hidden');
+
+  // Boot as the demo viewer: the same sequence must leave the pill visible.
+  els = freshEls();
+  demoViewing = Boolean({ is_demo: true } && { is_demo: true }.is_demo);
+  showMain(els, demoViewing);
+  assert.equal(els.demoPill.hidden, false, 'demo boot ends with the pill visible');
+  assert.equal(els.demoBar.hidden, false, 'demo boot ends with the demo bar visible');
+
+  // Switching both ways mid-session repaints too, so the pill never sticks.
+  showMain(els, false); // create-profile / reset path clears the flag, then shows main
+  assert.equal(els.demoPill.hidden, true, 'leaving the demo hides the pill again');
+  showMain(els, true); // switchToDemo path sets the flag, then shows main
+  assert.equal(els.demoPill.hidden, false, 'returning to the demo shows the pill again');
+
+  // Boot order lock: the profile-derived flag must resolve BEFORE the first
+  // paint in loadInitial, or the first paint would use the initial value.
+  const bootBody = pageFunctionBody('loadInitial');
+  const resolveAt = bootBody.indexOf('demoViewing = Boolean(status.profile && status.profile.is_demo)');
+  assert.ok(resolveAt !== -1, 'boot derives the viewer flag from the resolved profile');
+  const firstPaint = Math.min(...['showMain()', 'openOnboarding(', 'showJoin()']
+    .map((s) => bootBody.indexOf(s)).filter((i) => i !== -1));
+  assert.ok(resolveAt < firstPaint, 'profile resolves before the first paint on every boot path');
+
+  // Every view entry repaints, so hub/hub-page/evening/family views agree.
+  for (const view of ['showMain', 'openOnboarding', 'showJoin']) {
+    assert.ok(pageFunctionBody(view).includes('paintDemoBar()'),
+      view + ' repaints the pill on entry');
+  }
+});
+
 test('hub title shows the open hub name; picker text only with no hub open', () => {
   assert.ok(PAGE.includes('id="hubChooserText"'), 'chooser explainer carries an id');
   assert.ok(PAGE.includes('Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.'),
