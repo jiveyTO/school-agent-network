@@ -1018,6 +1018,23 @@ function currentViewer(session) {
   return store.getSessionViewer(fresh || session);
 }
 
+// Brief 046: agent tokens arrive as `Authorization: Bearer pl_agent_…` and
+// resolve to exactly one family (never the demo family). Management of
+// tokens stays browser-only; a token can never mint or revoke tokens.
+const AGENT_TOKEN_401 = 'That agent token is not valid. Check it, or ask the parent for a fresh one.';
+const AGENT_TOKEN_MANAGE_403 = 'Agent tokens are managed in the browser — open My family to see them.';
+
+function bearerRaw(req) {
+  const header = String((req.headers && req.headers.authorization) || '');
+  const m = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return m ? m[1].trim() : '';
+}
+
+function agentCanIssue(profileId) {
+  const row = profileId ? store.getProfileRowById(profileId) : null;
+  return Boolean(row && !row.is_demo && String(row.google_sub || '').trim());
+}
+
 function ensureSession(req, res) {
   const cookies = parseCookies(req);
   let session = cookies[SESSION_COOKIE] ? store.getSession(cookies[SESSION_COOKIE]) : null;
@@ -1240,6 +1257,18 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const session = ensureSession(req, res);
   try {
+    // A Bearer token on any API request must resolve, or the request is
+    // refused outright — a revoked or unknown token never falls through
+    // to session (demo) data.
+    const rawBearer = bearerRaw(req);
+    let bearerAuth = null;
+    if (rawBearer) {
+      bearerAuth = store.resolveAgentToken(rawBearer);
+      if (!bearerAuth && url.pathname.startsWith('/api/')) {
+        sendJson(res, 401, { error: AGENT_TOKEN_401 });
+        return;
+      }
+    }
     if (req.method === 'GET' && url.pathname === '/') {
       const html = fs.readFileSync(INDEX_PATH, 'utf8');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -1267,7 +1296,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/family-profile') {
-      const profile = store.getSessionViewer(session);
+      const profile = bearerAuth ? bearerAuth.profile : store.getSessionViewer(session);
       if (!profile) {
         sendJson(res, 404, { error: 'family profile not found' });
         return;
@@ -1495,6 +1524,56 @@ const server = http.createServer(async (req, res) => {
       }
       store.setSessionProfile(session.id, profile.id);
       sendJson(res, 200, { ok: true, profile, isDemo: true });
+      return;
+    }
+    // Brief 046: agent-token management. Browser session only — a token
+    // can never list, mint, or revoke tokens. Issuance hangs off a
+    // Google-linked family so the token always belongs to a family the
+    // parent can get back; revoking stays available to the owning
+    // session either way, so access can always be cut off.
+    const agentRevokeMatch = url.pathname.match(/^\/api\/agent-tokens\/([^/]+)\/revoke$/);
+    if (req.method === 'GET' && url.pathname === '/api/agent-tokens') {
+      if (bearerAuth) { sendJson(res, 403, { error: AGENT_TOKEN_MANAGE_403 }); return; }
+      const own = store.getSessionOwnProfile(session);
+      if (!own || own.is_demo) { sendJson(res, 403, { error: 'Switch to your own family first, then manage agent access.' }); return; }
+      const canIssue = agentCanIssue(own.id);
+      sendJson(res, 200, {
+        ok: true,
+        tokens: store.listAgentTokens(own.id),
+        can_issue: canIssue,
+        needs_sign_in: !canIssue,
+        signed_in: store.getSessionIdentity(session).signed_in,
+      });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/agent-tokens') {
+      if (bearerAuth) { sendJson(res, 403, { error: AGENT_TOKEN_MANAGE_403 }); return; }
+      const own = store.getSessionOwnProfile(session);
+      if (!own || own.is_demo) { sendJson(res, 403, { error: 'Switch to your own family first, then manage agent access.' }); return; }
+      if (!agentCanIssue(own.id)) {
+        sendJson(res, 403, {
+          error: 'Sign in with Google first, so this token hangs off a family you can always get back.',
+          needs_sign_in: true,
+        });
+        return;
+      }
+      try {
+        const body = await readJsonBody(req);
+        const created = store.createAgentToken(own.id, body.name);
+        if (!created) { sendJson(res, 403, { error: 'Switch to your own family first, then manage agent access.' }); return; }
+        sendJson(res, 200, { ok: true, token: created.token, agent_token: created.record, tokens: store.listAgentTokens(own.id) });
+      } catch (err) {
+        sendJson(res, 400, { error: err && err.message ? err.message : String(err) });
+      }
+      return;
+    }
+    if (req.method === 'POST' && agentRevokeMatch) {
+      if (bearerAuth) { sendJson(res, 403, { error: AGENT_TOKEN_MANAGE_403 }); return; }
+      const own = store.getSessionOwnProfile(session);
+      if (!own || own.is_demo) { sendJson(res, 403, { error: 'Switch to your own family first, then manage agent access.' }); return; }
+      const updated = store.revokeAgentToken(own.id, decodeURIComponent(agentRevokeMatch[1]));
+      if (!updated) { sendJson(res, 404, { error: 'That token could not be found.' }); return; }
+      sendJson(res, 200, { ok: true, agent_token: updated, tokens: store.listAgentTokens(own.id) });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/sources') {
@@ -1823,7 +1902,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/hubs') {
-      const actor = currentViewer(session);
+      const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
       sendJson(res, 200, { hubs: actor ? store.listHubsForProfile(actor.id) : [] });
       return;
     }
@@ -1909,7 +1988,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/hubs') {
-      const actor = store.getSessionViewer(session);
+      const actor = bearerAuth ? bearerAuth.profile : store.getSessionViewer(session);
       if (!actor) { sendJson(res, 400, { error: 'Set up your family first.' }); return; }
       const body = await readJsonBody(req);
       const kinds = ['school', 'team', 'activity', 'other'];
@@ -1993,7 +2072,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && hubMatch) {
-      const actor = currentViewer(session);
+      const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
       const hub = store.getHub(hubMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can see this hub.' }); return; }
@@ -2020,7 +2099,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && hubPlacementsMatch) {
-      const actor = currentViewer(session);
+      const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
       const hub = store.getHub(hubPlacementsMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can update placements.' }); return; }
@@ -2082,7 +2161,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && hubMaterialsMatch) {
-      const actor = store.getSessionViewer(session);
+      const actor = bearerAuth ? bearerAuth.profile : store.getSessionViewer(session);
       const hub = store.getHub(hubMaterialsMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can add material to this hub.' }); return; }
@@ -2161,6 +2240,7 @@ const server = http.createServer(async (req, res) => {
         material = store.createMaterial(hub.id, actor.id, kind, materialTitle, text, 'stored', undefined, undefined, retainedFile);
         const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, imageFile);
         store.updateMaterialStatus(material.id, 'extracted');
+        if (bearerAuth) logs.push({ at: nowIso(), message: 'material added via agent: ' + bearerAuth.token.name });
         sendJson(res, 200, {
           ok: true,
           material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(retainedFile), file_name: retainedFile ? retainedFile.name : '', file_mime: retainedFile && retainedFile.mime ? retainedFile.mime : '', may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk) },
@@ -2214,7 +2294,7 @@ const server = http.createServer(async (req, res) => {
       // NOT joined here — the client shows the account question instead,
       // and the invite completes after sign-in or family setup. The demo
       // profile must never become a member of a non-demo hub.
-      const own = store.getSessionOwnProfile(session);
+      const own = bearerAuth ? bearerAuth.profile : store.getSessionOwnProfile(session);
       if (!own || own.is_demo) {
         sendJson(res, 409, {
           error: 'To join this hub, sign in or set up your family first — your invite is saved.',
@@ -2229,7 +2309,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        store.addMember(info.hub_id, own.id, 'member', 'invite');
+        store.addMember(info.hub_id, own.id, 'member', bearerAuth ? 'via agent: ' + bearerAuth.token.name : 'invite');
       } catch (err) {
         sendJson(res, 403, { error: err && err.message ? err.message : String(err) });
         return;

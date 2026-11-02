@@ -489,6 +489,15 @@ async function initDb() {
     count INTEGER NOT NULL DEFAULT 0,
     window_start TEXT NOT NULL
   )`);
+  run(`CREATE TABLE IF NOT EXISTS agent_tokens (
+    id TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at TEXT
+  )`);
   run(`CREATE TABLE IF NOT EXISTS gmail_tokens (
     profile_id TEXT PRIMARY KEY,
     email TEXT,
@@ -1267,6 +1276,90 @@ function hitRecoveryRateLimit(key, limit, windowMs) {
   run('UPDATE recovery_rate_limits SET count = ? WHERE key = ?', [count, String(key)]);
   persist();
   return count <= limit;
+}
+
+// Brief 046: agent tokens. A parent issues a named token in the browser;
+// the raw token is shown once and never stored — only its SHA-256 hash is
+// kept (the brief 041 pattern). Bearer resolution acts as exactly that one
+// family: every existing membership/ownership gate applies unchanged. The
+// demo profile can never hold or be resolved by a token.
+const AGENT_TOKEN_PREFIX = 'pl_agent_';
+
+function hashAgentToken(raw) {
+  return crypto.createHash('sha256').update(String(raw || '')).digest('hex');
+}
+
+function agentTokenPublic(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name || '',
+    created_at: row.created_at || '',
+    last_used_at: row.last_used_at || null,
+    revoked_at: row.revoked_at || null,
+    active: !row.revoked_at,
+  };
+}
+
+function createAgentToken(profileId, name) {
+  const cleanName = String(name || '').trim();
+  if (!cleanName) throw new Error('Give this token a name — for example, "Homework helper".');
+  if (cleanName.length > 80) throw new Error('Keep that token name a little shorter.');
+  const profile = getProfileRowById(profileId);
+  if (!profile || Number(profile.is_demo) === 1) return null;
+  const raw = AGENT_TOKEN_PREFIX + crypto.randomBytes(32).toString('base64url');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  run(
+    'INSERT INTO agent_tokens (id, profile_id, name, token_hash, created_at, last_used_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL, NULL)',
+    [id, String(profileId), cleanName, hashAgentToken(raw), now]
+  );
+  persist();
+  return { token: raw, record: agentTokenPublic(one('SELECT * FROM agent_tokens WHERE id = ?', [id])) };
+}
+
+function listAgentTokens(profileId) {
+  if (!profileId) return [];
+  return all('SELECT * FROM agent_tokens WHERE profile_id = ? ORDER BY created_at DESC, id DESC', [
+    String(profileId),
+  ]).map(agentTokenPublic);
+}
+
+function resolveAgentToken(raw) {
+  const value = String(raw || '').trim();
+  if (!value || !value.startsWith(AGENT_TOKEN_PREFIX)) return null;
+  const row = one('SELECT * FROM agent_tokens WHERE token_hash = ?', [hashAgentToken(value)]);
+  if (!row || row.revoked_at) return null;
+  const profileRow = getProfileRowById(row.profile_id);
+  if (!profileRow || Number(profileRow.is_demo) === 1) return null;
+  const now = new Date().toISOString();
+  run('UPDATE agent_tokens SET last_used_at = ? WHERE id = ?', [now, row.id]);
+  persist();
+  return {
+    profile: rowToProfile(profileRow),
+    token: agentTokenPublic({ ...row, last_used_at: now }),
+  };
+}
+
+function revokeAgentToken(profileId, tokenId) {
+  if (!profileId || !tokenId) return null;
+  const row = one('SELECT * FROM agent_tokens WHERE id = ? AND profile_id = ?', [
+    String(tokenId),
+    String(profileId),
+  ]);
+  if (!row) return null;
+  if (!row.revoked_at) {
+    run('UPDATE agent_tokens SET revoked_at = ? WHERE id = ?', [new Date().toISOString(), row.id]);
+    persist();
+  }
+  return agentTokenPublic(one('SELECT * FROM agent_tokens WHERE id = ?', [row.id]));
+}
+
+// Test-only: the stored row (hash included) so tests can prove the raw
+// token is never kept. Never exposed over HTTP.
+function agentTokenMeta(tokenId) {
+  if (!tokenId) return null;
+  return one('SELECT * FROM agent_tokens WHERE id = ?', [String(tokenId)]);
 }
 
 function signOutSession(sessionId) {
@@ -2323,6 +2416,12 @@ module.exports = {
   recoveryTokenMetaForProfile,
   hitRecoveryRateLimit,
   RECOVERY_TOKEN_TTL_MS,
+  AGENT_TOKEN_PREFIX,
+  createAgentToken,
+  listAgentTokens,
+  resolveAgentToken,
+  revokeAgentToken,
+  agentTokenMeta,
   createProfile,
   createProfileForSession,
   updateProfileNames,
