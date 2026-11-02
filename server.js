@@ -1024,6 +1024,129 @@ function currentViewer(session) {
 const AGENT_TOKEN_401 = 'That agent token is not valid. Check it, or ask the parent for a fresh one.';
 const AGENT_TOKEN_MANAGE_403 = 'Agent tokens are managed in the browser — open My family to see them.';
 
+// Brief 047: public machine-readable front door for agents. Static by
+// design — it describes the shipped agent surface and contains no family,
+// hub, or member data. Keep it truthful: paths/methods mirror the handlers
+// below (lookup 045, family/hubs/placements/materials/invite-accept 046).
+const AGENT_RECIPE = [
+  {
+    step: 1,
+    action: 'Look up the hub before creating anything',
+    method: 'GET',
+    path: '/api/hubs/lookup?school={school}&city={city}&province={province}&country={country}',
+    description: 'Hub lookup first. match is exact, similar, or none; an exact or similar match already has a hub — do not create a duplicate (create returns 409 for an exact school).',
+  },
+  {
+    step: 2,
+    action: 'Join/redeem an invite, or create the hub when lookup found none',
+    method: 'POST',
+    path: '/api/join/{token}/accept',
+    alternate: { method: 'POST', path: '/api/hubs' },
+    description: 'If a parent gave you an invite link, redeem it with POST /api/join/{token}/accept to join that hub. If lookup returned none, create the hub with POST /api/hubs. If create returns 409, the school already has a hub — ask the parent for an invite instead of forcing a duplicate.',
+  },
+  {
+    step: 3,
+    action: 'Save placements for the family in the hub',
+    method: 'POST',
+    path: '/api/hubs/{hub_id}/placements',
+    description: 'Read GET /api/family-profile for the family child ids, then save placements with POST /api/hubs/{hub_id}/placements as { placements: [{ child_id, grade, class }] }. Re-read the hub and check needs_placement is false.',
+  },
+  {
+    step: 4,
+    action: 'Report back to the parent',
+    method: 'GET',
+    path: '/api/hubs/{hub_id}',
+    description: 'Confirm with GET /api/hubs/{hub_id} (or GET /api/hubs), then report back which hub you joined or created, the placements you saved, and any material you added.',
+  },
+];
+const AGENT_MANIFEST = {
+  service: 'ParentLoop',
+  name: 'ParentLoop',
+  purpose: 'ParentLoop turns school newsletters and notices in a family hub into the few things a parent needs to do, in time.',
+  description: 'ParentLoop turns school newsletters and notices in a family hub into the few things a parent needs to do, in time.',
+  version: 1,
+  auth: {
+    scheme: 'Bearer',
+    type: 'bearer',
+    header: 'Authorization',
+    format: 'Authorization: Bearer <token>',
+    issued_by: 'A human parent issues a Bearer agent token from My family → Agent access in ParentLoop.',
+    how_to_get: 'Ask the parent to open My family → Agent access, create a named token, and give it to you. The token is shown only once, so store it like a password.',
+    scope: 'Tokens are scoped to one family: the token acts only as that family and can only reach that family\'s hubs.',
+    scoped_to: 'one family',
+    revocable: true,
+    notes: [
+      'Tokens are revocable: the parent can revoke a token at any time in My family → Agent access, and a revoked token stops working immediately.',
+      'A token can never issue, list, or revoke agent tokens — token management is browser-only.',
+      'Send the token on every agent request as Authorization: Bearer <token>. Without a token these endpoints fall back to the browser session (demo) view.',
+    ],
+  },
+  endpoints: [
+    {
+      name: 'hub lookup',
+      method: 'GET',
+      path: '/api/hubs/lookup',
+      auth: 'none (public)',
+      query: { school: 'school name (or school_name)', city: 'city', province: 'state or province', country: 'country' },
+      description: 'Find whether a school already has a hub. Returns { match: exact|similar|none, hub } with a public hub card only (name, place, family count, founder first name) — no member data.',
+    },
+    {
+      name: 'family read',
+      method: 'GET',
+      path: '/api/family-profile',
+      auth: 'Bearer agent token',
+      description: 'Read the token\'s own family profile ({ profile }), including child ids needed to save placements.',
+    },
+    {
+      name: 'my hubs',
+      method: 'GET',
+      path: '/api/hubs',
+      auth: 'Bearer agent token',
+      description: 'List the hubs the token\'s family belongs to ({ hubs }).',
+    },
+    {
+      name: 'create hub',
+      method: 'POST',
+      path: '/api/hubs',
+      auth: 'Bearer agent token',
+      body: { school_name: 'school name', city: 'city', province: 'state or province', country: 'country', kind: 'school' },
+      description: 'Create a hub for the token\'s family. For a school send kind school with school_name, city, province, country. An existing exact school returns 409 with the existing hub — never create a duplicate.',
+    },
+    {
+      name: 'placements',
+      method: 'POST',
+      path: '/api/hubs/{hub_id}/placements',
+      auth: 'Bearer agent token',
+      body: { placements: [{ child_id: 'id from family read', grade: 'Grade 3', class: '3B' }] },
+      description: 'Save the family\'s per-child grade/class placements in a hub the family belongs to. Returns { ok, placements, needs_placement }.',
+    },
+    {
+      name: 'invite accept',
+      method: 'POST',
+      path: '/api/join/{token}/accept',
+      auth: 'Bearer agent token',
+      description: 'Redeem an invite token from a /join/{token} link: joins the token\'s family to that hub. Returns { ok, hub }.',
+    },
+    {
+      name: 'hub read',
+      method: 'GET',
+      path: '/api/hubs/{hub_id}',
+      auth: 'Bearer agent token',
+      description: 'Read one hub the family belongs to: hub, materials, facts, placements, and needs_placement. Members only — another family\'s hub returns 403.',
+    },
+    {
+      name: 'add material',
+      method: 'POST',
+      path: '/api/hubs/{hub_id}/materials',
+      auth: 'Bearer agent token',
+      body: { kind: 'paste', title: 'notice title', text: 'newsletter or notice text' },
+      description: 'Add material to a hub the family belongs to and extract its facts. For pasted text send kind paste with title and text. Returns { ok, material, facts_added }.',
+    },
+  ],
+  recipe: AGENT_RECIPE,
+  find_or_create: AGENT_RECIPE,
+};
+
 function bearerRaw(req) {
   const header = String((req.headers && req.headers.authorization) || '');
   const m = /^Bearer\s+(.+)$/i.exec(header.trim());
@@ -1268,6 +1391,10 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 401, { error: AGENT_TOKEN_401 });
         return;
       }
+    }
+    if (req.method === 'GET' && url.pathname === '/api/agent') {
+      sendJson(res, 200, AGENT_MANIFEST);
+      return;
     }
     if (req.method === 'GET' && url.pathname === '/') {
       const html = fs.readFileSync(INDEX_PATH, 'utf8');
