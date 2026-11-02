@@ -60,6 +60,52 @@ const TEST_AUTH_ENABLED = process.env.PARENTLOOP_TEST_AUTH === '1';
 // grow the durable database file, which is written back whole on each save.
 const MAX_PDF_BYTES = 5 * 1024 * 1024;
 
+// A page with fewer non-whitespace characters than this carried almost no
+// readable text — in a school PDF that usually means a flyer or graphic
+// whose words live inside a picture, which pdf-parse cannot read.
+const PICTURE_RISK_PAGE_CHARS = 25;
+const PICTURE_RISK_AVG_CHARS_PER_PAGE = 80;
+const PICTURE_RISK_BYTES_PER_CHAR = 200;
+
+// Same rendering as pdf-parse's default pagerender, except each page's
+// text is also collected so sparse or picture-only pages can be detected.
+function collectingPagerender(pageTexts) {
+  return function renderPage(pageData) {
+    const renderOptions = {
+      normalizeWhitespace: false,
+      disableCombineTextItems: false,
+    };
+    return pageData.getTextContent(renderOptions).then(function (textContent) {
+      let lastY;
+      let text = '';
+      for (const item of textContent.items) {
+        if (lastY == item.transform[5] || !lastY) {
+          text += item.str;
+        } else {
+          text += '\n' + item.str;
+        }
+        lastY = item.transform[5];
+      }
+      pageTexts.push(text);
+      return text;
+    });
+  };
+}
+
+// True when a PDF's readable text looks sparse relative to the document
+// itself: a page with almost no text, very little text per page overall,
+// or a large file carrying very few characters (image-heavy / scanned).
+// The flag only ever adds a visible caution on the material; it never
+// changes extraction.
+function assessPdfPictureRisk(pageTexts, text, fileBytes) {
+  const perPage = (pageTexts || []).map((t) => String(t || '').replace(/\s/g, '').length);
+  const totalChars = String(text || '').replace(/\s/g, '').length;
+  if (perPage.length >= 2 && perPage.some((n) => n < PICTURE_RISK_PAGE_CHARS)) return true;
+  if (perPage.length >= 1 && totalChars / perPage.length < PICTURE_RISK_AVG_CHARS_PER_PAGE) return true;
+  if (fileBytes > 0 && totalChars > 0 && totalChars < 2000 && fileBytes / totalChars > PICTURE_RISK_BYTES_PER_CHAR) return true;
+  return false;
+}
+
 const FACT_TYPES = ['deadline', 'event', 'requirement', 'change', 'announcement'];
 
 function nowIso() {
@@ -1960,12 +2006,16 @@ const server = http.createServer(async (req, res) => {
           }
           // Hand the parser a fresh Uint8Array: small Buffers can be slices
           // of a shared pool, which the bundled pdf.js misreads.
-          const parsed = await pdfParse(new Uint8Array(pdfBuffer));
+          const pageTexts = [];
+          const parsed = await pdfParse(new Uint8Array(pdfBuffer), {
+            pagerender: collectingPagerender(pageTexts),
+          });
           text = String(parsed.text || '').trim();
           if (!text) throw new Error('That PDF did not include readable text.');
           pdfFile = {
             data: pdfBuffer,
             name: String(body.fileName || '').replace(/["\r\n\\]/g, '').trim().slice(0, 200) || 'material.pdf',
+            pictureRisk: assessPdfPictureRisk(pageTexts, text, pdfBuffer.length),
           };
         } else {
           text = String(body.text || '').trim();
@@ -1978,7 +2028,7 @@ const server = http.createServer(async (req, res) => {
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
           ok: true,
-          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(pdfFile) },
+          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(pdfFile), may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk) },
           facts,
           facts_added: facts.length,
           count: facts.length,
