@@ -1747,6 +1747,9 @@
   async function loadFamilyPlacements() {
     const box = document.getElementById('placementsList');
     const profile = currentProfile;
+    // A fetch started before a family switch must never render over the new
+    // family: bail whenever the viewer changed mid-flight.
+    function switchedFamily() { return currentProfile !== profile; }
     if (!profile) {
       box.innerHTML = '<p class="facts-empty">Your family isn’t set up yet.</p>';
       return;
@@ -1762,9 +1765,10 @@
       const data = await res.json();
       hubs = data.hubs || [];
     } catch (e) {
-      box.innerHTML = '<p class="facts-empty">Couldn’t load your hubs.</p>';
+      if (!switchedFamily()) box.innerHTML = '<p class="facts-empty">Couldn’t load your hubs.</p>';
       return;
     }
+    if (switchedFamily()) return;
     const schoolLike = hubs.filter(function (h) { return h.kind !== 'team'; });
     const teamHubs = hubs.filter(function (h) { return h.kind === 'team'; });
     if (!schoolLike.length) {
@@ -1794,6 +1798,7 @@
         '<p style="margin-top:8px"><button class="small-btn placeSaveBtn" type="button">Save placements</button></p>' +
         '<p class="hint placeStatus"></p></div>');
     }
+    if (switchedFamily()) return;
     box.innerHTML = cards.join('') +
       teamHubs.map(function (h) {
         return '<p class="hint">• ' + esc(h.name) + ' — team hub, no placement needed.</p>';
@@ -2251,6 +2256,7 @@
       });
       demoViewing = false;
       renderFamily(data.profile);
+      await loadFamilyPlacements();
       const showDemo = await applySchoolAudience({ profile: data.profile });
       if (showDemo) await loadSchoolDemo();
       const pendingJoin = sessionStorage.getItem('pendingJoinToken');

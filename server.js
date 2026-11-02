@@ -893,6 +893,13 @@ function sessionUsesSecureCookie(req) {
   return Boolean(req.socket && req.socket.encrypted);
 }
 
+// The session captured when a request arrives can predate a family switch
+// from a concurrent request, so re-read the row and resolve the viewer late.
+function currentViewer(session) {
+  const fresh = session && session.id ? store.getSession(session.id) : null;
+  return store.getSessionViewer(fresh || session);
+}
+
 function ensureSession(req, res) {
   const cookies = parseCookies(req);
   let session = cookies[SESSION_COOKIE] ? store.getSession(cookies[SESSION_COOKIE]) : null;
@@ -1575,7 +1582,7 @@ const server = http.createServer(async (req, res) => {
         } catch {
           // No body is fine; the default simulated moment applies.
         }
-        const result = await runParentAgent(logs, simulatedLabel, store.getSessionViewer(session));
+        const result = await runParentAgent(logs, simulatedLabel, currentViewer(session));
         sendJson(res, 200, {
           ok: true,
           simulated_now: SIMULATED_NOW_LABEL,
@@ -1627,7 +1634,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/hubs') {
-      const actor = store.getSessionViewer(session);
+      const actor = currentViewer(session);
       sendJson(res, 200, { hubs: actor ? store.listHubsForProfile(actor.id) : [] });
       return;
     }
@@ -1771,7 +1778,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && hubMatch) {
-      const actor = store.getSessionViewer(session);
+      const actor = currentViewer(session);
       const hub = store.getHub(hubMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can see this hub.' }); return; }
@@ -1788,7 +1795,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && hubPlacementsMatch) {
-      const actor = store.getSessionViewer(session);
+      const actor = currentViewer(session);
       const hub = store.getHub(hubPlacementsMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can update placements.' }); return; }
@@ -1802,7 +1809,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'DELETE' && hubPlacementMatch) {
-      const actor = store.getSessionViewer(session);
+      const actor = currentViewer(session);
       const hub = store.getHub(hubPlacementMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || actor.is_demo) {
