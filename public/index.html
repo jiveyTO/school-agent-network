@@ -686,6 +686,12 @@
       <div class="card">
         <p id="joinText" style="margin-top:0">Loading your invitation…</p>
         <button class="small-btn" id="joinAcceptBtn" type="button">Join this hub</button>
+        <div id="joinChoice" hidden>
+          <p id="joinChoiceText" style="margin-top:0"></p>
+          <p><b>Already have an account?</b><br><a class="small-btn" id="joinSignInBtn" href="/api/auth/login">Sign in with Google</a></p>
+          <p><b>New here?</b><br><button class="small-btn" id="joinSetupBtn" type="button">Set up your family</button></p>
+          <p class="hint">Your invite is saved — after you sign in or finish setup, you’ll land in the hub automatically. No need to re-click the link.</p>
+        </div>
         <p class="hint" id="joinStatus"></p>
       </div>
     </section>
@@ -2157,6 +2163,38 @@
 
   let joinToken = '';
 
+  function stashPendingJoin(token) {
+    try {
+      if (token) sessionStorage.setItem('pendingJoinToken', token);
+    } catch (e) {}
+  }
+
+  // Completes a saved invite for the session's real family and lands on
+  // the hub. Used right after Join, and after the sign-in / family-setup
+  // detour finishes — the parent never taps Join a second time.
+  async function acceptPendingJoin(token) {
+    const accepted = await postJson('/api/join/' + encodeURIComponent(token) + '/accept', {});
+    try { sessionStorage.removeItem('pendingJoinToken'); } catch (e) {}
+    await loadHubs(accepted.hub && accepted.hub.id);
+    showMain();
+    await openHub(accepted.hub && accepted.hub.id);
+    return accepted;
+  }
+
+  // The account question: the demo profile (or a session with no family
+  // yet) can never join a hub directly, so offer the two ways forward.
+  // The invite token is already stashed; either path auto-completes it.
+  function showJoinChoice(info) {
+    showJoin();
+    document.getElementById('joinAcceptBtn').hidden = true;
+    document.getElementById('joinChoice').hidden = false;
+    const hubName = (info && (info.hub_name || info.hubName)) || 'this hub';
+    document.getElementById('joinChoiceText').textContent =
+      'To join ' + hubName + ', first choose how to keep your family — your invite is saved.';
+    document.getElementById('joinStatus').textContent = '';
+    window.scrollTo(0, 0);
+  }
+
   async function loadJoinView() {
     const m = window.location.pathname.match(/^\/join\/(.+)$/);
     if (!m) return false;
@@ -2167,7 +2205,23 @@
       if (!res.ok) throw new Error(data.error || 'That invite link is no longer available.');
       document.getElementById('joinText').textContent =
         data.inviter_first_name + ' invited you to ' + data.hub_name + ' · ' + data.member_count + ' families';
+      document.getElementById('joinAcceptBtn').hidden = false;
+      document.getElementById('joinChoice').hidden = true;
       showJoin();
+      try {
+        const pending = sessionStorage.getItem('pendingJoinToken');
+        const sRes = await fetch('/api/onboarding/status');
+        const s = await sRes.json();
+        const hasReal = Boolean(s && s.hasActiveProfile && !s.isDemo);
+        if (pending && !hasReal) {
+          // Mid-detour (or a reload while still demo): show the account
+          // question right away instead of another Join button.
+          stashPendingJoin(joinToken);
+          showJoinChoice(data);
+        } else if (pending && hasReal && pending === joinToken) {
+          await acceptPendingJoin(pending);
+        }
+      } catch (e) {}
     } catch (e) {
       document.getElementById('joinText').textContent = e.message;
       showJoin();
@@ -2843,41 +2897,49 @@
   });
 
   document.getElementById('joinAcceptBtn').addEventListener('click', async function () {
+    const btn = this;
     const statusEl = document.getElementById('joinStatus');
+    btn.disabled = true;
     try {
-      const accepted = await postJson('/api/join/' + encodeURIComponent(joinToken) + '/accept', {});
-      statusEl.textContent = 'You’re in! Here’s your hub.';
-      await loadHubs(accepted.hub && accepted.hub.id);
-      showMain();
-      await openHub(accepted.hub && accepted.hub.id);
+      await acceptPendingJoin(joinToken);
     } catch (e) {
-      if (e.message && e.message.indexOf('Set up your family') !== -1) {
-        sessionStorage.setItem('pendingJoinToken', joinToken);
-        statusEl.textContent = 'First, a quick family setup — then we’ll bring you back here.';
-        openOnboarding('new');
+      if (e && e.data && e.data.needsAccountChoice) {
+        // Demo viewer (or no family yet): ask the account question next.
+        // The invite carries through whichever path they pick.
+        stashPendingJoin(joinToken);
+        showJoinChoice(e.data);
       } else {
-        statusEl.textContent = e.message;
+        statusEl.textContent = (e && e.message) || 'Something went wrong. Please try again.';
       }
+    } finally {
+      btn.disabled = false;
     }
   });
 
+  document.getElementById('joinSetupBtn').addEventListener('click', function () {
+    stashPendingJoin(joinToken);
+    openOnboarding('new');
+  });
+
+  document.getElementById('joinSignInBtn').addEventListener('click', function () {
+    stashPendingJoin(joinToken);
+  });
+
   loadInitial().then(async function () {
-    const pending = sessionStorage.getItem('pendingJoinToken');
-    if (pending && !window.location.pathname.startsWith('/join/')) return;
-    if (pending && window.location.pathname.startsWith('/join/')) {
-      try {
-        const sRes = await fetch('/api/onboarding/status');
-        const s = await sRes.json();
-        if (s.hasActiveProfile) {
-          const accepted = await postJson('/api/join/' + encodeURIComponent(pending) + '/accept', {});
-          sessionStorage.removeItem('pendingJoinToken');
-          await loadHubs(accepted.hub && accepted.hub.id);
-          showMain();
-          await openHub(accepted.hub && accepted.hub.id);
-        }
-      } catch (e) {
-        // The parent can tap Join again.
+    // A saved invite completes automatically once the session holds a real
+    // family — this is how the sign-in detour lands in the hub with no
+    // second tap. Demo viewers keep browsing; the /join/ landing handles
+    // their account question itself.
+    try {
+      const pending = sessionStorage.getItem('pendingJoinToken');
+      if (!pending) return;
+      const sRes = await fetch('/api/onboarding/status');
+      const s = await sRes.json();
+      if (s && s.hasActiveProfile && !s.isDemo) {
+        await acceptPendingJoin(pending);
       }
+    } catch (e) {
+      // The parent can tap Join again.
     }
   });
 </script>
