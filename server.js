@@ -7,6 +7,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const store = require('./db');
+const { sendRecoveryEmail, isRecoveryMailConfigured } = require('./recovery-mail');
 const pdfParse = require('pdf-parse');
 const { mergeSameEventFacts, detectConflicts } = require('./event-dedupe');
 
@@ -1219,7 +1220,63 @@ const server = http.createServer(async (req, res) => {
         ...store.getSessionIdentity(session),
         configured: gmailConfigured(),
         setup_needed: !gmailConfigured(),
+        recovery_configured: isRecoveryMailConfigured(),
       });
+      return;
+    }
+    // Brief 041: recovery link request. The response is always the same
+    // generic confirmation, matched or not, so the endpoint can never be
+    // used to probe which emails have families. Rate limits are counted
+    // before any lookup, for matched and unmatched emails alike.
+    if (req.method === 'POST' && url.pathname === '/api/recovery/request') {
+      const body = await readJsonBody(req);
+      const email = String(body.email || body.parent_email || '').trim().toLowerCase();
+      const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+        (req.socket && req.socket.remoteAddress) || 'unknown';
+      const emailOk = store.hitRecoveryRateLimit('email:' + email, 5, 60 * 60 * 1000);
+      const ipOk = store.hitRecoveryRateLimit('ip:' + ip, 15, 60 * 60 * 1000);
+      if (!emailOk || !ipOk) {
+        sendJson(res, 429, { error: 'Too many recovery requests. Please wait a bit and try again.' });
+        return;
+      }
+      const profile = email ? store.findProfileByParentEmail(email) : null;
+      if (profile) {
+        const created = store.createRecoveryToken(profile.id);
+        if (created) {
+          const link = `${publicBaseUrl(req)}/recover/${created.token}`;
+          try {
+            const result = await sendRecoveryEmail({ to: email, link });
+            if (!result.sent) console.warn('recovery email not sent: sender not configured');
+          } catch (err) {
+            console.warn('recovery email send failed: ' + (err && err.message ? err.message : String(err)));
+          }
+        }
+      }
+      sendJson(res, 200, {
+        ok: true,
+        message: 'If that email has a family with us, a recovery link is on its way.',
+      });
+      return;
+    }
+    // Brief 041: clicking a recovery link burns the token and sets this
+    // browser's session to the profile — the same restore as Google
+    // sign-in (setSessionProfile), with no Google identity attached, so
+    // the brief 034 "sign in with Google to keep it that way" guidance
+    // applies as usual.
+    const recoverMatch = url.pathname.match(/^\/recover\/([^/]+)$/);
+    if (req.method === 'GET' && recoverMatch) {
+      const profile = store.consumeRecoveryToken(decodeURIComponent(recoverMatch[1]));
+      if (!profile) {
+        res.writeHead(302, {
+          Location: '/?recovery=error&message=' +
+            encodeURIComponent('That recovery link has expired or was already used. Please request a new one.'),
+        });
+        res.end();
+        return;
+      }
+      store.setSessionProfile(session.id, profile.id);
+      res.writeHead(302, { Location: '/?recovered=1' });
+      res.end();
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
