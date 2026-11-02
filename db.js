@@ -478,6 +478,17 @@ async function initDb() {
     session_id TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`);
+  run(`CREATE TABLE IF NOT EXISTS recovery_tokens (
+    token_hash TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`);
+  run(`CREATE TABLE IF NOT EXISTS recovery_rate_limits (
+    key TEXT PRIMARY KEY,
+    count INTEGER NOT NULL DEFAULT 0,
+    window_start TEXT NOT NULL
+  )`);
   run(`CREATE TABLE IF NOT EXISTS gmail_tokens (
     profile_id TEXT PRIMARY KEY,
     email TEXT,
@@ -1168,6 +1179,84 @@ function completeGoogleSignIn(sessionId, sub, email) {
   setSessionProfile(sessionId, null);
   setSessionIdentity(sessionId, sub, email);
   return { profile: null, attached: false, switched: false };
+}
+
+// Brief 041: email recovery. The raw token is returned to the caller once
+// and never stored or logged; only its SHA-256 hash is kept. Tokens are
+// single-use (consuming deletes the row, even when expired) and a new
+// request invalidates every earlier token for the same profile. When
+// several profiles share one email (allowed since brief 040), recovery
+// restores the most recently created profile with that email — profiles
+// carry no activity timestamp, so creation time is the available proxy
+// for "most recently active".
+const RECOVERY_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+function hashRecoveryToken(raw) {
+  return crypto.createHash('sha256').update(String(raw || '')).digest('hex');
+}
+
+function findProfileByParentEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) return null;
+  const row = one(
+    'SELECT * FROM profiles WHERE is_demo = 0 AND LOWER(TRIM(parent_email)) = ? ORDER BY created_at DESC LIMIT 1',
+    [normalized]
+  );
+  return rowToProfile(row);
+}
+
+function createRecoveryToken(profileId, ttlMs) {
+  if (!profileId) return null;
+  run('DELETE FROM recovery_tokens WHERE profile_id = ?', [String(profileId)]);
+  const raw = crypto.randomBytes(32).toString('base64url');
+  const now = Date.now();
+  const expiresAt = new Date(now + (ttlMs == null ? RECOVERY_TOKEN_TTL_MS : ttlMs)).toISOString();
+  run('INSERT INTO recovery_tokens (token_hash, profile_id, expires_at, created_at) VALUES (?, ?, ?, ?)', [
+    hashRecoveryToken(raw),
+    String(profileId),
+    expiresAt,
+    new Date(now).toISOString(),
+  ]);
+  persist();
+  return { token: raw, expires_at: expiresAt };
+}
+
+function consumeRecoveryToken(raw) {
+  if (!raw) return null;
+  const hash = hashRecoveryToken(raw);
+  const row = one('SELECT * FROM recovery_tokens WHERE token_hash = ?', [hash]);
+  if (!row) return null;
+  run('DELETE FROM recovery_tokens WHERE token_hash = ?', [hash]);
+  persist();
+  if (new Date(row.expires_at).getTime() <= Date.now()) return null;
+  return rowToProfile(getProfileRowById(row.profile_id));
+}
+
+function recoveryTokenMetaForProfile(profileId) {
+  if (!profileId) return null;
+  const row = one('SELECT token_hash, expires_at, created_at FROM recovery_tokens WHERE profile_id = ? LIMIT 1', [
+    String(profileId),
+  ]);
+  return row || null;
+}
+
+// Fixed-window counter in the store. Returns true when this hit is within
+// the limit. Callers key it per email and per IP.
+function hitRecoveryRateLimit(key, limit, windowMs) {
+  const now = Date.now();
+  const row = one('SELECT * FROM recovery_rate_limits WHERE key = ?', [String(key)]);
+  if (!row || now - new Date(row.window_start).getTime() >= windowMs) {
+    run(
+      'INSERT INTO recovery_rate_limits (key, count, window_start) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET count = 1, window_start = excluded.window_start',
+      [String(key), new Date(now).toISOString()]
+    );
+    persist();
+    return true;
+  }
+  const count = Number(row.count || 0) + 1;
+  run('UPDATE recovery_rate_limits SET count = ? WHERE key = ?', [count, String(key)]);
+  persist();
+  return count <= limit;
 }
 
 function signOutSession(sessionId) {
@@ -2184,6 +2273,12 @@ module.exports = {
   consumeLoginState,
   completeGoogleSignIn,
   signOutSession,
+  findProfileByParentEmail,
+  createRecoveryToken,
+  consumeRecoveryToken,
+  recoveryTokenMetaForProfile,
+  hitRecoveryRateLimit,
+  RECOVERY_TOKEN_TTL_MS,
   createProfile,
   createProfileForSession,
   updateProfileNames,

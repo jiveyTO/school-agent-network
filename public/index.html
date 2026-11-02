@@ -663,6 +663,7 @@
       <a class="auth-btn" id="signInBtn" href="/api/auth/login" hidden>Sign in with Google</a>
       <span id="signedInAs" hidden>Signed in as <span id="signedInEmail"></span></span>
       <button class="auth-btn secondary" id="signOutBtn" type="button" hidden>Sign out</button>
+      <button class="text-btn" id="recoveryLinkBtn" type="button" hidden>Lost access to your family? Email me a recovery link.</button>
     </div>
     <p class="auth-error" id="authError" hidden></p>
   </header>
@@ -715,9 +716,23 @@
             <p><b>New here?</b></p>
             <button class="small-btn" id="joinSetupBtn" type="button">Set up your family</button>
           </div>
+          <p><button class="text-btn" id="joinRecoveryLink" type="button" hidden>Lost access to your family? Email me a recovery link.</button></p>
           <p class="hint">Your invite is saved — after you sign in or finish setup, you’ll land in the hub automatically. No need to re-click the link.</p>
         </div>
         <p class="hint" id="joinStatus"></p>
+      </div>
+    </section>
+
+    <section id="recoveryView" aria-labelledby="recovery-h" hidden>
+      <h2 id="recovery-h">Get back into your family</h2>
+      <div class="card">
+        <p style="margin-top:0">Enter the email you used when you set up your family, and we’ll send you a link to get back in. The link works once and lasts 60 minutes.</p>
+        <label class="field">Your email
+          <input type="email" id="recoveryEmail" placeholder="e.g. you@example.com" autocomplete="email">
+        </label>
+        <button class="small-btn" id="recoverySubmitBtn" type="button">Email me a recovery link</button>
+        <p class="hint" id="recoveryStatus"></p>
+        <p><button class="text-btn" id="recoveryBackBtn" type="button">Back</button></p>
       </div>
     </section>
 
@@ -1765,8 +1780,20 @@
       onboardingMode === 'edit' ? 'Save changes' : 'Save my family and continue';
     onboardingView.hidden = false;
     document.getElementById('joinView').hidden = true;
+    document.getElementById('recoveryView').hidden = true;
     tabBar.hidden = true;
     viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
+    paintDemoBar();
+    window.scrollTo(0, 0);
+  }
+
+  function showRecovery() {
+    onboardingView.hidden = true;
+    document.getElementById('joinView').hidden = true;
+    tabBar.hidden = true;
+    viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
+    document.getElementById('recoveryView').hidden = false;
+    document.getElementById('recoveryStatus').textContent = '';
     paintDemoBar();
     window.scrollTo(0, 0);
   }
@@ -1775,6 +1802,7 @@
     joinFlowActive = false;
     onboardingView.hidden = true;
     document.getElementById('joinView').hidden = true;
+    document.getElementById('recoveryView').hidden = true;
     tabBar.hidden = false;
     paintDemoBar();
     showView('hubs');
@@ -1783,6 +1811,7 @@
   function showJoin() {
     joinFlowActive = true;
     onboardingView.hidden = true;
+    document.getElementById('recoveryView').hidden = true;
     tabBar.hidden = true;
     viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
     document.getElementById('joinView').hidden = false;
@@ -2375,6 +2404,16 @@
       const aRes = await fetch('/api/auth/status');
       const auth = await aRes.json();
       currentAuth = { signed_in: Boolean(auth && auth.signed_in), email: (auth && auth.email) || '' };
+      const recoveryOk = Boolean(auth && auth.recovery_configured);
+      document.getElementById('recoveryLinkBtn').hidden = !recoveryOk;
+      document.getElementById('joinRecoveryLink').hidden = !recoveryOk;
+      if (params.get('recovered') === '1') {
+        authError.textContent = 'Welcome back — you’re in your family. Sign in with Google to keep it that way.';
+        authError.hidden = false;
+      } else if (params.get('recovery') === 'error') {
+        authError.textContent = params.get('message') || 'That recovery link has expired. Please request a new one.';
+        authError.hidden = false;
+      }
     } catch (e) {
       currentAuth = { signed_in: false, email: '' };
     }
@@ -2384,6 +2423,28 @@
   async function loadInitial() {
     let status = { hasActiveProfile: false, isDemo: false, profile: null };
     await loadAuth();
+    document.getElementById('recoveryLinkBtn').addEventListener('click', showRecovery);
+    document.getElementById('joinRecoveryLink').addEventListener('click', showRecovery);
+    document.getElementById('recoveryBackBtn').addEventListener('click', function () { window.location.href = '/'; });
+    document.getElementById('recoverySubmitBtn').addEventListener('click', async function () {
+      const status = document.getElementById('recoveryStatus');
+      const email = document.getElementById('recoveryEmail').value.trim();
+      try {
+        const res = await fetch('/api/recovery/request', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email }),
+        });
+        const data = await res.json();
+        if (res.status === 429) {
+          status.textContent = data.error || 'Too many recovery requests. Please wait a bit and try again.';
+          return;
+        }
+        status.textContent = data.message || 'If that email has a family with us, a recovery link is on its way.';
+      } catch (e) {
+        status.textContent = 'If that email has a family with us, a recovery link is on its way.';
+      }
+    });
     document.getElementById('signOutBtn').addEventListener('click', async function () {
       try {
         await fetch('/api/auth/logout', { method: 'POST' });
