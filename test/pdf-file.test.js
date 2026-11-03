@@ -40,6 +40,47 @@ function minimalPdf(text) {
   return Buffer.from(out, 'latin1');
 }
 
+// A valid PDF padded past a target size with an unreferenced stream
+// object (object 6), so pdf-parse still reads page 1's text. Used for the
+// brief 051 size-cap tests: real school PDFs are multi-MB scans.
+function largePdf(text, targetBytes) {
+  function build(padBytes) {
+    const stream =
+      'BT /F1 18 Tf 72 720 Td (' +
+      String(text).replace(/([()\\])/g, '\\$1') +
+      ') Tj ET';
+    const objs = [];
+    objs[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+    objs[2] = '<< /Type /Pages /Kids [3 0 R] /Count 1 >>';
+    objs[3] =
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R ' +
+      '/Resources << /Font << /F1 5 0 R >> >> >>';
+    objs[4] = '<< /Length ' + Buffer.byteLength(stream) + ' >>\nstream\n' + stream + '\nendstream';
+    objs[5] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
+    objs[6] = '<< /Length ' + padBytes + ' >>\nstream\n' + 'x'.repeat(padBytes) + '\nendstream';
+    let out = '%PDF-1.4\n';
+    const offsets = [0];
+    for (let i = 1; i <= 6; i++) {
+      offsets[i] = Buffer.byteLength(out);
+      out += i + ' 0 obj\n' + objs[i] + '\nendobj\n';
+    }
+    const xref = Buffer.byteLength(out);
+    out += 'xref\n0 7\n0000000000 65535 f \n';
+    for (let i = 1; i <= 6; i++) {
+      out += String(offsets[i]).padStart(10, '0') + ' 00000 n \n';
+    }
+    out += 'trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF';
+    return Buffer.from(out, 'latin1');
+  }
+  let pad = targetBytes;
+  let buf = build(pad);
+  for (let i = 0; i < 3 && buf.length !== targetBytes; i++) {
+    pad += targetBytes - buf.length;
+    buf = build(pad);
+  }
+  return buf;
+}
+
 function makeClient() {
   let cookie = '';
   function capture(res) {
@@ -215,10 +256,46 @@ test('original PDF: retained on upload, served to hub members only', async (t) =
     assert.equal(missingHub.res.status, 404);
   });
 
+  await t.test('a PDF over 5 MB and under 10 MB uploads, is retained, and serves back byte-identical to a member', { timeout: 180000 }, async () => {
+    // Repeat the notice so the text layer is substantial (as in a real
+    // multi-page school PDF) while padding carries the file past 5 MB.
+    const bigPdfBytes = largePdf(PICNIC.repeat(20), 6 * 1024 * 1024);
+    assert.ok(bigPdfBytes.length > 5 * 1024 * 1024, 'fixture is over the old 5 MB cap');
+    assert.ok(bigPdfBytes.length < 10 * 1024 * 1024, 'fixture is under the new 10 MB cap');
+    const up = await founder.post(`/api/hubs/${hubId}/materials`, {
+      kind: 'pdf',
+      fileName: 'big-notice.pdf',
+      fileBase64: bigPdfBytes.toString('base64'),
+    });
+    assert.equal(up.res.status, 200, up.text.slice(0, 300));
+    const bigMaterialId = up.data.material.id;
+    assert.ok(bigMaterialId);
+
+    const detail = await founder.get(`/api/hubs/${hubId}`);
+    const mat = detail.data.materials.find((m) => m.id === bigMaterialId);
+    assert.ok(mat, 'large PDF material is listed');
+    assert.equal(mat.has_file, true, 'large PDF material reports its retained file');
+
+    const invite = await founder.post(`/api/hubs/${hubId}/invites`, {});
+    assert.equal(invite.res.status, 200);
+    const bigMember = makeClient();
+    await bigMember.post('/api/profile', {
+      parent_name: 'Pdf Big Member',
+      parent_email: 'pdf.big.member@example.com',
+      children: [{ name: 'Big Member Kid' }],
+    });
+    const accepted = await bigMember.post(`/api/join/${invite.data.token}/accept`, {});
+    assert.equal(accepted.res.status, 200);
+    const memberFile = await bigMember.getFile(`/api/hubs/${hubId}/materials/${bigMaterialId}/file`);
+    assert.equal(memberFile.res.status, 200, 'hub member can fetch the large PDF');
+    assert.match(memberFile.res.headers.get('content-type') || '', /application\/pdf/);
+    assert.deepEqual(memberFile.buf, bigPdfBytes, 'served bytes are the uploaded large PDF, byte for byte');
+  });
+
   await t.test('an over-limit PDF is rejected and saves nothing', { timeout: 180000 }, async () => {
     const before = await founder.get(`/api/hubs/${hubId}`);
     const countBefore = before.data.materials.length;
-    const big = Buffer.alloc(5 * 1024 * 1024 + 1, 0x25);
+    const big = largePdf(PICNIC, 10 * 1024 * 1024 + 1024);
     const up = await founder.post(`/api/hubs/${hubId}/materials`, {
       kind: 'pdf',
       fileName: 'too-big.pdf',
@@ -226,6 +303,7 @@ test('original PDF: retained on upload, served to hub members only', async (t) =
     });
     assert.notEqual(up.res.status, 200);
     assert.match(up.text, /too large/i);
+    assert.match(up.text, /limit is 10 MB/);
     const after = await founder.get(`/api/hubs/${hubId}`);
     assert.equal(after.data.materials.length, countBefore, 'oversize upload created no material');
   });

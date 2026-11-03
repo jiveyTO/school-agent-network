@@ -55,13 +55,18 @@ const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 const LOGIN_SCOPES = 'openid email profile';
 const TEST_AUTH_ENABLED = process.env.PARENTLOOP_TEST_AUTH === '1';
-// Largest PDF whose original bytes are retained with its material. The JSON
-// body limit (12 MB in readJsonBody) carries base64, so 5 MB of PDF (~6.7 MB
-// encoded) fits comfortably; the cap also bounds how much one material can
-// grow the durable database file, which is written back whole on each save.
-const MAX_PDF_BYTES = 5 * 1024 * 1024;
-// Brief 044: pasted/picked images follow the same size convention as PDFs.
-const MAX_IMAGE_BYTES = MAX_PDF_BYTES;
+// Largest PDF whose original bytes are retained with its material. The cap
+// also bounds how much one material can grow the durable database file,
+// which is written back whole on each save. Brief 051: raised 5 MB -> 10 MB
+// for real-world scanned school PDFs.
+const MAX_PDF_BYTES = 10 * 1024 * 1024;
+// Brief 044: pasted/picked images keep their own 5 MB cap (brief 051 is
+// PDFs only), so this no longer aliases MAX_PDF_BYTES.
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+// Uploads travel base64 inside the JSON body: a 10 MB PDF is ~13.3 MB
+// encoded. Only the hub-materials route gets this larger body limit; every
+// other route keeps the default in readJsonBody.
+const MAX_MATERIAL_JSON_BYTES = 16 * 1024 * 1024;
 
 // The image type is decided by the bytes themselves, never by a claimed
 // name or MIME type: PNG, JPEG, and WebP are the accepted formats.
@@ -1398,13 +1403,13 @@ function ensureSession(req, res) {
   return session;
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes = 12 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > 12 * 1024 * 1024) {
+      if (size > maxBytes) {
         reject(new Error('Request is too large.'));
         req.destroy();
         return;
@@ -2544,7 +2549,7 @@ const server = http.createServer(async (req, res) => {
       const hub = store.getHub(hubMaterialsMatch[1]);
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can add material to this hub.' }); return; }
-      const body = await readJsonBody(req);
+      const body = await readJsonBody(req, MAX_MATERIAL_JSON_BYTES);
       const logs = [];
       let material = null;
       try {
@@ -2590,7 +2595,7 @@ const server = http.createServer(async (req, res) => {
           if (!body.fileBase64) throw new Error('Choose a PDF file first.');
           const pdfBuffer = Buffer.from(String(body.fileBase64), 'base64');
           if (pdfBuffer.length > MAX_PDF_BYTES) {
-            throw new Error('That PDF is too large — the limit is 5 MB. Choose a smaller file.');
+            throw new Error('That PDF is too large — the limit is 10 MB. Choose a smaller file.');
           }
           // Hand the parser a fresh Uint8Array: small Buffers can be slices
           // of a shared pool, which the bundled pdf.js misreads.
