@@ -79,6 +79,11 @@
   .hub-header-side { border-top: 1px solid var(--line); padding-top: 16px; }
   .hub-header-side .hub-side-hint { margin: 0 0 6px; }
   .hub-header-side .source-row { overflow-wrap: anywhere; }
+  /* Brief 057: the content row below the header. Section labels match the
+     header's, and Add material sits behind the same hairline as Sources. */
+  .hub-grid .hub-label { margin: 0 0 8px; }
+  .hub-grid .toggle-btn { margin: 0 0 10px; }
+  .hub-grid-side { border-top: 1px solid var(--line); padding-top: 16px; }
   main > * { min-width: 0; }
   pre, p, h1, h2, h3 { overflow-wrap: break-word; }
   /* Long unbroken strings (URLs, source lines) must wrap inside the
@@ -502,6 +507,8 @@
     .hub-grid { grid-template-columns: 3fr 2fr; align-items: start; }
     .hub-header { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); column-gap: 16px; align-items: start; }
     .hub-header-side { border-top: 0; padding-top: 4px; border-left: 1px solid var(--line); padding-left: 20px; }
+    .hub-grid-side { border-top: 0; padding-top: 0; border-left: 1px solid var(--line); padding-left: 20px; }
+    .hub-header { margin-bottom: 24px; }
   }
   @media (max-width: 899px) {
     #tabBar { padding-left: 16px; padding-right: 16px; }
@@ -942,13 +949,13 @@
           <p class="hint" id="placementStatus"></p>
         </div>
         <div class="hub-grid">
-          <div>
-            <p><b>What is in this hub</b></p>
+          <div class="hub-grid-main">
+            <p class="hub-label">What is in this hub</p>
             <button class="toggle-btn" id="hubGroupsToggle" type="button" hidden>Expand all</button>
             <div id="hubFacts"><p class="facts-empty">Nothing added yet.</p></div>
           </div>
-          <div>
-            <p><b>Add material</b></p>
+          <div class="hub-grid-side">
+            <p class="hub-label">Add material</p>
             <div class="add-material">
             <label class="field">Paste a newsletter or notice
               <textarea id="materialText" placeholder="Paste the text here — or paste a screenshot…"></textarea>

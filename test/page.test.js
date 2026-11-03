@@ -353,6 +353,21 @@ test('hub header uses two columns on desktop and one sensible column on phones',
     'placement prompt sits under the header, above the hub content');
 });
 
+test('hub content row lines up with the header: labelled sections, Add material behind the sources hairline', () => {
+  // Brief 057: no stray paragraph margins between the families list and
+  // "What is in this hub", and Add material indented like Sources.
+  const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
+  assert.ok(hubMarkup.includes('<div class="hub-grid-main">\n            <p class="hub-label">What is in this hub</p>'),
+    'materials list is headed by a hub label');
+  assert.ok(hubMarkup.includes('<div class="hub-grid-side">\n            <p class="hub-label">Add material</p>'),
+    'Add material is headed by a hub label in the side column');
+  assert.ok(PAGE.includes('.hub-grid .hub-label { margin: 0 0 8px; }'), 'content labels carry no top margin');
+  assert.ok(PAGE.includes('.hub-grid-side { border-top: 1px solid var(--line); padding-top: 16px; }'),
+    'phones: Add material sits under a hairline like Sources');
+  assert.ok(PAGE.includes('.hub-grid-side { border-top: 0; padding-top: 0; border-left: 1px solid var(--line); padding-left: 20px; }'),
+    'desktop: Add material sits behind the same left hairline and gutter as Sources');
+});
+
 test('hub page no longer renders the "What the school announced" or Activity sections', () => {
   // Brief 054: both sat permanently empty at the bottom of every hub page.
   const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
