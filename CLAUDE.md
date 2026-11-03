@@ -44,9 +44,23 @@ for v in SCHOOL_AGENT_API_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET APP_DB_GCS_B
   val=${PAIRS#*"$v="}; val=${val%%,*}
   if [ -z "$val" ]; then echo "empty $v in PAIRS"; exit 1; fi
 done
+# Unsaved-writes check: refuse while the live instance may hold writes only
+# in memory, i.e. the newest durable upload failure or write-back refusal is
+# newer than the stored object's last update. Replacing that instance now
+# would drop them.
+B=${PAIRS#*APP_DB_GCS_BUCKET=}; B=${B%%,*}
+O=${PAIRS#*APP_DB_GCS_OBJECT=}; O=${O%%,*}
+OBJ_TIME=$(gcloud storage objects describe "gs://$B/$O" --format="value(update_time)" 2>/dev/null)
+if [ -z "$OBJ_TIME" ]; then echo "cannot read stored object time"; exit 1; fi
+LAST_FAIL=$(gcloud logging read 'resource.type=cloud_run_revision AND resource.labels.service_name=parentloop AND (textPayload:"durable store upload failed" OR textPayload:"WRITE-BACK" OR textPayload:"write-back disabled")' \
+  --project=school-agent-network --limit=1 --format="value(timestamp)" 2>/dev/null)
+if [ -n "$LAST_FAIL" ] && [ "$(date -u -d "$LAST_FAIL" +%s)" -gt "$(date -u -d "$OBJ_TIME" +%s)" ]; then
+  echo "live instance has unsaved writes (durable failure $LAST_FAIL after stored object $OBJ_TIME); not deploying"
+  exit 1
+fi
 gcloud run deploy parentloop --source . --project=school-agent-network \
   --region=northamerica-northeast2 --allow-unauthenticated --max-instances=1 \
-  --port=3000 --memory=2Gi --timeout=600 \
+  --port=3000 --memory=2Gi --timeout=600 --no-cpu-throttling \
   --set-env-vars "${PAIRS}PUBLIC_BASE_URL=https://parentloop-964717527488.northamerica-northeast2.run.app"
 ```
 
@@ -71,6 +85,14 @@ Rules (learned from brief 016, which broke live Google sign-in):
   one (brief 051e: `NAME=` with nothing after it must never deploy) —
   never remove either.
 
+- `--no-cpu-throttling` stays (owner-approved, 2026-11-03). With Cloud Run's
+  default throttling the instance gets CPU only while a request is in
+  flight, so the debounced durable upload, which runs after the response,
+  timed out on the 12.7 MB database. Revision 00071 held writes only in
+  memory for 17 minutes, and earlier revisions lost writes. The unsaved-writes
+  check above stays too: if it refuses, wait for a successful upload (the
+  object's update time moves past the failure) or report. Never bypass it.
+
 Read secrets only from the local `.env` inside the deploy container; never
 print them. Remove `/tmp/parentloop-deploy` afterwards.
 
@@ -84,7 +106,10 @@ print them. Remove `/tmp/parentloop-deploy` afterwards.
    1 set aside, PRIVACY CHECK line present.
 4. Durability: boot logs show the durable store restore line (e.g.
    "database restored from hosted storage") and the ENGAGED line, and a
-   fresh Google sign-in restores the account's family (not demo).
+   fresh Google sign-in restores the account's family (not demo). The new
+   revision logs no "durable store upload failed" or write-back refusal
+   during the gate. Unless the deploy carries a data migration, boot also
+   logs "restored database unchanged at boot; no upload".
 5. Data conservation (briefs 032/036): the deploy must not lose or
    reseed the hosted database. Before deploying, copy the live object
    to scratch WITHOUT writing anything back (`gcloud storage cp
