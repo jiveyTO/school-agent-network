@@ -2478,6 +2478,7 @@ const server = http.createServer(async (req, res) => {
     const hubPlacementMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/placements\/([^/]+)$/);
     const hubMaterialsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials$/);
     const hubMaterialMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)$/);
+    const hubMemberMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/members\/([^/]+)$/);
     const hubMaterialTextMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)\/text$/);
     const hubMaterialFileMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/materials\/([^/]+)\/file$/);
     const hubInvitesMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/invites$/);
@@ -2669,7 +2670,18 @@ const server = http.createServer(async (req, res) => {
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can see this hub.' }); return; }
       const placement = store.placementStatus(hub.id, actor.id);
-      const members = store.listHubMembers(hub.id);
+      const listedMembers = store.listHubMembers(hub.id);
+      // Brief 055: a founder/admin's view of the roster also carries, per
+      // removable member, an opaque member_key for the remove action. Plain
+      // members (and agents) get the roster exactly as before.
+      const viewerIsAdmin = !bearerAuth && store.getMemberRole(hub.id, actor.id) === 'admin';
+      const members = viewerIsAdmin
+        ? listedMembers.map((m, i) => {
+            const profileId = listedMembers._profileIds[i];
+            const removable = !hub.is_demo && !m.is_founder && profileId !== actor.id && profileId !== hub.created_by;
+            return removable ? { ...m, can_remove: true, member_key: store.hubMemberKey(hub.id, profileId) } : { ...m, can_remove: false };
+          })
+        : listedMembers;
       const contacts = store.listHubContacts(hub.id);
       const contactNames = contacts.map((c) => c.parent_name);
       const contactLine = contactNames.join(', ');
@@ -2742,6 +2754,26 @@ const server = http.createServer(async (req, res) => {
       if (!isUploader && !isAdmin) { sendJson(res, 403, { error: 'Only the parent who added this, or a hub admin, can remove it.' }); return; }
       store.deleteMaterial(material.id);
       sendJson(res, 200, { ok: true });
+      return;
+    }
+    // Brief 055: a hub's founder or admin removes a member family. Session
+    // auth only (an agent token never removes families). The target is the
+    // opaque member_key from the admin roster, never a profile id.
+    if (req.method === 'DELETE' && hubMemberMatch) {
+      const actor = store.getSessionViewer(session);
+      const hub = store.getHub(hubMemberMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || store.getMemberRole(hub.id, actor.id) !== 'admin') {
+        sendJson(res, 403, { error: 'Only the hub’s founder or an admin can remove a family.' });
+        return;
+      }
+      if (hub.is_demo) { sendJson(res, 403, { error: 'Demo families can’t be removed — the demo stays as it is.' }); return; }
+      const target = store.findHubMemberByKey(hub.id, decodeURIComponent(hubMemberMatch[2]));
+      if (!target) { sendJson(res, 404, { error: 'That family is not in this hub.' }); return; }
+      if (target.profile_id === actor.id) { sendJson(res, 400, { error: 'You can’t remove yourself from a hub.' }); return; }
+      if (target.is_founder) { sendJson(res, 403, { error: 'The hub’s founder can’t be removed.' }); return; }
+      store.removeHubMember(hub.id, target.profile_id);
+      sendJson(res, 200, { ok: true, member_count: store.listHubMembers(hub.id).length });
       return;
     }
     if (req.method === 'GET' && hubMaterialTextMatch) {

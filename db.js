@@ -1814,6 +1814,43 @@ function removeMember(hubId, profileId) {
   return removed;
 }
 
+// Brief 055: a hub member is addressed by an opaque per-hub key, never by
+// profile id (profile ids must not reach other families' browsers). One-way:
+// the key cannot be turned back into the profile id.
+function hubMemberKey(hubId, profileId) {
+  return crypto.createHash('sha256').update('hub-member:' + hubId + ':' + profileId).digest('hex').slice(0, 32);
+}
+
+// The membership behind a member key, or null when the key names no member
+// of this hub.
+function findHubMemberByKey(hubId, key) {
+  if (!hubId || !key) return null;
+  const hub = getHubRow(hubId);
+  if (!hub) return null;
+  const rows = all('SELECT profile_id, role, joined_via FROM hub_members WHERE hub_id = ?', [hubId]);
+  const row = rows.find((r) => hubMemberKey(hubId, r.profile_id) === String(key));
+  if (!row) return null;
+  return {
+    profile_id: row.profile_id,
+    is_founder: (row.role === 'admin' && row.joined_via === 'founder') || Boolean(hub.created_by && hub.created_by === row.profile_id),
+  };
+}
+
+// Brief 055: a founder/admin takes a family out of a hub. The membership
+// and that family's placements in THIS hub go; the profile, its children,
+// its other hubs, and the materials it added here all stay.
+function removeHubMember(hubId, profileId) {
+  if (!hubId || !profileId || !db) return false;
+  run(
+    'DELETE FROM placements WHERE hub_id = ? AND child_id IN (SELECT id FROM children WHERE profile_id = ?)',
+    [hubId, profileId]
+  );
+  run('DELETE FROM hub_members WHERE hub_id = ? AND profile_id = ?', [hubId, profileId]);
+  const removed = db.getRowsModified() > 0;
+  persist();
+  return removed;
+}
+
 // Repairs membership rows that predate the addMember guard (e.g. a demo
 // invite accept that joined the demo profile to a real hub). Runs on every
 // boot so a stale durable copy self-heals; returns the removed rows for
@@ -1880,11 +1917,14 @@ function listHubMembers(hubId) {
       _rank: isFounder ? 0 : isAdmin ? 1 : 2,
       _isCreator: hub.created_by && r.profile_id === hub.created_by ? 1 : 0,
       _joined: r.joined_at || '',
+      _profileId: r.profile_id,
     };
   });
   members.sort((a, b) => a._rank - b._rank || String(a._joined).localeCompare(String(b._joined)) || a.parent_name.localeCompare(b.parent_name));
   const creatorNames = new Set(rows.filter((r) => hub.created_by && r.profile_id === hub.created_by).map((r) => r.parent_name || ''));
   const pub = members.map(publicMember);
+  // Server-side only (never serialized: JSON drops array properties).
+  pub._profileIds = members.map((m) => m._profileId);
   pub._creatorNames = creatorNames;
   pub._adminNames = new Set(members.filter((m) => m.is_admin).map((m) => m.parent_name));
   return pub;
@@ -2482,6 +2522,9 @@ module.exports = {
   findSchoolHubConflict,
   addMember,
   removeMember,
+  hubMemberKey,
+  findHubMemberByKey,
+  removeHubMember,
   purgeDemoMemberships,
   getSessionOwnProfile,
   isMember,
