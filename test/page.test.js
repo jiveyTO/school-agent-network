@@ -305,6 +305,30 @@ test('add material is one box: paste plus optional PDF, no title or audience fie
   assert.ok(pdfAt !== -1 && pasteAt !== -1, 'both paste and PDF upload paths remain');
 });
 
+test('add material panel cannot be stretched by a long pasted-image filename', () => {
+  // Brief 052: a long unbroken filename in the flex chip row must truncate,
+  // never force the panel (or its textarea / file row / Add it button) wider
+  // than its hub-grid column, at desktop or mobile widths.
+  assert.ok(PAGE.includes('.add-material { display: grid; grid-template-columns: minmax(0, 1fr);'),
+    'add-material grid column can shrink below content size');
+  assert.ok(PAGE.includes('.add-material > * { min-width: 0; max-width: 100%; }'),
+    'every add-material child is capped at the panel width');
+  assert.ok(PAGE.includes('min-width: 0; max-width: 100%; width: 100%; overflow: hidden;'),
+    'paste-image chip is capped at the container width and can shrink');
+  assert.ok(PAGE.includes('.paste-image-meta { flex: 1; min-width: 0; max-width: 100%; overflow: hidden;'),
+    'chip meta flex item can shrink so the filename can truncate');
+  assert.ok(PAGE.includes('.paste-image-meta b { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }'),
+    'chip filename truncates with an ellipsis instead of forcing width');
+  assert.ok(PAGE.includes('width: 48px; height: 48px; max-width: 100%;'),
+    'preview thumbnail stays small and capped at the container width');
+  assert.ok(PAGE.includes('.paste-image-remove'), 'chip keeps its remove button');
+  // The sibling file row already truncates the same way and stays capped.
+  assert.ok(PAGE.includes('.pdf-file-name'), 'pdf picker filename element present');
+  const pdfName = PAGE.slice(PAGE.indexOf('.pdf-file-name {'), PAGE.indexOf('.pdf-file-name.has-file'));
+  assert.ok(pdfName.includes('min-width: 0') && pdfName.includes('text-overflow: ellipsis'),
+    'pdf picker filename truncates instead of forcing width');
+});
+
 test('announced facts default to 3 with an expand/collapse toggle, under the hub detail', () => {
   const hubDetailAt = PAGE.indexOf('id="hub-view-h"');
   const factsAt = PAGE.indexOf('id="facts-h"');
