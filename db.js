@@ -2133,6 +2133,12 @@ function updateMaterialStatus(id, status) {
   persist();
 }
 
+// Brief 053: a file material's title read from its content.
+function updateMaterialTitle(id, title) {
+  run('UPDATE materials SET title = ? WHERE id = ?', [String(title || ''), id]);
+  persist();
+}
+
 function listMaterials(hubId, profileId) {
   const rows = all("SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, (file_data IS NOT NULL) AS has_file FROM materials WHERE hub_id = ? ORDER BY created_at ASC", [hubId]).map(scopedMaterialRow);
   if (!profileId) return rows;
@@ -2499,6 +2505,7 @@ module.exports = {
   getMaterialFile,
   findMaterial,
   updateMaterialStatus,
+  updateMaterialTitle,
   updateMaterialScope,
   listMaterials,
   insertFacts,

@@ -470,6 +470,68 @@ function extractJsonArray(text) {
   }
 }
 
+// Brief 053: a titled extraction reply is {"material_title", "facts"}; a
+// plain array (older prompt, or a model that ignored the object form)
+// still parses with no title. A truncated object keeps its complete facts
+// (via extractJsonArray from the "facts" key on) and any readable title.
+function parseExtractionReply(content) {
+  const t = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
+  const firstObj = t.indexOf('{');
+  const firstArr = t.indexOf('[');
+  if (firstObj !== -1 && (firstArr === -1 || firstObj < firstArr)) {
+    const end = t.lastIndexOf('}');
+    try {
+      const parsed = JSON.parse(t.slice(firstObj, end + 1));
+      if (parsed && Array.isArray(parsed.facts)) {
+        return { facts: parsed.facts, title: typeof parsed.material_title === 'string' ? parsed.material_title : '' };
+      }
+    } catch {
+      // truncated or malformed: salvage below
+    }
+    const titleMatch = t.match(/"material_title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    let title = '';
+    if (titleMatch) {
+      try { title = JSON.parse('"' + titleMatch[1] + '"'); } catch { title = ''; }
+    }
+    const factsAt = t.indexOf('"facts"');
+    return { facts: extractJsonArray(factsAt === -1 ? t : t.slice(factsAt)), title };
+  }
+  return { facts: extractJsonArray(t), title: '' };
+}
+
+const FILE_NAME_TITLE = /\.(png|jpe?g|webp|gif|heic|pdf|docx?)\b|^(cleanshot|screen ?shot|screenshot|img[_-]|pxl[_-]|dsc[_-])|\b\d{4}-\d{2}-\d{2} at \d/i;
+
+// A model-proposed material title, or '' when it is unusable: empty, a
+// file name or file timestamp, or (for text sources) carrying a number the
+// source text does not contain. Long subject lines are cut on a word.
+function cleanMaterialTitle(raw, sourceText, fileName) {
+  let title = String(raw || '').replace(/\s+/g, ' ').trim().replace(/^["'“‘]+|["'”’]+$/g, '').replace(/\.$/, '').trim();
+  if (!title) return '';
+  if (FILE_NAME_TITLE.test(title)) return '';
+  const stem = String(fileName || '').replace(/\.[a-z0-9]+$/i, '').trim().toLowerCase();
+  if (stem && (title.toLowerCase() === stem || (/\d/.test(stem) && stem.length >= 6 && title.toLowerCase().includes(stem)))) return '';
+  const source = String(sourceText || '');
+  if (source) {
+    const numbers = title.match(/\d+/g) || [];
+    if (numbers.some((n) => !source.includes(n))) return '';
+  }
+  if (title.length > 90) {
+    const cut = title.slice(0, 90);
+    title = (cut.lastIndexOf(' ') > 40 ? cut.slice(0, cut.lastIndexOf(' ')) : cut).replace(/[\s,;:—-]+$/, '') + '…';
+  }
+  return title;
+}
+
+// Neutral label for a file material whose content gave no usable title:
+// the date ADDED in the hub list's style ("Added Mon, Nov 2" reads the
+// same UTC date), e.g. "Photo — Nov 2" / "Document — Nov 2". Never the
+// file name.
+function neutralFileMaterialTitle(kind, at) {
+  const when = at instanceof Date && !isNaN(at.getTime()) ? at : new Date();
+  const day = when.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  return `${kind === 'image' ? 'Photo' : 'Document'} — ${day}`;
+}
+
 function metaChoiceOf(data) {
   return (data && data.choices && data.choices[0]) || null;
 }
@@ -554,8 +616,30 @@ async function postMetaChat(system, user, maxTokens, timeoutMs) {
   );
 }
 
-async function callMetaApi(newsletterText) {
-  const { system, user } = buildPrompt(newsletterText);
+// Brief 053: materials added from a file (pasted/picked image, uploaded PDF)
+// get their title from the same extraction read: the reply becomes an
+// object carrying material_title alongside the usual facts array. Pasted
+// text and the demo school run keep the plain-array prompt unchanged.
+const JSON_ARRAY_FORMAT_LINE = 'Return ONLY a JSON array. No markdown fences, no commentary.';
+const TITLED_FORMAT_LINES = [
+  'Return ONLY a JSON object of the form {"material_title": "...", "facts": [ ... ]}, material_title first. No markdown fences, no commentary.',
+  'facts is the array of extracted facts.',
+].join('\n');
+const MATERIAL_TITLE_RULES = [
+  '- material_title names what this document IS, for a parent scanning a list of materials.',
+  '  Prefer the document’s own subject line or main heading when it has one (a short descriptor may follow, e.g. "Remembrance Day & Anti-Bullying Week — principal’s email").',
+  '  Otherwise write a brief descriptive title of at most 8 words (e.g. "November lunch menu", "Photo Day notice").',
+  '- material_title must be grounded in the document: no events, dates, or names that are not in it. Never use a file name, a file timestamp, or a file extension.',
+].join('\n');
+
+function withMaterialTitleInstructions(system) {
+  return system.replace(JSON_ARRAY_FORMAT_LINE, TITLED_FORMAT_LINES) + '\n' + MATERIAL_TITLE_RULES;
+}
+
+async function callMetaApi(newsletterText, options) {
+  const built = buildPrompt(newsletterText);
+  const system = options && options.withTitle ? withMaterialTitleInstructions(built.system) : built.system;
+  const user = built.user;
   // Brief 051e: extraction waits on long text and long model reasoning,
   // so it gets a 180 s call budget (vision and other calls keep the 90 s
   // default). Worst case per upload stays bounded: 120 s OCR budget +
@@ -598,8 +682,10 @@ function buildImagePrompt(accompanyingText) {
   return { system, userText };
 }
 
-async function callMetaApiImage(accompanyingText, image) {
-  const { system, userText } = buildImagePrompt(accompanyingText);
+async function callMetaApiImage(accompanyingText, image, options) {
+  const built = buildImagePrompt(accompanyingText);
+  const system = options && options.withTitle ? withMaterialTitleInstructions(built.system) : built.system;
+  const userText = built.userText;
   const dataUrl = `data:${image.mime};base64,${Buffer.from(image.data).toString('base64')}`;
   const user = [
     { type: 'text', text: userText },
@@ -1157,14 +1243,21 @@ function extractionCallFailed(err) {
 // name — replacing whatever the model returned for that field (it copies the
 // extraction prompt's Maple Grove example). The demo school run passes no flag,
 // so seeded/demo labels stay exactly as they are.
-async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride, stampSource, image) {
+// Brief 053: titleFrom = { fileName } asks the same read for a material
+// title; a usable one replaces the material's neutral title BEFORE facts
+// are stamped, so source_document and group labels carry it too.
+async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride, stampSource, image, titleFrom) {
   const push = (message) => logs.push({ at: nowIso(), message });
   const hasImage = Boolean(image && image.data && image.mime);
-  const callModel = () => (hasImage ? callMetaApiImage(newsletterText, image) : callMetaApi(newsletterText));
+  const modelOptions = { withTitle: Boolean(titleFrom) };
+  const callModel = () => (hasImage ? callMetaApiImage(newsletterText, image, modelOptions) : callMetaApi(newsletterText, modelOptions));
+  const parseReply = (reply) => (titleFrom ? parseExtractionReply(reply) : { facts: extractJsonArray(reply), title: '' });
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
   let content = await callModel();
   push('API responded — parsing facts');
-  let rawFacts = extractJsonArray(content);
+  let parsedReply = parseReply(content);
+  let rawFacts = parsedReply.facts;
+  let proposedTitle = parsedReply.title;
   // The model sometimes returns a valid but empty fact list for a
   // non-trivial source. Retry the model call ONCE before giving up, so one
   // flaky reply cannot silently save zero facts as a success. An image
@@ -1176,13 +1269,24 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
     push(`API called: POST ${API_URL} (model: ${MODEL})`);
     content = await callModel();
     push('API responded — parsing facts');
-    rawFacts = extractJsonArray(content);
+    parsedReply = parseReply(content);
+    rawFacts = parsedReply.facts;
+    proposedTitle = parsedReply.title || proposedTitle;
   }
   if (rawFacts.length === 0 && nonTrivial) {
     // Every material route marks the material 'failed' on a throw and
     // returns this message, so the hub list shows the failure instead of
     // an empty success. Tiny pastes keep today's behavior below.
     throw new Error(EMPTY_EXTRACTION_MESSAGE);
+  }
+  if (titleFrom && materialId) {
+    const title = cleanMaterialTitle(proposedTitle, hasImage ? '' : newsletterText, titleFrom.fileName);
+    if (title) {
+      store.updateMaterialTitle(materialId, title);
+      push('material titled from its content');
+    } else {
+      push('no usable title in the read — material keeps its neutral label');
+    }
   }
   const extractedAt = nowIso();
   const facts = rawFacts.map((f) => normalizeFact(f, extractedAt));
@@ -2762,13 +2866,17 @@ const server = http.createServer(async (req, res) => {
         const override = resolveAudience(actor, body.audience, hub.id);
         const suppliedTitle = String(body.title || '').trim();
         const retainedFile = pdfFile || imageFile;
-        const imageTitle = imageFile
-          ? String(imageFile.name || '').replace(/\.[a-z0-9]+$/i, '').trim() || deriveMaterialTitle(text)
-          : '';
-        const materialTitle = suppliedTitle || (text ? deriveMaterialTitle(text) : imageTitle);
+        // Brief 053: a file material (image or PDF) without a supplied title
+        // starts with a neutral dated label, never its file name; the
+        // extraction read below proposes the real title from the content.
+        const titleFromContent = !suppliedTitle && Boolean(retainedFile);
+        const materialTitle = suppliedTitle ||
+          (titleFromContent ? neutralFileMaterialTitle(kind, new Date()) : deriveMaterialTitle(text));
         material = store.createMaterial(hub.id, actor.id, kind, materialTitle, text, 'stored', undefined, undefined, retainedFile);
-        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, imageFile);
+        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, imageFile,
+          titleFromContent ? { fileName: retainedFile.name } : null);
         store.updateMaterialStatus(material.id, 'extracted');
+        material = store.getMaterial(material.id) || material;
         if (bearerAuth) logs.push({ at: nowIso(), message: 'material added via agent: ' + bearerAuth.token.name });
         sendJson(res, 200, {
           ok: true,
