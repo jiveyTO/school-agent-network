@@ -1188,3 +1188,16 @@ test('email fields are styled like every other text field', () => {
       id + ' sits inside a .field label');
   }
 });
+
+test('an email material shows its sender and sent date; a duplicate add says so', () => {
+  // Brief 062.
+  const html = renderMaterialsHtml([
+    { id: 'm-email', title: 'Pizza Lunch orders due Friday', kind: 'email', status: 'extracted',
+      created_at: '2026-11-03T12:00:00Z', email_from: 'Ms. Ngo <office@maplegrove.example>', email_date: '2026-11-02T14:15:00.000Z' },
+    { id: 'm-paste', title: 'Library notice', kind: 'paste', status: 'extracted', created_at: '2026-11-03T12:00:00Z' },
+  ], []);
+  assert.ok(html.includes('Email from Ms. Ngo, Mon, Nov 2'), 'sender name and sent date, without the address');
+  assert.ok(!html.includes('office@maplegrove.example'), 'the address itself is not shown');
+  assert.ok(html.includes('Added Tue, Nov 3'), 'other materials still show when they were added');
+  assert.ok(PAGE.includes('That’s already in this hub — nothing new was added.'), 'a duplicate add tells the parent');
+});

@@ -258,7 +258,9 @@ test('pdf ocr: picture page is read, dense PDF skips vision, failure degrades', 
     try {
       up = await client.post(`/api/hubs/${hubId}/materials`, {
         kind: 'pdf', fileName: 'preview-again.pdf',
-        fileBase64: buildPdf([DENSE, { image: true }]).toString('base64'),
+        // Its own bytes: the first subtest's PDF again would now (brief 062)
+        // be a duplicate of that material, not a new upload.
+        fileBase64: buildPdf([DENSE + ' A second copy of the notice.', { image: true }]).toString('base64'),
       });
     } finally {
       failOcr = false;
