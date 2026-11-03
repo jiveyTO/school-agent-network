@@ -1245,6 +1245,18 @@
   // a glance ("1 to-do · 2 dates · 3 updates"), instead of a raw note count.
   // A to-do is anything factBullet badges as an action; a date is any
   // other dated note.
+  // Brief 062: where a material came from. An email an agent sent shows its
+  // sender and the date it was sent; everything else shows when it was added.
+  function materialSourceText(m) {
+    const from = String((m && m.email_from) || '').trim();
+    if (m && m.kind === 'email' && from) {
+      // "Ms. Ngo <office@school.example>" reads as "Ms. Ngo".
+      const name = from.replace(/\s*<[^>]*>\s*$/, '').replace(/^"|"$/g, '').trim() || from;
+      return 'Email from ' + name + (m.email_date ? ', ' + humanDate(m.email_date) : '');
+    }
+    return 'Added ' + humanDate(m.created_at);
+  }
+
   function materialStatusText(m, items) {
     if (!items.length) {
       return m.status === 'failed' ? 'couldn’t be read' : 'nothing for your family in this one';
@@ -1293,7 +1305,7 @@
       });
       const open = items.some(factMatters);
       let body = '<summary><b>' + esc(m.title) + '</b> ' +
-        '<span class="added">Added ' + esc(humanDate(m.created_at)) + ' · ' + esc(materialStatusText(m, items)) + '</span></summary>';
+        '<span class="added">' + esc(materialSourceText(m)) + ' · ' + esc(materialStatusText(m, items)) + '</span></summary>';
       if (m.has_file) {
         var fileUrl = '/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(m.id) + '/file';
         if (m.kind === 'image') {
@@ -3401,9 +3413,12 @@
           text: document.getElementById('materialText').value,
         });
       }
-      statusEl.textContent = data.facts_pending
-        ? (data.facts_error || 'Saved, but the notes could not be read this time.')
-        : 'Added — it’s now under Shared so far.';
+      // Brief 062: the same material already in the hub lands on it.
+      statusEl.textContent = data.duplicate && !data.facts_added && !data.facts_pending
+        ? 'That’s already in this hub — nothing new was added.'
+        : data.facts_pending
+          ? (data.facts_error || 'Saved, but the notes could not be read this time.')
+          : 'Added — it’s now under Shared so far.';
       document.getElementById('materialText').value = '';
       clearMaterialImage();
       clearMaterialPdf();

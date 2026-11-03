@@ -213,6 +213,20 @@ test('original PDF: retained on upload, served to hub members only', async (t) =
     assert.deepEqual(file.buf, pdfBytes, 'served bytes are the uploaded PDF, byte for byte');
   });
 
+  await t.test('brief 062: the PDF kept beside the paste of its text; the same PDF again is a duplicate', { timeout: 180000 }, async () => {
+    assert.notEqual(pdfMaterialId, pasteMaterialId, 'a pasted copy never swallows the uploaded original');
+    const again = await founder.post(`/api/hubs/${hubId}/materials`, {
+      kind: 'pdf',
+      fileName: 'picnic-notice (1).pdf',
+      fileBase64: pdfBytes.toString('base64'),
+    });
+    assert.equal(again.res.status, 200, again.text.slice(0, 300));
+    assert.equal(again.data.duplicate, true);
+    assert.equal(again.data.material.id, pdfMaterialId, 'points at the first upload');
+    const detail = await founder.get(`/api/hubs/${hubId}`);
+    assert.equal(detail.data.materials.filter((m) => m.kind === 'pdf').length, 1, 'one PDF material');
+  });
+
   await t.test('another hub member can view it; a non-member cannot', async () => {
     const invite = await founder.post(`/api/hubs/${hubId}/invites`, {});
     assert.equal(invite.res.status, 200);

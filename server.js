@@ -569,6 +569,77 @@ function verifyQuote(quote, normalizedSource) {
   return { ok: true, reason: '' };
 }
 
+// --- Duplicate stop (brief 062) --------------------------------------------
+// A material's fingerprint is the SHA-256 of its source text after the
+// same normalization quote verification uses, so the same newsletter added
+// twice to a hub (by a parent, an agent, or one of each) lands on one
+// material. Pasted text and emails share one namespace ('text:'), so an
+// agent's email and a parent's paste of it match. A file is matched by its
+// own bytes instead: a PDF's or image's full source text is only known
+// after the model reads it (and OCR reads differ run to run), and two PDFs
+// can share a text layer but not their picture pages. So a file matches
+// only the same file ('pdf:' bytes; 'image:' bytes plus any pasted text),
+// and a pasted newsletter never swallows the uploaded original.
+// '' = nothing to match.
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function materialFingerprint(text) {
+  const normalized = normalizeQuoteText(text);
+  return normalized ? 'text:' + sha256Hex(normalized) : '';
+}
+
+function fileFingerprint(kind, buffer, text) {
+  if (!buffer || !buffer.length) return '';
+  const caption = normalizeQuoteText(text);
+  return kind + ':' + sha256Hex(caption ? Buffer.concat([buffer, Buffer.from('\n' + caption, 'utf8')]) : buffer);
+}
+
+// Materials whose extraction call is running right now. A matching
+// material that is 'stored' but not in this set had its extraction call
+// fail earlier (facts pending): a re-add retries it in place rather than
+// answering "already here" for a material that never gave any notes.
+const materialsExtracting = new Set();
+
+function needsExtractionRetry(material) {
+  return Boolean(material) && material.status === 'stored' && !materialsExtracting.has(material.id);
+}
+
+// The material fields every add-material response carries, from a saved row.
+function materialPayload(material) {
+  return {
+    id: material.id,
+    hub_id: material.hub_id,
+    kind: material.kind,
+    title: material.title,
+    status: material.status,
+    created_at: material.created_at,
+    has_file: Boolean(material.has_file),
+    file_name: material.file_name || '',
+    file_mime: material.file_mime || '',
+    may_have_unread_pictures: Boolean(material.may_have_unread_pictures),
+    pictures_read_with_ocr: Boolean(material.pictures_read_with_ocr),
+    unverified_count: Number(material.unverified_count || 0),
+    email_from: material.email_from || '',
+    email_date: material.email_date || '',
+  };
+}
+
+// Brief 062: an email's sender and date as the agent sent them, one line
+// each. A parseable date is stored as ISO so the hub shows it like other
+// dates; anything else is kept as given.
+function cleanEmailLine(value, max) {
+  return String(value || '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+function normalizeEmailDate(value) {
+  const raw = cleanEmailLine(value, 100);
+  if (!raw) return '';
+  const at = new Date(raw);
+  return isNaN(at.getTime()) ? raw : at.toISOString();
+}
+
 const FILE_NAME_TITLE = /\.(png|jpe?g|webp|gif|heic|pdf|docx?)\b|^(cleanshot|screen ?shot|screenshot|img[_-]|pxl[_-]|dsc[_-])|\b\d{4}-\d{2}-\d{2} at \d/i;
 
 // A model-proposed material title, or '' when it is unusable: empty, a
@@ -1880,7 +1951,8 @@ const AGENT_MANIFEST = {
       path: '/api/hubs/{hub_id}/materials',
       auth: 'Bearer agent token',
       body: { kind: 'paste', title: 'notice title', text: 'newsletter or notice text' },
-      description: 'Add material to a hub the family belongs to and extract its facts. For pasted text send kind paste with title and text. Returns { ok, material, facts_added }.',
+      email_body: { kind: 'email', subject: 'the email subject', from: 'the sender as shown in the mailbox', date: 'the date the email was sent', text: 'the email body text' },
+      description: 'Add material to a hub the family belongs to and extract its facts. For pasted text send kind paste with title and text. For a school email send kind email with subject, from, date, and text (the body); send a PDF attachment separately as kind pdf. Returns { ok, duplicate, material, facts_added }. Adds are idempotent: if the hub already has the same material, the response is { ok: true, duplicate: true, material } pointing at the existing one, and nothing new is added.',
     },
     {
       name: 'evening check',
@@ -1905,6 +1977,14 @@ const AGENT_MANIFEST = {
     'If check is null or stale is true, POST /api/parent/run, then use its result.',
     'Tell the parent in a few lines: each nudge (title, action, deadline), each conflict, and the dated items for the next few days. If there is nothing open, say it is a calm evening.',
     'Never share the family\'s check with anyone but the parent.',
+  ],
+  // Brief 062: agents keep the hub fed from their parent's mailbox, in the
+  // parent's own environment — ParentLoop itself never reads Gmail here.
+  keep_hub_fed: [
+    'You may contribute school material you find in your parent\'s mailbox to their hubs, using their token (POST /api/hubs/{hub_id}/materials with kind email).',
+    'Share only what applies to other families too. Anything about your parent\'s own child specifically stays out of the hub.',
+    'Adds are idempotent: re-sending something the hub already has is safe and returns { ok: true, duplicate: true } with the existing material. Treat that as done and move on.',
+    'When you can, check the hub\'s materials first (GET /api/hubs/{hub_id}), and send one clean copy of the original rather than a forward.',
   ],
   recipe: AGENT_RECIPE,
   find_or_create: AGENT_RECIPE,
@@ -2498,6 +2578,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/newsletter/run') {
       const logs = [];
       let material = null;
+      let reusedExisting = false;
       try {
         const body = await readJsonBody(req);
         const text = String(body.text || '').trim();
@@ -2508,15 +2589,37 @@ const server = http.createServer(async (req, res) => {
         if (!hub) throw new Error('Choose a hub first.');
         const actor = store.getSessionViewer(session);
         const override = resolveAudience(actor, body.audience, hub.id);
-        material = store.createMaterial(hub.id, actor ? actor.id : '', 'paste', String(body.title || 'Pasted newsletter'), text, 'stored');
+        // Brief 062: the same text already in this hub is answered as a
+        // duplicate (or re-read in place if its notes are still pending).
+        const fingerprint = materialFingerprint(text);
+        const existing = store.findMaterialByFingerprint(hub.id, fingerprint);
+        if (existing && !needsExtractionRetry(existing)) {
+          logs.push({ at: nowIso(), message: 'already in this hub — no duplicate added' });
+          sendJson(res, 200, { ok: true, duplicate: true, facts: [], logs, material: materialPayload(existing), facts_added: 0 });
+          return;
+        }
+        if (existing) {
+          material = existing;
+          reusedExisting = true;
+        } else {
+          material = store.createMaterial(hub.id, actor ? actor.id : '', 'paste', String(body.title || 'Pasted newsletter'), text, 'stored',
+            undefined, undefined, undefined, { fingerprint });
+        }
         logs.push({ at: nowIso(), message: 'pasted newsletter received' });
-        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, undefined, null, true);
+        materialsExtracting.add(material.id);
+        let facts;
+        try {
+          facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, undefined, null, true);
+        } finally {
+          materialsExtracting.delete(material.id);
+        }
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
           ok: true,
+          duplicate: reusedExisting,
           facts,
           logs,
-          material: { id: material.id, hub_id: hub.id, kind: 'paste', title: material.title, status: 'extracted' },
+          material: { id: material.id, hub_id: hub.id, kind: material.kind || 'paste', title: material.title, status: 'extracted' },
           facts_added: facts.length,
         });
       } catch (err) {
@@ -2525,9 +2628,10 @@ const server = http.createServer(async (req, res) => {
           logs.push({ at: nowIso(), message: `extraction call failed, material kept: ${message}` });
           sendJson(res, 200, {
             ok: true,
+            duplicate: reusedExisting,
             facts: [],
             logs,
-            material: { id: material.id, hub_id: material.hub_id, kind: 'paste', title: material.title, status: 'stored' },
+            material: { id: material.id, hub_id: material.hub_id, kind: material.kind || 'paste', title: material.title, status: 'stored' },
             facts_added: 0,
             facts_pending: true,
             facts_error: FACTS_PENDING_MESSAGE,
@@ -2683,6 +2787,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/email/use-newsletter') {
       const logs = [];
       let material = null;
+      let reusedExisting = false;
       try {
         const active = store.getSessionViewer(session);
         if (!active) throw new Error('Save your family first, then connect Gmail.');
@@ -2698,16 +2803,41 @@ const server = http.createServer(async (req, res) => {
         const text = gmailMessageText(msg.payload);
         if (!text) throw new Error('That message did not include readable text.');
         const override = resolveAudience(active, body.audience, hub.id);
-        material = store.createMaterial(hub.id, active.id, 'email', headers.subject || 'Email newsletter', text, 'stored');
+        // Brief 062: same duplicate stop as every other add.
+        const fingerprint = materialFingerprint(text);
+        const existing = store.findMaterialByFingerprint(hub.id, fingerprint);
+        if (existing && !needsExtractionRetry(existing)) {
+          logs.push({ at: nowIso(), message: 'already in this hub — no duplicate added' });
+          sendJson(res, 200, { ok: true, duplicate: true, facts: [], logs, material: materialPayload(existing), facts_added: 0 });
+          return;
+        }
+        if (existing) {
+          material = existing;
+          reusedExisting = true;
+        } else {
+          material = store.createMaterial(hub.id, active.id, 'email', headers.subject || 'Email newsletter', text, 'stored',
+            undefined, undefined, undefined, {
+              fingerprint,
+              emailFrom: cleanEmailLine(headers.from, 200),
+              emailDate: normalizeEmailDate(headers.date),
+            });
+        }
         logs.push({ at: nowIso(), message: 'run started' });
         logs.push({ at: nowIso(), message: 'Gmail message loaded as a hub newsletter' });
-        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, undefined, null, true);
+        materialsExtracting.add(material.id);
+        let facts;
+        try {
+          facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, undefined, null, true);
+        } finally {
+          materialsExtracting.delete(material.id);
+        }
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
           ok: true,
+          duplicate: reusedExisting,
           facts,
           logs,
-          material: { id: material.id, hub_id: hub.id, kind: 'email', title: material.title, status: 'extracted' },
+          material: { id: material.id, hub_id: hub.id, kind: material.kind || 'email', title: material.title, status: 'extracted' },
           facts_added: facts.length,
         });
       } catch (err) {
@@ -2716,9 +2846,10 @@ const server = http.createServer(async (req, res) => {
           logs.push({ at: nowIso(), message: `extraction call failed, material kept: ${message}` });
           sendJson(res, 200, {
             ok: true,
+            duplicate: reusedExisting,
             facts: [],
             logs,
-            material: { id: material.id, hub_id: material.hub_id, kind: 'email', title: material.title, status: 'stored' },
+            material: { id: material.id, hub_id: material.hub_id, kind: material.kind || 'email', title: material.title, status: 'stored' },
             facts_added: 0,
             facts_pending: true,
             facts_error: FACTS_PENDING_MESSAGE,
@@ -3228,6 +3359,14 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req, MAX_MATERIAL_JSON_BYTES);
       const logs = [];
       let material = null;
+      let reusedExisting = false;
+      // Brief 062: the same material already in this hub is a successful
+      // add of the existing one — no new material, no new extraction.
+      const answerDuplicate = (existing) => {
+        logs.push({ at: nowIso(), message: 'already in this hub — no duplicate added' });
+        if (bearerAuth) logs.push({ at: nowIso(), message: 'duplicate add via agent: ' + bearerAuth.token.name });
+        sendJson(res, 200, { ok: true, duplicate: true, material: materialPayload(existing), facts: [], facts_added: 0, count: 0, logs });
+      };
       try {
         if (!API_KEY) throw new Error('SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.');
         let text = '';
@@ -3248,9 +3387,12 @@ const server = http.createServer(async (req, res) => {
           imageBase64 = String(body.fileBase64 || '').trim();
         }
         const hasImage = Boolean(imageBase64) || requestedKind === 'image' || requestedKind === 'photo' || requestedKind === 'screenshot';
-        let kind = requestedKind === 'pdf' && !hasImage ? 'pdf' : hasImage ? 'image' : 'paste';
+        let kind = requestedKind === 'pdf' && !hasImage ? 'pdf' : hasImage ? 'image' : requestedKind === 'email' ? 'email' : 'paste';
         let pdfFile = null;
         let imageFile = null;
+        let emailMeta = null;
+        let fingerprint = '';
+        let existing = null;
         if (kind === 'image') {
           if (!imageBase64) throw new Error('Paste or choose an image first.');
           const cleaned = imageBase64.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
@@ -3267,12 +3409,20 @@ const server = http.createServer(async (req, res) => {
           const fallbackName = `pasted-image.${imageExtForMime(mime)}`;
           imageFile = { data: imageBuffer, name: rawName || fallbackName, mime };
           text = String(body.text || '').trim();
+          fingerprint = fileFingerprint('image', imageBuffer, text);
         } else if (kind === 'pdf') {
           if (!body.fileBase64) throw new Error('Choose a PDF file first.');
           const pdfBuffer = Buffer.from(String(body.fileBase64), 'base64');
           body.fileBase64 = null; // release the ~4/3-size source string now
           if (pdfBuffer.length > MAX_PDF_BYTES) {
             throw new Error('That PDF is too large — the limit is 10 MB. Choose a smaller file.');
+          }
+          // A known duplicate answers before any parsing or OCR is paid for.
+          fingerprint = fileFingerprint('pdf', pdfBuffer);
+          existing = store.findMaterialByFingerprint(hub.id, fingerprint);
+          if (existing && !needsExtractionRetry(existing)) {
+            answerDuplicate(existing);
+            return;
           }
           // Hand the parser a fresh Uint8Array: small Buffers can be slices
           // of a shared pool, which the bundled pdf.js misreads.
@@ -3304,9 +3454,26 @@ const server = http.createServer(async (req, res) => {
             pictureRisk,
             picturesReadWithOcr,
           };
+        } else if (kind === 'email') {
+          // Brief 062: an email an agent found in its parent's mailbox. The
+          // body is the source text (extraction and quote verification run
+          // on it as on a paste); sender and date are kept as provenance.
+          text = String(body.text || body.body || '').trim();
+          if (!text) throw new Error('Send the email’s body text.');
+          emailMeta = {
+            subject: cleanEmailLine(body.subject, 200),
+            emailFrom: cleanEmailLine(body.from, 200),
+            emailDate: normalizeEmailDate(body.date),
+          };
         } else {
           text = String(body.text || '').trim();
           if (!text) throw new Error('Paste a newsletter or notice first.');
+        }
+        if (!fingerprint) fingerprint = materialFingerprint(text);
+        if (!existing) existing = store.findMaterialByFingerprint(hub.id, fingerprint);
+        if (existing && !needsExtractionRetry(existing)) {
+          answerDuplicate(existing);
+          return;
         }
         const override = resolveAudience(actor, body.audience, hub.id);
         const suppliedTitle = String(body.title || '').trim();
@@ -3314,18 +3481,40 @@ const server = http.createServer(async (req, res) => {
         // Brief 053: a file material (image or PDF) without a supplied title
         // starts with a neutral dated label, never its file name; the
         // extraction read below proposes the real title from the content.
+        // An email starts as its subject and is titled from its content too.
         const titleFromContent = !suppliedTitle && Boolean(retainedFile);
+        const titleFrom = titleFromContent ? { fileName: retainedFile.name }
+          : !suppliedTitle && emailMeta ? { fileName: '' } : null;
         const materialTitle = suppliedTitle ||
-          (titleFromContent ? neutralFileMaterialTitle(kind, new Date()) : deriveMaterialTitle(text));
-        material = store.createMaterial(hub.id, actor.id, kind, materialTitle, text, 'stored', undefined, undefined, retainedFile);
-        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, imageFile,
-          titleFromContent ? { fileName: retainedFile.name } : null, true);
+          (titleFromContent ? neutralFileMaterialTitle(kind, new Date())
+            : (emailMeta && emailMeta.subject) || deriveMaterialTitle(text));
+        if (existing) {
+          // Same text, but its earlier extraction call failed: read it again
+          // on the existing material instead of adding a second copy.
+          material = existing;
+          reusedExisting = true;
+          logs.push({ at: nowIso(), message: 'already in this hub with its notes pending — reading it again in place' });
+        } else {
+          material = store.createMaterial(hub.id, actor.id, kind, materialTitle, text, 'stored', undefined, undefined, retainedFile, {
+            fingerprint,
+            emailFrom: emailMeta ? emailMeta.emailFrom : '',
+            emailDate: emailMeta ? emailMeta.emailDate : '',
+          });
+        }
+        materialsExtracting.add(material.id);
+        let facts;
+        try {
+          facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, imageFile, titleFrom, true);
+        } finally {
+          materialsExtracting.delete(material.id);
+        }
         store.updateMaterialStatus(material.id, 'extracted');
         material = store.getMaterial(material.id) || material;
         if (bearerAuth) logs.push({ at: nowIso(), message: 'material added via agent: ' + bearerAuth.token.name });
         sendJson(res, 200, {
           ok: true,
-          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(retainedFile), file_name: retainedFile ? retainedFile.name : '', file_mime: retainedFile && retainedFile.mime ? retainedFile.mime : '', may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk), pictures_read_with_ocr: Boolean(pdfFile && pdfFile.picturesReadWithOcr), unverified_count: Number(material.unverified_count || 0) },
+          duplicate: reusedExisting,
+          material: materialPayload(material),
           facts,
           facts_added: facts.length,
           count: facts.length,
@@ -3339,7 +3528,8 @@ const server = http.createServer(async (req, res) => {
           // block-scoped to the try above and do not exist here.
           sendJson(res, 200, {
             ok: true,
-            material: { id: material.id, hub_id: material.hub_id, kind: material.kind, title: material.title, status: 'stored', created_at: material.created_at, has_file: Boolean(material.has_file), file_name: material.file_name || '', file_mime: material.file_mime || '', may_have_unread_pictures: Boolean(material.may_have_unread_pictures), pictures_read_with_ocr: Boolean(material.pictures_read_with_ocr), unverified_count: Number(material.unverified_count || 0) },
+            duplicate: reusedExisting,
+            material: { ...materialPayload(material), status: 'stored' },
             facts: [],
             facts_added: 0,
             count: 0,

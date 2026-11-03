@@ -16,6 +16,10 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 // 1x1 PNG: a real image the server sniffs as image/png.
 const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+// Brief 062: re-adding the same file to a hub is a duplicate, so each
+// subtest that needs a new material gets its own bytes (trailing data after
+// IEND; the server still sniffs a PNG) or its own PDF text.
+const pngVariant = (n) => Buffer.concat([Buffer.from(PNG_1X1, 'base64'), Buffer.from('variant ' + n)]).toString('base64');
 const SCREENSHOT_NAME = 'CleanShot 2026-11-02 at 3.55.43 PM.png';
 const EMAIL_TITLE = 'Remembrance Day & Anti-Bullying Week — principal’s email';
 const PHOTO_DAY_TEXT =
@@ -173,12 +177,12 @@ test('file materials are titled from their content, not the file name', async (t
   await t.test('no title in the read -> neutral dated label, never the file name', async () => {
     nextTitle = null;
     const img = await client.post(`/api/hubs/${hubId}/materials`, {
-      kind: 'image', imageBase64: PNG_1X1, fileName: SCREENSHOT_NAME,
+      kind: 'image', imageBase64: pngVariant(1), fileName: SCREENSHOT_NAME,
     });
     assert.equal(img.res.status, 200, img.text.slice(0, 400));
     assert.equal(img.data.material.title, `Photo — ${today}`);
     const pdf = await client.post(`/api/hubs/${hubId}/materials`, {
-      kind: 'pdf', fileName: 'scan_20261102_0915.pdf', fileBase64: textPdf(PHOTO_DAY_TEXT).toString('base64'),
+      kind: 'pdf', fileName: 'scan_20261102_0915.pdf', fileBase64: textPdf(PHOTO_DAY_TEXT + ' Second copy.').toString('base64'),
     });
     assert.equal(pdf.res.status, 200, pdf.text.slice(0, 400));
     assert.equal(pdf.data.material.title, `Document — ${today}`);
@@ -187,13 +191,13 @@ test('file materials are titled from their content, not the file name', async (t
   await t.test('a file-name or ungrounded title is refused for the neutral label', async () => {
     nextTitle = 'CleanShot 2026-11-02 at 3.55.43 PM';
     const img = await client.post(`/api/hubs/${hubId}/materials`, {
-      kind: 'image', imageBase64: PNG_1X1, fileName: SCREENSHOT_NAME,
+      kind: 'image', imageBase64: pngVariant(2), fileName: SCREENSHOT_NAME,
     });
     assert.equal(img.data.material.title, `Photo — ${today}`);
     // "December 3" is not in the PDF's text: an invented date.
     nextTitle = 'Photo Day — December 3';
     const pdf = await client.post(`/api/hubs/${hubId}/materials`, {
-      kind: 'pdf', fileName: 'notice.pdf', fileBase64: textPdf(PHOTO_DAY_TEXT).toString('base64'),
+      kind: 'pdf', fileName: 'notice.pdf', fileBase64: textPdf(PHOTO_DAY_TEXT + ' Third copy.').toString('base64'),
     });
     assert.equal(pdf.data.material.title, `Document — ${today}`);
   });

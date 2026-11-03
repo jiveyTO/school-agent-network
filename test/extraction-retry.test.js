@@ -167,10 +167,12 @@ test('empty extraction retries once, then fails visibly', async (t) => {
   await t.test('empty twice → 500 plus a failed material in the hub list', async () => {
     modelQueue = ['[]', '[]'];
     modelCalls = 0;
+    // Its own text: the same text as the first subtest is now (brief 062)
+    // a duplicate of that material, not a second add.
     const failed = await post(`/api/hubs/${hubId}/materials`, {
       kind: 'paste',
       title: 'Unlucky notice',
-      text: LONG_TEXT,
+      text: LONG_TEXT + ' A second notice about the same week.',
     });
     assert.equal(failed.res.status, 500, failed.text.slice(0, 400));
     assert.match(failed.data.error, /couldn't pull any notes/i);

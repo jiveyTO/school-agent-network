@@ -696,6 +696,13 @@ async function initDb() {
   // its card can be told apart. A display label only — it never
   // authenticates. Tokens minted before this stay '' and show no hint.
   addColumnIfMissing('agent_tokens', 'display_hint', "display_hint TEXT DEFAULT ''");
+  // Brief 062: SHA-256 of a material's normalized source text, set when it
+  // is added, so the same newsletter added twice lands on one material.
+  // Existing rows stay '' and never match a duplicate check.
+  addColumnIfMissing('materials', 'fingerprint', "fingerprint TEXT DEFAULT ''");
+  // Brief 062: provenance of an email-kind material sent by an agent.
+  addColumnIfMissing('materials', 'email_from', "email_from TEXT DEFAULT ''");
+  addColumnIfMissing('materials', 'email_date', "email_date TEXT DEFAULT ''");
   // Each family's latest evening check, saved so the home screen, agents,
   // and the evening email can show it without recomputing.
   run(`CREATE TABLE IF NOT EXISTS evening_checks (
@@ -2291,12 +2298,13 @@ function decideJoinRequest(hubId, requestId, adminId, approve) {
   return one('SELECT * FROM join_requests WHERE id = ?', [requestId]);
 }
 
-function createMaterial(hubId, uploadedBy, kind, title, rawText, status, scope, scopeValue, file) {
+function createMaterial(hubId, uploadedBy, kind, title, rawText, status, scope, scopeValue, file, meta) {
   const id = crypto.randomUUID();
   const fileData = file && file.data ? new Uint8Array(file.data) : null;
+  const extra = meta || {};
   run(
-    'INSERT INTO materials (id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_data, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, hubId, uploadedBy || '', kind || 'paste', title || '', rawText || '', new Date().toISOString(), status || 'stored', scope || 'school', scopeValue || '', fileData, fileData ? String(file.name || '') : '', fileData ? fileData.length : 0, fileData ? String(file.mime || '') : '', file && file.pictureRisk ? 1 : 0, file && file.picturesReadWithOcr ? 1 : 0]
+    'INSERT INTO materials (id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_data, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, fingerprint, email_from, email_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, hubId, uploadedBy || '', kind || 'paste', title || '', rawText || '', new Date().toISOString(), status || 'stored', scope || 'school', scopeValue || '', fileData, fileData ? String(file.name || '') : '', fileData ? fileData.length : 0, fileData ? String(file.mime || '') : '', file && file.pictureRisk ? 1 : 0, file && file.picturesReadWithOcr ? 1 : 0, String(extra.fingerprint || ''), String(extra.emailFrom || ''), String(extra.emailDate || '')]
   );
   persist();
   return getMaterial(id);
@@ -2310,11 +2318,22 @@ function updateMaterialScope(id, scope, scopeValue) {
 function getMaterial(id) {
   if (!id) return null;
   const row = one(
-    "SELECT id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, unverified_count, (file_data IS NOT NULL) AS has_file FROM materials WHERE id = ?",
+    "SELECT id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, unverified_count, email_from, email_date, (file_data IS NOT NULL) AS has_file FROM materials WHERE id = ?",
     [id]
   );
   if (!row) return null;
-  return { ...row, has_file: Boolean(row.has_file), may_have_unread_pictures: Boolean(row.may_have_unread_pictures), pictures_read_with_ocr: Boolean(row.pictures_read_with_ocr), unverified_count: Number(row.unverified_count || 0) };
+  return { ...row, has_file: Boolean(row.has_file), may_have_unread_pictures: Boolean(row.may_have_unread_pictures), pictures_read_with_ocr: Boolean(row.pictures_read_with_ocr), unverified_count: Number(row.unverified_count || 0), email_from: row.email_from || '', email_date: row.email_date || '' };
+}
+
+// Brief 062: the hub's earliest non-failed material with this fingerprint,
+// or null. A failed add never blocks adding the same text again.
+function findMaterialByFingerprint(hubId, fingerprint) {
+  if (!hubId || !fingerprint) return null;
+  const row = one(
+    "SELECT id FROM materials WHERE hub_id = ? AND fingerprint = ? AND status != 'failed' ORDER BY created_at ASC LIMIT 1",
+    [hubId, String(fingerprint)]
+  );
+  return row ? getMaterial(row.id) : null;
 }
 
 // The retained original file behind a material (brief 042 PDF uploads and
@@ -2446,7 +2465,7 @@ function listFactRejections(materialId) {
 }
 
 function listMaterials(hubId, profileId) {
-  const rows = all("SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, unverified_count, (file_data IS NOT NULL) AS has_file FROM materials WHERE hub_id = ? ORDER BY created_at ASC", [hubId]).map(scopedMaterialRow);
+  const rows = all("SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, unverified_count, email_from, email_date, (file_data IS NOT NULL) AS has_file FROM materials WHERE hub_id = ? ORDER BY created_at ASC", [hubId]).map(scopedMaterialRow);
   if (!profileId) return rows;
   return rows.filter((m) => rowInScope(m, placementScopeSets(profileId, hubId)));
 }
@@ -2543,6 +2562,8 @@ function scopedMaterialRow(r) {
     may_have_unread_pictures: Boolean(r.may_have_unread_pictures),
     pictures_read_with_ocr: Boolean(r.pictures_read_with_ocr),
     unverified_count: Number(r.unverified_count || 0),
+    email_from: r.email_from || '',
+    email_date: r.email_date || '',
   };
 }
 
@@ -2822,6 +2843,7 @@ module.exports = {
   createMaterial,
   deleteMaterial,
   getMaterial,
+  findMaterialByFingerprint,
   getMaterialText,
   getMaterialFile,
   findMaterial,
