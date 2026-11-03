@@ -692,6 +692,10 @@ async function initDb() {
   // 1 only for facts whose quote code-verified against the material's text
   // at extraction time; facts stored before verification stay 0.
   addColumnIfMissing('facts', 'quote_verified', 'quote_verified INTEGER DEFAULT 0');
+  // Brief 060: last 4 characters of an agent token, captured at creation so
+  // its card can be told apart. A display label only — it never
+  // authenticates. Tokens minted before this stay '' and show no hint.
+  addColumnIfMissing('agent_tokens', 'display_hint', "display_hint TEXT DEFAULT ''");
   // Each family's latest evening check, saved so the home screen, agents,
   // and the evening email can show it without recomputing.
   run(`CREATE TABLE IF NOT EXISTS evening_checks (
@@ -1472,6 +1476,7 @@ function agentTokenPublic(row) {
     last_used_at: row.last_used_at || null,
     revoked_at: row.revoked_at || null,
     active: !row.revoked_at,
+    ...(row.display_hint ? { hint: row.display_hint } : {}),
   };
 }
 
@@ -1485,8 +1490,8 @@ function createAgentToken(profileId, name) {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   run(
-    'INSERT INTO agent_tokens (id, profile_id, name, token_hash, created_at, last_used_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL, NULL)',
-    [id, String(profileId), cleanName, hashAgentToken(raw), now]
+    'INSERT INTO agent_tokens (id, profile_id, name, token_hash, created_at, last_used_at, revoked_at, display_hint) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)',
+    [id, String(profileId), cleanName, hashAgentToken(raw), now, raw.slice(-4)]
   );
   persist();
   return { token: raw, record: agentTokenPublic(one('SELECT * FROM agent_tokens WHERE id = ?', [id])) };
