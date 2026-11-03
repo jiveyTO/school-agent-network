@@ -478,6 +478,12 @@ async function initDb() {
     session_id TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`);
+  run(`CREATE TABLE IF NOT EXISTS gmail_states (
+    state TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  )`);
   run(`CREATE TABLE IF NOT EXISTS recovery_tokens (
     token_hash TEXT PRIMARY KEY,
     profile_id TEXT NOT NULL,
@@ -1174,6 +1180,37 @@ function consumeLoginState(state, sessionId) {
   run('DELETE FROM login_states WHERE state = ?', [String(state)]);
   persist();
   return row.session_id === String(sessionId);
+}
+
+// One-time Gmail-connect OAuth state, bound to the session that started the
+// connect and the family it was started for. The callback attaches tokens
+// only to that bound family; a profile ID is never accepted as state.
+const GMAIL_STATE_TTL_MS = 10 * 60 * 1000;
+
+function createGmailState(sessionId, profileId) {
+  run('DELETE FROM gmail_states WHERE expires_at < ?', [Date.now()]);
+  const state = crypto.randomBytes(32).toString('base64url');
+  run('INSERT INTO gmail_states (state, session_id, profile_id, expires_at) VALUES (?, ?, ?, ?)', [
+    state,
+    String(sessionId),
+    String(profileId),
+    Date.now() + GMAIL_STATE_TTL_MS,
+  ]);
+  persist();
+  return state;
+}
+
+// Returns the bound profile ID, or null. Always deletes the state it finds,
+// so a token works at most once even when the session does not match.
+function consumeGmailState(state, sessionId) {
+  if (!state) return null;
+  const row = one('SELECT * FROM gmail_states WHERE state = ?', [String(state)]);
+  if (!row) return null;
+  run('DELETE FROM gmail_states WHERE state = ?', [String(state)]);
+  persist();
+  if (row.session_id !== String(sessionId)) return null;
+  if (Number(row.expires_at) < Date.now()) return null;
+  return row.profile_id;
 }
 
 // Shared sign-in completion used by the real OAuth callback and (under a
@@ -2474,6 +2511,8 @@ module.exports = {
   setSessionIdentity,
   createLoginState,
   consumeLoginState,
+  createGmailState,
+  consumeGmailState,
   completeGoogleSignIn,
   signOutSession,
   findProfileByParentEmail,

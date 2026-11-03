@@ -1646,7 +1646,7 @@ function gmailConfigured() {
   return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 }
 
-function googleAuthUrl(req, profileId) {
+function googleAuthUrl(req, state) {
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
     redirect_uri: `${publicBaseUrl(req)}/api/email/callback`,
@@ -1654,7 +1654,7 @@ function googleAuthUrl(req, profileId) {
     scope: GMAIL_SCOPE,
     access_type: 'offline',
     prompt: 'consent',
-    state: profileId,
+    state,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
@@ -2228,16 +2228,22 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: 'Save your family first, then connect Gmail.' });
         return;
       }
-      res.writeHead(302, { Location: googleAuthUrl(req, active.id) });
+      const state = store.createGmailState(session.id, active.id);
+      res.writeHead(302, { Location: googleAuthUrl(req, state) });
       res.end();
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/email/callback') {
       try {
         const code = url.searchParams.get('code');
-        const profileId = url.searchParams.get('state') || (store.getSessionViewer(session) || {}).id;
+        // state is a one-time token minted by /api/email/auth for this
+        // session; the family comes from the token, never from the query.
+        const profileId = store.consumeGmailState(url.searchParams.get('state') || '', session.id);
+        const viewer = store.getSessionViewer(session);
+        if (!profileId || !viewer || viewer.id !== profileId) {
+          throw new Error('This Gmail connection attempt expired. Please try connecting again.');
+        }
         if (!code) throw new Error('Google did not return a sign-in code.');
-        if (!profileId) throw new Error('Save your family first, then connect Gmail.');
         if (!gmailConfigured()) throw new Error('Gmail setup is needed first.');
         const tokens = await googleTokenRequest({
           code,
