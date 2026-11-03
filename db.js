@@ -46,8 +46,20 @@ let db = null;
 // at the end of boot. Auth uses the Cloud Run service account via the
 // metadata server; plain fetch against the GCS JSON API, no new dependencies.
 const DURABLE_UPLOAD_DEBOUNCE_MS = 1500;
+// A failed upload (network error, timeout, HTTP 5xx) retries with capped
+// exponential backoff instead of waiting for the next write. The base delay
+// is overridable for tests only.
+const DURABLE_RETRY_BASE_MS = Number(process.env.APP_DB_GCS_RETRY_BASE_MS) || 5000;
+const DURABLE_RETRY_MAX_MS = 5 * 60 * 1000;
+const DURABLE_RETRY_MAX_ATTEMPTS = 8;
 let durableDirty = false;
 let durableUploadTimer = null;
+let durableRetryAttempt = 0;
+// MD5s (base64, as GCS reports them) of the bytes sent by uploads that threw
+// since the last confirmed one. A timed-out upload may still have landed; the
+// retry then gets HTTP 412, and a matching stored hash proves the object is
+// ours (see durableAdoptLandedUpload).
+const durableUnconfirmedMd5s = new Set();
 let durableToken = null;
 let durableTokenExpiresAt = 0;
 // Brief 036: a failed restore must never let a fresh seed overwrite the live
@@ -240,12 +252,23 @@ async function durableUploadFromFile() {
   } else if (durableRestoreOutcome === 'absent') {
     url += '&ifGenerationMatch=0';
   }
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: fs.readFileSync(DB_PATH),
-    signal: AbortSignal.timeout(30000),
-  });
+  const body = fs.readFileSync(DB_PATH);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (err) {
+    durableUnconfirmedMd5s.add(crypto.createHash('md5').update(body).digest('base64'));
+    throw err;
+  }
+  if (res.status === 412 && durableUnconfirmedMd5s.size && (await durableAdoptLandedUpload(cfg, headers))) {
+    // The earlier "failed" upload had landed; retry once on its generation.
+    return durableUploadFromFile();
+  }
   if (res.status === 412) {
     durableWriteBackEnabled = false;
     console.warn(
@@ -256,6 +279,7 @@ async function durableUploadFromFile() {
     return false;
   }
   if (!res.ok) throw new Error('upload HTTP ' + res.status);
+  durableUnconfirmedMd5s.clear();
   try {
     const body = await res.json();
     if (body && body.generation != null) durableRemoteGeneration = String(body.generation);
@@ -264,6 +288,49 @@ async function durableUploadFromFile() {
     // next upload goes without a precondition.
   }
   return true;
+}
+
+// After a 412 that follows uploads whose replies were lost: if the stored
+// object's MD5 equals the bytes one of them sent, that upload landed and the
+// object is still ours, so adopt its generation instead of disabling
+// write-back. Any other content means a different writer: return false.
+// Checked once per 412, so a second 412 disables write-back as before.
+async function durableAdoptLandedUpload(cfg, headers) {
+  const expected = new Set(durableUnconfirmedMd5s);
+  durableUnconfirmedMd5s.clear();
+  try {
+    const meta = await fetch(
+      cfg.endpoint + '/storage/v1/b/' + encodeURIComponent(cfg.bucket) + '/o/' + encodeURIComponent(cfg.object),
+      { headers: headers.Authorization ? { Authorization: headers.Authorization } : {}, signal: AbortSignal.timeout(15000) }
+    );
+    if (!meta.ok) return false;
+    const info = await meta.json();
+    if (!info || !expected.has(info.md5Hash) || info.generation == null) return false;
+    durableRemoteGeneration = String(info.generation);
+    console.warn('durable store: an upload reported as failed had landed; continuing on its generation.');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function scheduleDurableRetry() {
+  if (durableUploadTimer || !durableDirty) return;
+  if (durableRetryAttempt >= DURABLE_RETRY_MAX_ATTEMPTS) {
+    console.warn(
+      `durable store: upload still failing after ${durableRetryAttempt} retries; ` +
+        'the next write will try again.'
+    );
+    durableRetryAttempt = 0;
+    return;
+  }
+  const delay = Math.min(DURABLE_RETRY_BASE_MS * 2 ** durableRetryAttempt, DURABLE_RETRY_MAX_MS);
+  durableRetryAttempt += 1;
+  durableUploadTimer = setTimeout(() => {
+    durableUploadTimer = null;
+    flushDurableStore();
+  }, delay);
+  if (durableUploadTimer.unref) durableUploadTimer.unref();
 }
 
 function scheduleDurableUpload() {
@@ -286,10 +353,14 @@ async function flushDurableStore() {
   if (!durableConfig() || !durableDirty) return false;
   try {
     const uploaded = await durableUploadFromFile();
-    if (uploaded) durableDirty = false;
+    if (uploaded) {
+      durableDirty = false;
+      durableRetryAttempt = 0;
+    }
     return uploaded;
   } catch (err) {
     console.warn('durable store upload failed:', err && err.message ? err.message : err);
+    scheduleDurableRetry();
     return false;
   }
 }
@@ -476,7 +547,8 @@ async function initDb() {
   run(`CREATE TABLE IF NOT EXISTS login_states (
     state TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    expires_at INTEGER NOT NULL DEFAULT 0
   )`);
   run(`CREATE TABLE IF NOT EXISTS gmail_states (
     state TEXT PRIMARY KEY,
@@ -631,6 +703,8 @@ async function initDb() {
   addColumnIfMissing('profiles', 'google_email', "google_email TEXT DEFAULT ''");
   addColumnIfMissing('sessions', 'google_sub', "google_sub TEXT DEFAULT ''");
   addColumnIfMissing('sessions', 'google_email', "google_email TEXT DEFAULT ''");
+  // Rows from before expiry existed get 0, so they count as expired.
+  addColumnIfMissing('login_states', 'expires_at', 'expires_at INTEGER NOT NULL DEFAULT 0');
   backfillSchoolKeys();
   persist();
   seedDemoHubs();
@@ -1160,14 +1234,19 @@ function setSessionIdentity(sessionId, sub, email) {
 }
 
 // One-time OAuth state nonce bound to the session that started the login.
-// Consumed (deleted) by the callback; stale nonces are pruned on mint.
+// Consumed (deleted) by the callback; expired nonces are pruned on mint and
+// refused on consume. Expiry is epoch ms: comparing ISO created_at text with
+// sqlite datetime() text never matched same-day rows.
+const LOGIN_STATE_TTL_MS = 15 * 60 * 1000;
+
 function createLoginState(sessionId) {
-  run("DELETE FROM login_states WHERE created_at < datetime('now', '-30 minutes')");
+  run('DELETE FROM login_states WHERE expires_at < ?', [Date.now()]);
   const state = crypto.randomUUID();
-  run('INSERT INTO login_states (state, session_id, created_at) VALUES (?, ?, ?)', [
+  run('INSERT INTO login_states (state, session_id, created_at, expires_at) VALUES (?, ?, ?, ?)', [
     state,
     String(sessionId),
     new Date().toISOString(),
+    Date.now() + LOGIN_STATE_TTL_MS,
   ]);
   persist();
   return state;
@@ -1179,6 +1258,7 @@ function consumeLoginState(state, sessionId) {
   if (!row) return false;
   run('DELETE FROM login_states WHERE state = ?', [String(state)]);
   persist();
+  if (Number(row.expires_at) < Date.now()) return false;
   return row.session_id === String(sessionId);
 }
 
