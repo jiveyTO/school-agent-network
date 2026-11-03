@@ -329,17 +329,20 @@ test('add material panel cannot be stretched by a long pasted-image filename', (
     'pdf picker filename truncates instead of forcing width');
 });
 
-test('announced facts default to 3 with an expand/collapse toggle, under the hub detail', () => {
-  const hubDetailAt = PAGE.indexOf('id="hub-view-h"');
-  const factsAt = PAGE.indexOf('id="facts-h"');
-  const logAt = PAGE.indexOf('id="log-h"');
-  assert.ok(hubDetailAt !== -1 && factsAt !== -1 && logAt !== -1);
-  assert.ok(hubDetailAt < factsAt && factsAt < logAt, 'facts section must sit after hub detail and before Activity');
-  assert.ok(PAGE.includes('id="factsToggle"'));
-  assert.ok(PAGE.includes('FACTS_PREVIEW_COUNT = 3'));
-  assert.ok(PAGE.includes('allFacts.slice(0, FACTS_PREVIEW_COUNT)'));
-  assert.ok(PAGE.includes("'Show less'") && PAGE.includes("'Show all '"));
-  assert.ok(PAGE.includes('id="factCount"'));
+test('hub page no longer renders the "What the school announced" or Activity sections', () => {
+  // Brief 054: both sat permanently empty at the bottom of every hub page.
+  const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
+  for (const token of ['id="factsSection"', 'id="facts-h"', 'What the school announced', 'id="facts"',
+    'id="factsToggle"', 'id="factCount"', 'id="logSection"', 'id="log-h"', 'id="log"',
+    'Nothing announced yet.', 'Nothing here yet — check for school updates']) {
+    assert.ok(!hubMarkup.includes(token), `hub view must not render ${token}`);
+  }
+  // The renderers survive as no-ops so the demo run and loaders never throw.
+  assert.ok(PAGE.includes('if (!logEl) return;'), 'renderLogs tolerates the missing Activity list');
+  assert.ok(PAGE.includes('if (!factsEl || !factsToggle) return;'), 'paintFacts tolerates the missing section');
+  assert.ok(PAGE.includes('if (factsToggle) factsToggle.addEventListener'), 'no listener on a missing toggle');
+  // The family page keeps its own evening-check Activity log.
+  assert.ok(PAGE.includes('id="parent-log-h"') && PAGE.includes('id="parentLog"'));
 });
 
 test('start-a-hub guides school naming and handles duplicate school hubs', () => {
@@ -444,14 +447,11 @@ test('hub cards open a dedicated hub view; the back control returns to the list'
   const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
   for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'Sources for this hub', 'id="hubSources"',
     'What is in this hub', 'id="hubFacts"', 'Add it', 'id="placementCard"', 'Place your children in this hub',
-    'id="inviteBtn"', 'id="hubRequests"', 'id="hubDanger"', 'id="facts-h"', 'id="log-h"']) {
+    'id="inviteBtn"', 'id="hubRequests"', 'id="hubDanger"']) {
     assert.ok(hubMarkup.includes(token), `hub view must render ${token}`);
   }
   assert.ok(hubMarkup.indexOf('id="hubBackBtn"') < hubMarkup.indexOf('id="hub-view-h"'),
     'back control sits above the hub detail');
-  assert.ok(hubMarkup.indexOf('id="hub-view-h"') < hubMarkup.indexOf('id="facts-h"') &&
-    hubMarkup.indexOf('id="facts-h"') < hubMarkup.indexOf('id="log-h"'),
-    'hub view keeps detail, facts, and activity in order');
   const openFn = PAGE.slice(PAGE.indexOf('async function openHub'), PAGE.indexOf('async function openHub') + 400);
   assert.ok(openFn.includes("showView('hub')") && openFn.includes('loadHubDetail'), 'opening a hub shows the hub view and loads its detail');
   const backFn = PAGE.slice(PAGE.indexOf("getElementById('hubBackBtn')"), PAGE.indexOf("getElementById('hubBackBtn')") + 300);

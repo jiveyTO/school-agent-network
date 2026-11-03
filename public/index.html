@@ -974,17 +974,6 @@
         </div>
       </div>
     </section>
-
-    <section id="factsSection" aria-labelledby="facts-h">
-      <h2 id="facts-h">What the school announced <span id="factCount"></span></h2>
-      <div id="facts"><p class="facts-empty">Nothing announced yet.</p></div>
-      <button class="toggle-btn" id="factsToggle" type="button" hidden>Show all</button>
-    </section>
-
-    <section id="logSection" aria-labelledby="log-h">
-      <h2 id="log-h">Activity</h2>
-      <ol id="log"><li class="empty">Nothing here yet — check for school updates to get started.</li></ol>
-    </section>
     </div>
 
     <div class="view" id="viewEvening" hidden>
@@ -1459,7 +1448,11 @@
     return '';
   }
 
+  // Brief 054: the hub page no longer renders the "What the school
+  // announced" and "Activity" sections. Their elements are gone, so these
+  // renderers no-op; the demo run and /api/facts are left as they are.
   function renderLogs(logs) {
+    if (!logEl) return;
     if (!logs || !logs.length) {
       logEl.innerHTML = '<li class="empty">No activity yet.</li>';
       return;
@@ -1493,6 +1486,7 @@
   }
 
   function paintFacts() {
+    if (!factsEl || !factsToggle) return;
     if (!allFacts.length) {
       factsEl.innerHTML = '<p class="facts-empty">Nothing announced yet.</p>';
       factsToggle.hidden = true;
@@ -1509,7 +1503,7 @@
   }
 
   function renderFacts(facts) {
-    factCountEl.textContent = facts && facts.length ? '(' + facts.length + ')' : '';
+    if (factCountEl) factCountEl.textContent = facts && facts.length ? '(' + facts.length + ')' : '';
     if (!facts || !facts.length) {
       allFacts = [];
       factsExpanded = false;
@@ -1527,7 +1521,7 @@
     paintFacts();
   }
 
-  factsToggle.addEventListener('click', function () {
+  if (factsToggle) factsToggle.addEventListener('click', function () {
     factsExpanded = !factsExpanded;
     paintFacts();
   });
