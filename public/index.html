@@ -661,6 +661,11 @@
   .setup-box { border: 1px dashed var(--amber-dark); border-radius: 16px; background: var(--amber-soft); padding: 14px; font-size: 14.5px; }
   .quiet-controls { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .text-btn { border: 0; background: none; color: var(--muted); font: inherit; font-size: 14px; text-decoration: underline; cursor: pointer; padding: 6px; }
+  /* Brief 055: families list rows; Remove sits beside the name with a
+     comfortable tap target. */
+  .member-line { margin: 4px 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+  .member-name { min-width: 0; overflow-wrap: anywhere; }
+  .member-remove-btn { min-height: 36px; padding: 6px 10px; }
   footer {
     padding: 6px 20px 0;
     font-size: 13.5px;
@@ -2448,8 +2453,54 @@
     box.hidden = false;
     list.innerHTML = members.map(function (m) {
       const name = m.parent_name || m.display_name || m.family_name || m.name || '';
-      return '<p class="hint" style="margin:4px 0">' + esc(name) + ' · ' + esc(memberRoleLabel(m)) + '</p>';
+      const line = '<span class="member-name">' + esc(name) + ' · ' + esc(memberRoleLabel(m)) + '</span>';
+      // Brief 055: only a founder/admin's roster carries member_key, and
+      // only on families they may remove.
+      if (!(m.can_remove && m.member_key)) {
+        return '<div class="member-row"><p class="hint member-line">' + line + '</p></div>';
+      }
+      const key = esc(m.member_key);
+      return '<div class="member-row">' +
+        '<p class="hint member-line">' + line +
+        ' <button class="text-btn danger member-remove-btn" type="button" data-remove-member="' + key + '">Remove</button></p>' +
+        '<div data-member-confirm hidden>' +
+        '<p class="hint">Remove ' + esc(name) + ' from this hub?</p>' +
+        '<p style="margin:8px 0"><button class="small-btn" type="button" data-member-yes="' + key + '">Yes, remove</button> ' +
+        '<button class="small-btn secondary" type="button" data-member-no>Keep them</button></p>' +
+        '<p class="hint" data-member-status></p></div></div>';
     }).join('');
+    list.querySelectorAll('[data-remove-member]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const row = btn.closest('.member-row');
+        btn.hidden = true;
+        row.querySelector('[data-member-confirm]').hidden = false;
+      });
+    });
+    list.querySelectorAll('[data-member-no]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const row = btn.closest('.member-row');
+        row.querySelector('[data-member-confirm]').hidden = true;
+        row.querySelector('[data-remove-member]').hidden = false;
+      });
+    });
+    list.querySelectorAll('[data-member-yes]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        const row = btn.closest('.member-row');
+        const statusEl = row.querySelector('[data-member-status]');
+        btn.disabled = true;
+        statusEl.textContent = 'Removing…';
+        try {
+          const res = await fetch('/api/hubs/' + encodeURIComponent(currentHubId) + '/members/' +
+            encodeURIComponent(btn.getAttribute('data-member-yes')), { method: 'DELETE' });
+          const data = await res.json().catch(function () { return {}; });
+          if (!res.ok) throw new Error(data.error || 'That family couldn’t be removed.');
+          await loadHubDetail(currentHubId);
+        } catch (e) {
+          statusEl.textContent = e.message;
+          btn.disabled = false;
+        }
+      });
+    });
   }
 
   async function loadHubDetail(hubId) {
