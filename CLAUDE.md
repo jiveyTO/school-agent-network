@@ -5,8 +5,8 @@
 When a piece of work is finished and the full suite passes (`node --test test/`
 green in the school-agent container): commit it, push to origin main, and
 redeploy to Cloud Run — without asking first. Then report the commit hash,
-test count, Cloud Run revision, and the service memory setting. If tests
-fail, stop and report instead.
+test count, Cloud Run revision, and the service memory and timeout
+settings. If tests fail, stop and report instead.
 
 ## Deploy recipe
 
@@ -17,7 +17,9 @@ from inside that directory:
 
 ```sh
 # Never source .env: values may contain spaces/angle brackets (e.g.
-# RESEND_FROM) that break `. ./.env` under both sh and bash. Parse it.
+# RESEND_FROM) that break `. ./.env` under both sh and bash. Parse it
+# with POSIX sh only (no ${v:1:-1}: it needs bash >= 4.2 and fails on
+# macOS /bin/bash 3.2). Run the whole recipe under sh or bash alike.
 PAIRS=""
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in ""|\#*) continue;; esac
@@ -28,17 +30,23 @@ while IFS= read -r line || [ -n "$line" ]; do
   case "$k" in *[!A-Z_]*|"") continue;; esac
   first=${v%"${v#?}"}
   last=${v#"${v%?}"}
-  if [ \( "$first" = '"' -a "$last" = '"' \) -o \( "$first" = "'" -a "$last" = "'" \) ]; then
-    v=${v:1:-1}
+  if [ "$first" = '"' ] && [ "$last" = '"' ]; then
+    v=${v#\"}; v=${v%\"}
+  elif [ "$first" = "'" ] && [ "$last" = "'" ]; then
+    v=${v#\'}; v=${v%\'}
   fi
   PAIRS="$PAIRS$k=$v,"
 done < .env
 for v in SCHOOL_AGENT_API_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET APP_DB_GCS_BUCKET APP_DB_GCS_OBJECT; do
-  case "$PAIRS" in "$v="*|*",$v="*) ;; *) echo "missing $v in PAIRS"; exit 1;; esac
+  present=0
+  case "$PAIRS" in "$v="*|*",$v="*) present=1;; esac
+  if [ "$present" = 0 ]; then echo "missing $v in PAIRS"; exit 1; fi
+  val=${PAIRS#*"$v="}; val=${val%%,*}
+  if [ -z "$val" ]; then echo "empty $v in PAIRS"; exit 1; fi
 done
 gcloud run deploy parentloop --source . --project=school-agent-network \
   --region=northamerica-northeast2 --allow-unauthenticated --max-instances=1 \
-  --port=3000 --memory=2Gi \
+  --port=3000 --memory=2Gi --timeout=600 \
   --set-env-vars "${PAIRS}PUBLIC_BASE_URL=https://parentloop-964717527488.northamerica-northeast2.run.app"
 ```
 
@@ -59,7 +67,9 @@ Rules (learned from brief 016, which broke live Google sign-in):
   and GNU grep, silently matched nothing, and revision 00026 shipped with
   only `PUBLIC_BASE_URL` (auth + API key + durable vars all dropped). The
   `case` check on `PAIRS` aborts the deploy if any required name is
-  missing from the built value — never remove it.
+  missing from the built value, and the value check aborts on an empty
+  one (brief 051e: `NAME=` with nothing after it must never deploy) —
+  never remove either.
 
 Read secrets only from the local `.env` inside the deploy container; never
 print them. Remove `/tmp/parentloop-deploy` afterwards.

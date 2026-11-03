@@ -1,7 +1,10 @@
 // Brief 051d: picture-dense PDFs must not kill the server. Three 4200x3000
-// FlateDecode RGB pages (flat fills: tiny on disk, ~38 MB decoded each)
-// plus one DCTDecode (JPEG) page go through the OCR pass one page at a
-// time, downscaled to <=2000 px on the long edge. Asserts: upload 200,
+// FlateDecode RGB pages (flat fills: tiny on disk, ~38 MB decoded each),
+// one DCTDecode (JPEG) picture page, and one picture page carrying an
+// EMBEDDED font (the brief 051d production crash: FontLoader threw
+// "document is not defined" on getOperatorList; only disableFontFace
+// stops it) go through the OCR pass one page at a time, downscaled to
+// <=2000 px on the long edge. Asserts: upload 200,
 // material listed with has_file, every OCR PNG's IHDR within bounds,
 // child server alive afterwards, and (Linux only) child peak RSS under
 // the old 512 MiB limit. A vision-500 subtest proves graceful failure.
@@ -79,27 +82,115 @@ function buildBigFlate() {
 
 const COVER_TEXT = 'Maple Grove Elementary notice: the winter concert is on Thursday, December 10, 2026.';
 
+// Hand-built fictional Type1 font (FictionalTest, glyphs .notdef + A) for
+// the embedded-font regression page. eexec uses the standard Type1
+// encryption (R=55665) implemented below; Length1/Length2/Length3 are set
+// so pdf.js parses it without warnings. No real font data anywhere here.
+function buildType1Pfa() {
+  const rnd = Buffer.from([0x11, 0x22, 0x33, 0x44]);
+  const notdef = Buffer.concat([rnd, Buffer.from([139, 139, 13, 14])]);
+  const glyphA = Buffer.concat([rnd, Buffer.from([139, 248, 97, 13, 14])]);
+  const priv =
+    'dup /Private 22 dict dup begin\n' +
+    '/RD {string currentfile exch readstring pop} executeonly def\n' +
+    '/ND {noaccess def} executeonly def\n' +
+    '/NP {noaccess put} executeonly def\n' +
+    '/BlueValues [] def\n' +
+    '/MinFeature {16 16} def\n' +
+    '/password 5839 def\n' +
+    '/lenIV 4 def\n' +
+    '/OtherSubrs [{} {} {} {}] def\n' +
+    '/Subrs 0 array def\n' +
+    '/CharStrings 3 dict dup begin\n' +
+    '/.notdef 8 RD ' + notdef.toString('binary') + ' ND\n' +
+    '/A 9 RD ' + glyphA.toString('binary') + ' ND\n' +
+    'end end\n' +
+    'put\nput\n' +
+    'dup /FontName get exch definefont pop\n' +
+    'mark currentfile closefile\n';
+  const head =
+    '%!PS-AdobeFont-1.0: FictionalTest 1.0\n' +
+    '11 dict begin\n' +
+    '/FontInfo 5 dict dup begin\n' +
+    '/FullName (Fictional Test) readonly def\n' +
+    '/FamilyName (Fictional) readonly def\n' +
+    '/Weight (Regular) readonly def\n' +
+    '/ItalicAngle 0 def\n' +
+    '/isFixedPitch false def\n' +
+    'end readonly def\n' +
+    '/FontName /FictionalTest def\n' +
+    '/PaintType 0 def\n' +
+    '/FontType 1 def\n' +
+    '/FontMatrix [0.001 0 0 0.001 0 0] readonly def\n' +
+    '/Encoding 256 array\n' +
+    '0 1 255 {1 index exch /.notdef put} for\n' +
+    'dup 65 /A put\n' +
+    'readonly def\n' +
+    '/FontBBox {0 -200 1000 900} readonly def\n' +
+    'currentdict end\n' +
+    'currentfile eexec\n';
+  let R = 55665;
+  const plain = Buffer.from(priv, 'binary');
+  const enc = Buffer.alloc(plain.length);
+  for (let i = 0; i < plain.length; i++) {
+    const c = plain[i];
+    enc[i] = c ^ (R >> 8);
+    R = (((c + R) & 0xffff) * 52845 + 22719) & 0xffff;
+  }
+  let hex = enc.toString('hex').toUpperCase();
+  let hexLines = '';
+  for (let i = 0; i < hex.length; i += 64) hexLines += hex.slice(i, i + 64) + '\n';
+  const zeros = ('0'.repeat(64) + '\n').repeat(8);
+  return {
+    pfa: Buffer.from(head + hexLines + zeros + 'cleartomark\n', 'binary'),
+    length1: Buffer.byteLength(head),
+    length2: hexLines.length,
+    length3: zeros.length,
+  };
+}
+
 function buildBigPdf(bigComp, jpeg) {
   const objs = [];
-  const pageCount = 5;
-  const pageIds = [3, 5, 7, 9, 13];
+  // Object map (no id reused): pages 3,5,7,9,13,23 (+1 = contents); big
+  // images 15,16,17; JPEG image 18; Helvetica (cover page) 19; fontpic
+  // small image 20, embedded font 25, descriptor 26, font file 27.
+  const pageCount = 6;
+  const pageIds = [3, 5, 7, 9, 13, 23];
   const imageBase = 15;
   objs[1] = '<< /Type /Catalog /Pages 2 0 R >>';
   objs[2] = '<< /Type /Pages /Kids [' + pageIds.map((id) => id + ' 0 R').join(' ') + '] /Count ' + pageCount + ' >>';
   const fontId = imageBase + 4;
-  const kinds = ['big', 'big', 'big', 'jpeg', 'text'];
+  // Page 6 carries an EMBEDDED font next to its image: this is the brief
+  // 051d production crash (FontLoader ReferenceError) in fixture form.
+  // Its text layer is 2 chars, so the page stays flagged for the OCR pass.
+  const smallRaw = Buffer.alloc(400 * 300 * 3, 190);
+  const smallComp = zlib.deflateSync(smallRaw);
+  const pfa = buildType1Pfa();
+  const kinds = ['big', 'big', 'big', 'jpeg', 'text', 'fontpic'];
   pageIds.forEach((pageId, i) => {
     const contentId = pageId + 1;
-    const imgId = imageBase + i;
     const kind = kinds[i];
     if (kind === 'text') {
       const stream = 'BT /F1 12 Tf 72 720 Td (' + COVER_TEXT.replace(/([()\\])/g, '\\$1') + ') Tj ET';
       objs[pageId] =
         '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ' + contentId +
-        ' 0 R /Resources << /Font << /F1 ' + fontId + ' 0 R >> >> >>';
+        ' 0 R /Resources << /Font << /F1 19 0 R >> >> >>';
       objs[contentId] = '<< /Length ' + Buffer.byteLength(stream) + ' >>\nstream\n' + stream + '\nendstream';
       return;
     }
+    if (kind === 'fontpic') {
+      const stream = 'q 400 0 0 300 72 400 cm /Im5 Do Q BT /F2 24 Tf 72 700 Td (A!) Tj ET';
+      objs[pageId] =
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ' + contentId +
+        ' 0 R /Resources << /XObject << /Im5 20 0 R >> /Font << /F2 25 0 R >> >> >>';
+      objs[contentId] = '<< /Length ' + Buffer.byteLength(stream) + ' >>\nstream\n' + stream + '\nendstream';
+      objs[20] = { small: true, dict: '<< /Type /XObject /Subtype /Image /Width 400 /Height 300 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length ' + smallComp.length + ' >>' };
+      objs[25] = '<< /Type /Font /Subtype /Type1 /BaseFont /FictionalTest /FirstChar 65 /LastChar 65 /Widths [600] /FontDescriptor 26 0 R /Encoding /WinAnsiEncoding >>';
+      objs[26] = '<< /Type /FontDescriptor /FontName /FictionalTest /FontFile 27 0 R /Flags 32 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 50 >>';
+      objs[27] = { pfa: true, dict: '<< /Length ' + pfa.pfa.length + ' /Length1 ' + pfa.length1 + ' /Length2 ' + pfa.length2 + ' /Length3 ' + pfa.length3 + ' >>' };
+      return;
+    }
+    const imgId = imageBase + i;
     const isJpeg = kind === 'jpeg';
     const w = isJpeg ? 16 : 4200;
     const h = isJpeg ? 16 : 3000;
@@ -112,7 +203,7 @@ function buildBigPdf(bigComp, jpeg) {
       ? { jpeg: true, dict: '<< /Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /Length ' + jpeg.length + ' >>' }
       : { jpeg: false, dict: '<< /Type /XObject /Subtype /Image /Width 4200 /Height 3000 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length ' + bigComp.length + ' >>' };
   });
-  objs[fontId] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
+  objs[19] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
   let out = Buffer.from('%PDF-1.4\n', 'latin1');
   const offsets = [0];
   for (let i = 1; i < objs.length; i++) {
@@ -122,7 +213,7 @@ function buildBigPdf(bigComp, jpeg) {
       out = Buffer.concat([
         out,
         Buffer.from(i + ' 0 obj\n' + objs[i].dict + '\nstream\n', 'latin1'),
-        objs[i].jpeg ? jpeg : bigComp,
+        objs[i].jpeg ? jpeg : objs[i].small ? smallComp : objs[i].pfa ? pfa.pfa : bigComp,
         Buffer.from('\nendstream\nendobj\n', 'latin1'),
       ]);
     } else {
@@ -263,7 +354,7 @@ test('pdf ocr memory: large picture pages downscale, survive, and degrade', asyn
     assert.equal(up.res.status, 200, up.text.slice(0, 400));
     assert.equal(up.data.material.has_file, true, 'material retained the file');
     const sizes = ocrPngSizes(modelRequests);
-    assert.equal(sizes.length, 4, 'all four picture pages (3 Flate + 1 JPEG) were read');
+    assert.equal(sizes.length, 5, 'all five picture pages (3 Flate + JPEG + embedded-font) were read');
     for (const s of sizes) {
       assert.ok(Math.max(s.w, s.h) <= 2000, `PNG IHDR within bounds, got ${s.w}x${s.h}`);
     }

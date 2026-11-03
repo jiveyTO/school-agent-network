@@ -217,14 +217,16 @@ function normalizeImagePixels(img) {
   const channels = kind === 3 ? 4 : kind === 2 ? 3 : 1;
   const need = width * height * channels;
   if (img.data.length < need) return null;
-  const data = Buffer.alloc(need);
-  Buffer.from(img.data.buffer, img.data.byteOffset, need).copy(data);
+  // A view over the decoded bytes, not a copy: the bytes are only read
+  // from here on (downscale, then PNG rows), and dropping every
+  // reference is what lets GC reclaim them.
+  const data = Buffer.from(img.data.buffer, img.data.byteOffset, need);
   return { width, height, channels, data };
 }
 
 // Pure-JS area-average (box filter) downscale to at most maxEdge on the
-// long edge. The full-size buffer is zeroed before returning, so peak
-// memory drops as soon as the small copy exists.
+// long edge. Only one page's pixels are ever live (the caller cleans the
+// page up first), and the returned small copy is all the encoder keeps.
 function boxDownscale(pix, maxEdge) {
   if (!pix) return null;
   if (Math.max(pix.width, pix.height) <= maxEdge) return pix;
@@ -252,7 +254,6 @@ function boxDownscale(pix, maxEdge) {
       }
     }
   }
-  pix.data.fill(0);
   return { width: nw, height: nh, channels: pix.channels, data: out };
 }
 
@@ -266,7 +267,6 @@ function encodePixelsAsPng(pix) {
     rows[y * (1 + stride)] = 0;
     pix.data.copy(rows, y * (1 + stride) + 1, y * stride, (y + 1) * stride);
   }
-  pix.data.fill(0);
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
@@ -488,10 +488,11 @@ function metaContentUsable(content) {
   return typeof content === 'string' && !!content.trim();
 }
 
-async function postMetaChat(system, user, maxTokens) {
+async function postMetaChat(system, user, maxTokens, timeoutMs) {
+  const callTimeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 90000;
   async function attempt() {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 90000);
+    const timeout = setTimeout(() => controller.abort(), callTimeout);
     let res;
     try {
       res = await fetch(API_URL, {
@@ -555,7 +556,12 @@ async function postMetaChat(system, user, maxTokens) {
 
 async function callMetaApi(newsletterText) {
   const { system, user } = buildPrompt(newsletterText);
-  return postMetaChat(system, user, 32768);
+  // Brief 051e: extraction waits on long text and long model reasoning,
+  // so it gets a 180 s call budget (vision and other calls keep the 90 s
+  // default). Worst case per upload stays bounded: 120 s OCR budget +
+  // 180 s extraction + parse overhead ≈ 300 s, ~2x inside the 600 s
+  // Cloud Run request timeout (see the Deploy recipe).
+  return postMetaChat(system, user, 32768, 180000);
 }
 
 // Brief 044: the same extraction pipeline, reading an image. The image is
@@ -599,7 +605,8 @@ async function callMetaApiImage(accompanyingText, image) {
     { type: 'text', text: userText },
     { type: 'image_url', image_url: { url: dataUrl } },
   ];
-  return postMetaChat(system, user, 32768);
+  // Same 180 s extraction budget as the text path (brief 051e).
+  return postMetaChat(system, user, 32768, 180000);
 }
 
 // Brief 048: the OCR read. Same vision transport as brief 044's image
@@ -1124,6 +1131,25 @@ function narrowestScope(facts) {
 
 const EMPTY_EXTRACTION_MESSAGE =
   'We couldn\'t pull any notes out of that one — try pasting it again.';
+
+// Brief 051e: an extraction CALL failure (timeout/abort, connection drop,
+// model HTTP error) must not lose the upload. The material stays 'stored'
+// with its text and the caller reports facts_pending + a plain message.
+// An empty extraction RESULT (the model returned no facts twice) keeps
+// today's 500 + 'failed' behavior, pinned by extraction-retry.test.js.
+const FACTS_PENDING_MESSAGE =
+  'Saved, but ParentLoop could not pull out the notes this time — the read did not finish. The text is kept, so nothing is lost.';
+
+function extractionCallFailed(err) {
+  if (!err) return false;
+  const message = err.message ? String(err.message) : String(err);
+  if (message === EMPTY_EXTRACTION_MESSAGE) return false;
+  return (
+    err.name === 'AbortError' ||
+    /aborted|abort|timed out|timeout|fetch failed|ECONNRESET|ETIMEDOUT|EPIPE/i.test(message) ||
+    /^Meta Model API error \d+/.test(message)
+  );
+}
 
 // When stampSource is true (parent-added paste/PDF/email material), the server
 // stamps every extracted fact's source_document from the actual material being
@@ -2065,8 +2091,21 @@ const server = http.createServer(async (req, res) => {
           facts_added: facts.length,
         });
       } catch (err) {
-        if (material) store.updateMaterialStatus(material.id, 'failed');
         const message = err && err.message ? err.message : String(err);
+        if (material && extractionCallFailed(err)) {
+          logs.push({ at: nowIso(), message: `extraction call failed, material kept: ${message}` });
+          sendJson(res, 200, {
+            ok: true,
+            facts: [],
+            logs,
+            material: { id: material.id, hub_id: hub.id, kind: 'paste', title: material.title, status: 'stored' },
+            facts_added: 0,
+            facts_pending: true,
+            facts_error: FACTS_PENDING_MESSAGE,
+          });
+          return;
+        }
+        if (material) store.updateMaterialStatus(material.id, 'failed');
         logs.push({ at: nowIso(), message: `error: ${message}` });
         sendJson(res, 500, { ok: false, error: message, logs });
       }
@@ -2237,8 +2276,21 @@ const server = http.createServer(async (req, res) => {
           facts_added: facts.length,
         });
       } catch (err) {
-        if (material) store.updateMaterialStatus(material.id, 'failed');
         const message = err && err.message ? err.message : String(err);
+        if (material && extractionCallFailed(err)) {
+          logs.push({ at: nowIso(), message: `extraction call failed, material kept: ${message}` });
+          sendJson(res, 200, {
+            ok: true,
+            facts: [],
+            logs,
+            material: { id: material.id, hub_id: hub.id, kind: 'email', title: material.title, status: 'stored' },
+            facts_added: 0,
+            facts_pending: true,
+            facts_error: FACTS_PENDING_MESSAGE,
+          });
+          return;
+        }
+        if (material) store.updateMaterialStatus(material.id, 'failed');
         logs.push({ at: nowIso(), message: `error: ${message}` });
         sendJson(res, 500, { ok: false, error: message, logs });
       }
@@ -2727,8 +2779,22 @@ const server = http.createServer(async (req, res) => {
           logs,
         });
       } catch (err) {
-        if (material) store.updateMaterialStatus(material.id, 'failed');
         const message = err && err.message ? err.message : String(err);
+        if (material && extractionCallFailed(err)) {
+          logs.push({ at: nowIso(), message: `extraction call failed, material kept: ${message}` });
+          sendJson(res, 200, {
+            ok: true,
+            material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'stored', created_at: material.created_at, has_file: Boolean(retainedFile), file_name: retainedFile ? retainedFile.name : '', file_mime: retainedFile && retainedFile.mime ? retainedFile.mime : '', may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk), pictures_read_with_ocr: Boolean(pdfFile && pdfFile.picturesReadWithOcr) },
+            facts: [],
+            facts_added: 0,
+            count: 0,
+            facts_pending: true,
+            facts_error: FACTS_PENDING_MESSAGE,
+            logs,
+          });
+          return;
+        }
+        if (material) store.updateMaterialStatus(material.id, 'failed');
         sendJson(res, 500, { ok: false, error: message, logs });
       }
       return;
