@@ -5,7 +5,8 @@
 When a piece of work is finished and the full suite passes (`node --test test/`
 green in the school-agent container): commit it, push to origin main, and
 redeploy to Cloud Run — without asking first. Then report the commit hash,
-test count, and Cloud Run revision. If tests fail, stop and report instead.
+test count, Cloud Run revision, and the service memory setting. If tests
+fail, stop and report instead.
 
 ## Deploy recipe
 
@@ -28,7 +29,7 @@ for v in SCHOOL_AGENT_API_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET APP_DB_GCS_B
 done
 gcloud run deploy parentloop --source . --project=school-agent-network \
   --region=northamerica-northeast2 --allow-unauthenticated --max-instances=1 \
-  --port=3000 \
+  --port=3000 --memory=2Gi \
   --set-env-vars "${PAIRS}PUBLIC_BASE_URL=https://parentloop-964717527488.northamerica-northeast2.run.app"
 ```
 
@@ -56,7 +57,8 @@ print them. Remove `/tmp/parentloop-deploy` afterwards.
 
 ## Post-deploy gate (required before any deploy is reported done)
 
-1. `GET /api/auth/status` returns `configured: true`.
+1. `GET /api/auth/status` returns `configured: true` and
+   `recovery_configured: true` (brief 051d: both are required).
 2. `GET /api/auth/login` returns HTTP 302 to Google with the hosted
    callback URI.
 3. Demo evening check still exactly 2 nudges, 3 conflicts, 28 relevant,
