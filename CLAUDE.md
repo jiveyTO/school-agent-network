@@ -16,14 +16,23 @@ From the project root, stage a clean copy (no `.env`, `.git`,
 from inside that directory:
 
 ```sh
-set -a; . ./.env; set +a
-for v in SCHOOL_AGENT_API_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET APP_DB_GCS_BUCKET APP_DB_GCS_OBJECT; do
-  eval "[ -n \"\$$v\" ]" || { echo "missing $v in .env"; exit 1; }
-done
+# Never source .env: values may contain spaces/angle brackets (e.g.
+# RESEND_FROM) that break `. ./.env` under both sh and bash. Parse it.
 PAIRS=""
-for k in $(grep -oE '^[A-Z_]+=' .env | tr -d '='); do
-  eval "v=\$$k"; PAIRS="$PAIRS$k=$v,"
-done
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in ""|\#*) continue;; esac
+  line=${line#export }
+  case "$line" in *=*) ;; *) continue;; esac
+  k=${line%%=*}
+  v=${line#*=}
+  case "$k" in *[!A-Z_]*|"") continue;; esac
+  first=${v%"${v#?}"}
+  last=${v#"${v%?}"}
+  if [ \( "$first" = '"' -a "$last" = '"' \) -o \( "$first" = "'" -a "$last" = "'" \) ]; then
+    v=${v:1:-1}
+  fi
+  PAIRS="$PAIRS$k=$v,"
+done < .env
 for v in SCHOOL_AGENT_API_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET APP_DB_GCS_BUCKET APP_DB_GCS_OBJECT; do
   case "$PAIRS" in "$v="*|*",$v="*) ;; *) echo "missing $v in PAIRS"; exit 1;; esac
 done
