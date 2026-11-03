@@ -97,7 +97,8 @@ test('hub detail renders one source card per material with flat facts inside', (
   for (const token of ['card group-card', 'card group-summary', 'div.group-card', 'details.group-card', 'data-groupname']) {
     assert.ok(!PAGE.includes(token), `${token} must be gone — no nested card inside the material card`);
   }
-  assert.ok(PAGE.includes('Added ') && PAGE.includes('notes'), 'card header shows when it was added and its note count');
+  assert.ok(PAGE.includes('Added ') && PAGE.includes('materialStatusText(m, items)'),
+    'card header shows when it was added and what it gave the family');
   assert.ok(PAGE.includes('Nothing shared from this one yet.'));
 });
 
@@ -186,7 +187,7 @@ test('summary rows link the full source without becoming actions', () => {
 });
 
 test('hub page has one materials list with one empty state', () => {
-  assert.ok(PAGE.includes('What is in this hub'), 'single list heading present');
+  assert.ok(PAGE.includes('Shared so far'), 'single list heading present');
   for (const token of ['Shared notes', 'Newsletters and notices added', 'id="hubMaterials"', 'id="familyStrip"',
     'For your family', 'Nothing shared yet.', 'data-expand-group', 'renderFamilyStrip', 'stripChips']) {
     assert.ok(!PAGE.includes(token), `${token} must be gone after the merge`);
@@ -195,17 +196,19 @@ test('hub page has one materials list with one empty state', () => {
   assert.equal(hubMarkup.split('Nothing added yet.').length - 1, 1, 'exactly one materials empty state in the hub view');
 });
 
-test('hub page leads with a Sources section and a calendar placeholder', () => {
-  for (const token of ['Sources for this hub', 'id="hubSourcesCard"', 'id="hubSources"', 'id="hubWebsiteAdd"',
+test('hub page keeps a sources section, with no calendar placeholder', () => {
+  for (const token of ['Where updates come from', 'id="hubSourcesCard"', 'id="hubSources"', 'id="hubWebsiteAdd"',
     'id="hubWebsiteAddLabel"', 'Add the school website', 'id="hubWebsiteAddInput"', 'id="hubWebsiteSaveBtn"',
-    'Save website', '/website', 'Calendar link — coming soon']) {
+    'Save website', '/website']) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
   assert.ok(PAGE.includes('School website'), 'website row labels the school site');
+  // Brief 058: a feature that does not exist yet is not advertised.
+  assert.ok(!PAGE.includes('Calendar link') && !PAGE.includes('coming soon'), 'no calendar placeholder');
+  assert.ok(PAGE.includes("document.getElementById('hubSourcesCard').hidden = !site && addWrap.hidden;"),
+    'an empty sources section is hidden from parents who cannot fill it');
   const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
-  assert.ok(hubMarkup.indexOf('Sources for this hub') !== -1, 'Sources lives in the hub view');
-  assert.ok(hubMarkup.indexOf('Sources for this hub') < hubMarkup.indexOf('What is in this hub'),
-    'Sources sits above the single list');
+  assert.ok(hubMarkup.indexOf('Where updates come from') !== -1, 'sources live in the hub view');
 });
 
 test('action ranks still qualify only deadlines and real actions', () => {
@@ -231,7 +234,9 @@ test('evening check leads with actionable notes and folds the rest into hub link
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
   assert.ok(PAGE.includes('From your hubs'));
-  assert.ok(!PAGE.includes(".join(' · ')"), 'no dot-joined title blob');
+  // Brief 058's material status line ("1 to-do · 2 dates") is the one
+  // deliberate dot-join; evening titles never are.
+  assert.ok(!PAGE.replace(pageFnSource('materialStatusText'), '').includes(".join(' · ')"), 'no dot-joined title blob');
 });
 
 test('invite link exposes gmail alongside email, whatsapp, and copy', () => {
@@ -329,43 +334,70 @@ test('add material panel cannot be stretched by a long pasted-image filename', (
     'pdf picker filename truncates instead of forcing width');
 });
 
-test('hub header uses two columns on desktop and one sensible column on phones', () => {
-  // Brief 056: same facts, laid out across the card's width.
+test('hub page reads top-down for a first-time parent: purpose, first steps, add, shared, people', () => {
+  // Brief 058: say what the hub is for, then what to do, with the everyday
+  // action first and management folded away.
   const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
-  const header = hubMarkup.slice(hubMarkup.indexOf('<div class="hub-header">'), hubMarkup.indexOf('id="placementCard"'));
-  assert.ok(header.includes('<div class="hub-header-main">') && header.includes('class="hub-header-side" id="hubSourcesCard"'),
-    'header has a main column and a sources column');
-  const at = (token) => header.indexOf(token);
-  for (const token of ['id="hubTitle"', 'id="hubMeta"', 'id="hubContact"', 'Families in this hub', 'id="hubMembersList"',
-    'Sources for this hub', 'id="hubSources"', 'id="hubWebsiteAdd"']) {
-    assert.ok(at(token) !== -1, `header keeps ${token}`);
+  const at = (token) => hubMarkup.indexOf(token);
+  const order = ['id="hubTitle"', 'id="hubPurpose"', 'id="hubMeta"', 'id="hubStartHere"', 'id="placementCard"',
+    'Got something from the school?', 'id="materialText"', 'Shared so far', 'id="hubFacts"', 'Parents here',
+    'id="hubMembersList"', 'id="inviteBtn"', 'Where updates come from', 'id="hubDanger"'];
+  for (let i = 0; i < order.length; i++) {
+    assert.ok(at(order[i]) !== -1, `hub view keeps ${order[i]}`);
+    if (i) assert.ok(at(order[i - 1]) < at(order[i]), `phone order: ${order[i - 1]} before ${order[i]}`);
   }
-  assert.ok(at('id="hubTitle"') < at('id="hubMeta"') && at('id="hubMeta"') < at('Families in this hub') &&
-    at('Families in this hub') < at('Sources for this hub'), 'phone order: title → meta → families → sources');
-  assert.ok(!PAGE.includes('class="card" id="hubSourcesCard"'), 'sources is no longer a card nested in a card');
-  assert.ok(PAGE.includes('.hub-header { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);'),
-    'two columns from the 900px breakpoint, on the hub-grid split');
+  assert.ok(PAGE.includes('turns them into dates and to-dos'), 'purpose line says what happens to what is added');
+  assert.ok(PAGE.includes('Parents in this hub can see what you add. Your family’s details are never shared.'),
+    'the add box says who sees what is added');
+  for (const token of ['Families in this hub', 'What is in this hub', 'Sources for this hub', 'Add material</p>',
+    'id="hubContact"', 'hub-header', "' notes'", 'noteWord']) {
+    assert.ok(!PAGE.includes(token), `${token} is gone`);
+  }
+  assert.ok(hubMarkup.includes('<div class="hub-grid-main">') && hubMarkup.includes('<div class="hub-grid-side">'),
+    'add + shared on the main side, people + sources on the side column');
+  assert.ok(PAGE.includes('.hub-grid { grid-template-columns: 3fr 2fr; align-items: start; }'), 'two columns from 900px');
+  assert.ok(PAGE.includes('.hub-grid-side { border-top: 1px solid var(--line); padding-top: 16px; }'),
+    'phones: the side column sits under a hairline');
+  assert.ok(PAGE.includes('.hub-grid-side { border-top: 0; padding-top: 0; border-left: 1px solid var(--line); padding-left: 20px; }'),
+    'desktop: the side column sits behind a hairline with a gutter');
   assert.ok(PAGE.includes('.hub-title { margin: 0 0 6px; font-size: 21px; line-height: 1.25; overflow-wrap: anywhere; }'),
-    'long hub names wrap inside the title column');
-  assert.ok(PAGE.includes('.member-remove-btn { flex: none; min-height: 36px;'), 'Remove keeps a comfortable tap target');
-  assert.ok(hubMarkup.indexOf('id="placementCard"') > hubMarkup.indexOf('id="hubSourcesCard"') &&
-    hubMarkup.indexOf('id="placementCard"') < hubMarkup.indexOf('What is in this hub'),
-    'placement prompt sits under the header, above the hub content');
+    'long hub names wrap inside the card');
 });
 
-test('hub content row lines up with the header: labelled sections, Add material behind the sources hairline', () => {
-  // Brief 057: no stray paragraph margins between the families list and
-  // "What is in this hub", and Add material indented like Sources.
+test('hub roster marks the viewer and the contact; removal lives under Manage this hub', () => {
   const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
-  assert.ok(hubMarkup.includes('<div class="hub-grid-main">\n            <p class="hub-label">What is in this hub</p>'),
-    'materials list is headed by a hub label');
-  assert.ok(hubMarkup.includes('<div class="hub-grid-side">\n            <p class="hub-label">Add material</p>'),
-    'Add material is headed by a hub label in the side column');
-  assert.ok(PAGE.includes('.hub-grid .hub-label { margin: 0 0 8px; }'), 'content labels carry no top margin');
-  assert.ok(PAGE.includes('.hub-grid-side { border-top: 1px solid var(--line); padding-top: 16px; }'),
-    'phones: Add material sits under a hairline like Sources');
-  assert.ok(PAGE.includes('.hub-grid-side { border-top: 0; padding-top: 0; border-left: 1px solid var(--line); padding-left: 20px; }'),
-    'desktop: Add material sits behind the same left hairline and gutter as Sources');
+  assert.ok(hubMarkup.includes('<details class="hub-manage" id="hubDanger" hidden>') &&
+    hubMarkup.includes('<summary>Manage this hub</summary>'), 'admin controls are folded into a disclosure');
+  const manage = hubMarkup.slice(hubMarkup.indexOf('id="hubDanger"'), hubMarkup.indexOf('</details>'));
+  for (const token of ['id="hubManageMembersList"', 'Remove a family', 'id="deleteHubBtn"']) {
+    assert.ok(manage.includes(token), `Manage this hub holds ${token}`);
+  }
+  const fn = pageFnSource('renderHubMembers');
+  assert.ok(fn.includes("(m.is_you ? ' (you)' : '')"), 'the viewer row reads "(you)"');
+  assert.ok(fn.includes("'Hub contact'"), 'the contact is named in the roster');
+  assert.ok(fn.includes("getElementById('hubManageMembersList')") && fn.includes('data-remove-member='),
+    'Remove controls render in the manage list');
+  assert.ok(PAGE.includes('.member-remove-btn { flex: none; min-height: 36px;'), 'Remove keeps a comfortable tap target');
+  assert.ok(PAGE.includes("' families') + ' · '") && PAGE.includes('You’re the admin'), 'meta reads "2 families · You’re the admin"');
+});
+
+test('a new hub shows Start here until it has material and a second family', () => {
+  const fn = pageFnSource('renderHubStartHere');
+  assert.ok(fn.includes("getElementById('hubStartHere').hidden = hasMaterial && hasOtherFamily"), 'hidden once both are done');
+  assert.ok(PAGE.includes('renderHubStartHere(materials.length > 0, data.member_count > 1)'), 'driven by the hub detail');
+  for (const token of ['Add this week’s newsletter or a school notice', 'Invite another parent', 'id="hubStepAddBtn"',
+    'id="hubStepInviteBtn"']) {
+    assert.ok(PAGE.includes(token), `${token} must be present`);
+  }
+});
+
+test('material cards say what they gave the family, and Expand all needs two cards', () => {
+  const fn = pageFnSource('materialStatusText');
+  for (const token of ["'couldn’t be read'", "'nothing for your family in this one'", "' to-do'", "' dates'", "' updates'"]) {
+    assert.ok(fn.includes(token), `status text covers ${token}`);
+  }
+  assert.ok(pageFnSource('paintGroupsToggle').includes('if (cards.length < 2) { toggle.hidden = true; return; }'),
+    'one card shows no Expand all');
 });
 
 test('hub page no longer renders the "What the school announced" or Activity sections', () => {
@@ -416,7 +448,7 @@ test('my hubs branches on membership: zero-hub welcome vs member list; detail li
   for (const token of ['id="hubs-h"', 'id="hubsList"', 'id="startHubCard"', '+ Start a hub']) {
     assert.ok(listMarkup.includes(token), `My hubs list must contain ${token}`);
   }
-  for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'What is in this hub', 'Sources for this hub', 'id="hubFacts"',
+  for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'Shared so far', 'Where updates come from', 'id="hubFacts"',
     'id="placementCard"', 'id="addMaterialBtn"', 'id="inviteBtn"',
     'id="hubRequests"', 'id="hubDanger"']) {
     assert.ok(!listMarkup.includes(token), `My hubs list must not contain hub detail ${token}`);
@@ -484,8 +516,8 @@ test('hub cards open a dedicated hub view; the back control returns to the list'
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
   const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
-  for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'Sources for this hub', 'id="hubSources"',
-    'What is in this hub', 'id="hubFacts"', 'Add it', 'id="placementCard"', 'Place your children in this hub',
+  for (const token of ['id="hub-view-h"', 'id="hubTitle"', 'Where updates come from', 'id="hubSources"',
+    'Shared so far', 'id="hubFacts"', 'Add it', 'id="placementCard"', 'Place your children in this hub',
     'id="inviteBtn"', 'id="hubRequests"', 'id="hubDanger"']) {
     assert.ok(hubMarkup.includes(token), `hub view must render ${token}`);
   }
@@ -746,8 +778,7 @@ test('hub title shows the open hub name; picker text only with no hub open', () 
   assert.ok(PAGE.includes('id="hubChooserText"'), 'chooser explainer carries an id');
   assert.ok(PAGE.includes('Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.'),
     'chooser explainer copy unchanged');
-  const detailFn = PAGE.slice(PAGE.indexOf('async function loadHubDetail'),
-    PAGE.indexOf('async function loadHubDetail') + 3600);
+  const detailFn = pageFnSource('loadHubDetail');
   assert.ok(detailFn.includes("getElementById('hubTitle').textContent = data.hub.name"),
     'open hub titles the card with the hub name');
   assert.ok(detailFn.includes("getElementById('hubChooserText').hidden = true"),

@@ -68,22 +68,31 @@
   .view[hidden] { display: none; }
   .hub-grid { display: grid; gap: 16px; }
   .hub-grid > * { min-width: 0; }
-  /* Brief 056: hub header. One column on phones; two from 900px (below),
-     on the same 3fr/2fr split as the hub-grid so the columns line up. */
-  .hub-header { display: grid; gap: 18px; margin-bottom: 18px; }
-  .hub-header > * { min-width: 0; }
+  /* Brief 058: hub page. An intro (name, purpose, meta), an optional
+     Start here checklist, then the content grid; one column on phones,
+     3fr/2fr from 900px with the side column behind a hairline. */
+  .hub-intro { margin-bottom: 18px; }
   .hub-title { margin: 0 0 6px; font-size: 21px; line-height: 1.25; overflow-wrap: anywhere; }
+  .hub-purpose { margin: 0 0 8px; max-width: 62ch; }
   .hub-meta { margin: 2px 0 0; }
-  .hub-members { margin-top: 16px; }
-  .hub-label { margin: 0 0 6px; font-weight: 800; color: var(--pine-dark); }
-  .hub-header-side { border-top: 1px solid var(--line); padding-top: 16px; }
-  .hub-header-side .hub-side-hint { margin: 0 0 6px; }
-  .hub-header-side .source-row { overflow-wrap: anywhere; }
-  /* Brief 057: the content row below the header. Section labels match the
-     header's, and Add material sits behind the same hairline as Sources. */
-  .hub-grid .hub-label { margin: 0 0 8px; }
+  .hub-label { margin: 0 0 8px; font-weight: 800; color: var(--pine-dark); }
+  .hub-section + .hub-section, .hub-section + .hub-invite, .hub-invite + .hub-section { margin-top: 24px; }
+  #hubMembers[hidden] + .hub-invite { margin-top: 0; }
   .hub-grid .toggle-btn { margin: 0 0 10px; }
+  .hub-add-note { margin: 10px 0 0; }
   .hub-grid-side { border-top: 1px solid var(--line); padding-top: 16px; }
+  #hubSourcesCard .source-row { overflow-wrap: anywhere; }
+  .hub-start { border: 1px solid var(--line); border-radius: 16px; background: var(--wash); padding: 14px 16px; margin-bottom: 18px; }
+  .hub-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .hub-steps li { display: flex; align-items: center; gap: 10px; min-height: 36px; }
+  .hub-steps .text-btn { text-align: left; font-weight: 700; font-size: 15px; color: var(--pine-dark); padding: 6px 0; }
+  .hub-step-mark { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--pine); box-sizing: border-box; }
+  .hub-steps li.done .hub-step-mark { background: var(--pine); }
+  .hub-steps li.done .hub-step-mark::after { content: "✓"; display: block; color: #fff; font-size: 13px; font-weight: 800; line-height: 18px; text-align: center; }
+  .hub-steps li.done .text-btn { color: var(--muted); text-decoration: line-through; }
+  .hub-manage { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .hub-manage > summary { cursor: pointer; font-weight: 700; color: var(--muted); padding: 8px 0; }
+  .hub-manage[open] > summary { color: var(--pine-dark); margin-bottom: 8px; }
   main > * { min-width: 0; }
   pre, p, h1, h2, h3 { overflow-wrap: break-word; }
   /* Long unbroken strings (URLs, source lines) must wrap inside the
@@ -486,10 +495,8 @@
     .phone { max-width: 960px; }
     main { padding: 24px 24px 8px; }
     .hub-grid { grid-template-columns: 3fr 2fr; align-items: start; }
-    .hub-header { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); column-gap: 16px; align-items: start; }
-    .hub-header-side { border-top: 0; padding-top: 4px; border-left: 1px solid var(--line); padding-left: 20px; }
     .hub-grid-side { border-top: 0; padding-top: 0; border-left: 1px solid var(--line); padding-left: 20px; }
-    .hub-header { margin-bottom: 24px; }
+    .hub-intro { margin-bottom: 24px; }
   }
   @media (max-width: 899px) {
     #tabBar { padding-left: 16px; padding-right: 16px; }
@@ -889,32 +896,22 @@
     <section id="hubViewSection" aria-labelledby="hub-view-h">
       <h2 id="hub-view-h">Hub</h2>
       <div class="card">
-        <!-- Brief 056: the header uses the card's full width — who is in the
-             hub on the left, what it is built from on the right; one column
-             on phones (title → meta → families → sources). -->
-        <div class="hub-header">
-          <div class="hub-header-main">
-            <h3 id="hubTitle" class="hub-title">Choose a hub</h3>
-            <p id="hubChooserText">Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.</p>
-            <p class="hint hub-meta" id="hubMeta"></p>
-            <p class="hint hub-meta" id="hubContact" hidden></p>
-            <div id="hubMembers" class="hub-members" hidden>
-              <p class="hub-label">Families in this hub</p>
-              <div id="hubMembersList"></div>
-            </div>
-          </div>
-          <div class="hub-header-side" id="hubSourcesCard">
-            <p class="hub-label">Sources for this hub</p>
-            <p class="hint hub-side-hint">Everything this hub is built from.</p>
-            <div id="hubSources"></div>
-            <div id="hubWebsiteAdd" hidden>
-              <label class="field"><span id="hubWebsiteAddLabel">Add the school website</span>
-                <input type="url" id="hubWebsiteAddInput" placeholder="https://" inputmode="url">
-              </label>
-              <p style="margin:8px 0 0"><button class="small-btn secondary" id="hubWebsiteSaveBtn" type="button">Save website</button></p>
-              <p class="hint" id="hubWebsiteAddStatus"></p>
-            </div>
-          </div>
+        <!-- Brief 058: a first-time parent reads what the hub is for, then
+             what to do. One column on phones (intro → start here → add →
+             shared so far → parents → where updates come from → manage);
+             from 900px the parents and sources sit in a side column. -->
+        <div class="hub-intro">
+          <h3 id="hubTitle" class="hub-title">Choose a hub</h3>
+          <p id="hubChooserText">Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.</p>
+          <p class="hub-purpose" id="hubPurpose" hidden></p>
+          <p class="hint hub-meta" id="hubMeta"></p>
+        </div>
+        <div class="hub-start" id="hubStartHere" hidden>
+          <p class="hub-label">Start here</p>
+          <ol class="hub-steps">
+            <li id="hubStepAdd"><span class="hub-step-mark" aria-hidden="true"></span><button class="text-btn" type="button" id="hubStepAddBtn">Add this week’s newsletter or a school notice</button></li>
+            <li id="hubStepInvite"><span class="hub-step-mark" aria-hidden="true"></span><button class="text-btn" type="button" id="hubStepInviteBtn">Invite another parent</button></li>
+          </ol>
         </div>
         <div class="card" id="placementCard" hidden style="margin-bottom:12px">
           <p style="margin:0"><b>Place your children in this hub</b></p>
@@ -928,12 +925,8 @@
         </div>
         <div class="hub-grid">
           <div class="hub-grid-main">
-            <p class="hub-label">What is in this hub</p>
-            <button class="toggle-btn" id="hubGroupsToggle" type="button" hidden>Expand all</button>
-            <div id="hubFacts"><p class="facts-empty">Nothing added yet.</p></div>
-          </div>
-          <div class="hub-grid-side">
-            <p class="hub-label">Add material</p>
+            <div class="hub-section hub-add">
+            <p class="hub-label" id="hubAddLabel">Got something from the school?</p>
             <div class="add-material">
             <label class="field">Paste a newsletter or notice
               <textarea id="materialText" placeholder="Paste the text here — or paste a screenshot…"></textarea>
@@ -959,7 +952,21 @@
             <p class="hint" id="materialWaitNote" hidden>This can take up to a minute — you do not need to stay here. It will be in this hub when you come back.</p>
             </div>
             </div>
-            <p style="margin-top:14px"><button class="small-btn secondary" id="inviteBtn" type="button">Invite a parent</button></p>
+            <p class="hint hub-add-note">Parents in this hub can see what you add. Your family’s details are never shared.</p>
+            </div>
+            <div class="hub-section">
+            <p class="hub-label">Shared so far</p>
+            <button class="toggle-btn" id="hubGroupsToggle" type="button" hidden>Expand all</button>
+            <div id="hubFacts"><p class="facts-empty">Nothing added yet.</p></div>
+            </div>
+          </div>
+          <div class="hub-grid-side">
+            <div class="hub-section" id="hubMembers" hidden>
+              <p class="hub-label">Parents here</p>
+              <div id="hubMembersList"></div>
+            </div>
+            <div class="hub-invite">
+            <p style="margin:0"><button class="small-btn secondary" id="inviteBtn" type="button">Invite a parent</button></p>
             <p class="hint" id="inviteLink" style="word-break:break-all"></p>
             <div id="inviteShare" hidden>
               <p class="share-row">
@@ -971,17 +978,34 @@
               <p class="hint" id="inviteCopyStatus"></p>
             </div>
             <div id="hubRequests"></div>
+            </div>
+            <div class="hub-section" id="hubSourcesCard">
+              <p class="hub-label">Where updates come from</p>
+              <div id="hubSources"></div>
+              <div id="hubWebsiteAdd" hidden>
+                <label class="field"><span id="hubWebsiteAddLabel">Add the school website</span>
+                  <input type="url" id="hubWebsiteAddInput" placeholder="https://" inputmode="url">
+                </label>
+                <p style="margin:8px 0 0"><button class="small-btn secondary" id="hubWebsiteSaveBtn" type="button">Save website</button></p>
+                <p class="hint" id="hubWebsiteAddStatus"></p>
+              </div>
+            </div>
           </div>
         </div>
-        <div id="hubDanger" hidden>
-          <p style="margin:16px 0 0"><button class="text-btn danger" id="deleteHubBtn" type="button">Delete this hub</button></p>
+        <details class="hub-manage" id="hubDanger" hidden>
+          <summary>Manage this hub</summary>
+          <div id="hubManageMembers" hidden>
+            <p class="hub-label">Remove a family</p>
+            <div id="hubManageMembersList"></div>
+          </div>
+          <p style="margin:12px 0 0"><button class="text-btn danger" id="deleteHubBtn" type="button">Delete this hub</button></p>
           <div id="deleteHubConfirm" hidden>
             <p class="hint">Delete <b id="deleteHubName"></b> for everyone? Its newsletters, notes, and memberships go with it. This can’t be undone.</p>
             <p style="margin:8px 0"><button class="small-btn" id="deleteHubYesBtn" type="button">Yes, delete it</button>
             <button class="small-btn secondary" id="deleteHubNoBtn" type="button">Keep it</button></p>
             <p class="hint" id="deleteHubStatus"></p>
           </div>
-        </div>
+        </details>
       </div>
     </section>
     </div>
@@ -1213,7 +1237,8 @@
     const listEl = document.getElementById('hubFacts');
     const toggle = document.getElementById('hubGroupsToggle');
     const cards = Array.prototype.filter.call(listEl.children, function (el) { return el.tagName === 'DETAILS'; });
-    if (!cards.length) { toggle.hidden = true; return; }
+    // Brief 058: one card needs no Expand all.
+    if (cards.length < 2) { toggle.hidden = true; return; }
     toggle.hidden = false;
     const allOpen = cards.every(function (c) { return c.open; });
     toggle.textContent = allOpen ? 'Collapse all' : 'Expand all';
@@ -1231,7 +1256,6 @@
       rows.push('<p class="source-row" style="margin:4px 0"><b>' + esc(label) + '</b> · ' +
         '<a href="' + esc(site) + '" target="_blank" rel="noopener">' + esc(site) + '</a></p>');
     }
-    rows.push('<p class="source-row" style="margin:4px 0">Calendar link — coming soon</p>');
     box.innerHTML = rows.join('');
     document.getElementById('hubWebsiteAddInput').value = '';
     document.getElementById('hubWebsiteAddStatus').textContent = '';
@@ -1242,6 +1266,29 @@
     } else {
       addWrap.hidden = true;
     }
+    document.getElementById('hubSourcesCard').hidden = !site && addWrap.hidden;
+  }
+
+  // Brief 058: what a material gave this family, in words a parent reads at
+  // a glance ("1 to-do · 2 dates · 3 updates"), instead of a raw note count.
+  // A to-do is anything factBullet badges as an action; a date is any
+  // other dated note.
+  function materialStatusText(m, items) {
+    if (!items.length) {
+      return m.status === 'failed' ? 'couldn’t be read' : 'nothing for your family in this one';
+    }
+    let dates = 0;
+    let todos = 0;
+    items.forEach(function (f) {
+      if (factActionKind(f) || f.action_required) todos++;
+      else if (f.date) dates++;
+    });
+    const updates = items.length - dates - todos;
+    const parts = [];
+    if (todos) parts.push(todos + (todos === 1 ? ' to-do' : ' to-dos'));
+    if (dates) parts.push(dates + (dates === 1 ? ' date' : ' dates'));
+    if (updates) parts.push(updates + (updates === 1 ? ' update' : ' updates'));
+    return parts.join(' · ');
   }
 
   function renderHubSources(facts, materials) {
@@ -1273,9 +1320,8 @@
         byName[name].items.push(f);
       });
       const open = items.some(factMatters);
-      const noteWord = items.length === 1 ? 'note' : 'notes';
       let body = '<summary><b>' + esc(m.title) + '</b> ' +
-        '<span class="added">Added ' + esc(humanDate(m.created_at)) + ' · ' + items.length + ' ' + noteWord + '</span></summary>';
+        '<span class="added">Added ' + esc(humanDate(m.created_at)) + ' · ' + esc(materialStatusText(m, items)) + '</span></summary>';
       if (m.has_file) {
         var fileUrl = '/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(m.id) + '/file';
         if (m.kind === 'image') {
@@ -1813,6 +1859,8 @@
     else {
       document.getElementById('hubTitle').textContent = 'Choose a hub';
       document.getElementById('hubChooserText').hidden = false;
+      document.getElementById('hubPurpose').hidden = true;
+      document.getElementById('hubStartHere').hidden = true;
     }
   }
 
@@ -2437,36 +2485,37 @@
     const members = (data && data.members) || [];
     const contactNames = (data && data.contact_names) ||
       ((data && data.contacts) || []).map(function (c) { return c.parent_name || c.name || c; });
-    const contactEl = document.getElementById('hubContact');
-    if (contactNames.length) {
-      contactEl.textContent = 'Hub contact: ' + contactNames.join(', ');
-      contactEl.hidden = false;
-    } else if (data && data.hub_contact) {
-      contactEl.textContent = 'Hub contact: ' + data.hub_contact;
-      contactEl.hidden = false;
-    } else {
-      contactEl.textContent = '';
-      contactEl.hidden = true;
-    }
     const box = document.getElementById('hubMembers');
-    const list = document.getElementById('hubMembersList');
+    const roster = document.getElementById('hubMembersList');
+    const manageBox = document.getElementById('hubManageMembers');
+    const list = document.getElementById('hubManageMembersList');
     if (!members.length) {
       box.hidden = true;
+      roster.innerHTML = '';
+      manageBox.hidden = true;
       list.innerHTML = '';
       return;
     }
     box.hidden = false;
-    list.innerHTML = members.map(function (m) {
+    // Brief 058: the roster reads as people — "(you)" on the viewer's row,
+    // "Hub contact" on whoever runs it. Remove controls live under
+    // Manage this hub, out of the way of the everyday view.
+    roster.innerHTML = members.map(function (m) {
       const name = m.parent_name || m.display_name || m.family_name || m.name || '';
-      const line = '<span class="member-name">' + esc(name) + ' · ' + esc(memberRoleLabel(m)) + '</span>';
-      // Brief 055: only a founder/admin's roster carries member_key, and
-      // only on families they may remove.
-      if (!(m.can_remove && m.member_key)) {
-        return '<div class="member-row"><p class="hint member-line">' + line + '</p></div>';
-      }
+      const role = contactNames.indexOf(name) !== -1 ? 'Hub contact'
+        : memberRoleLabel(m) === 'Member' ? '' : memberRoleLabel(m);
+      return '<p class="hint member-line"><span class="member-name">' + esc(name) +
+        (m.is_you ? ' (you)' : '') + (role ? ' · ' + esc(role) : '') + '</span></p>';
+    }).join('');
+    // Brief 055: only a founder/admin's roster carries member_key, and
+    // only on families they may remove.
+    const removable = members.filter(function (m) { return m.can_remove && m.member_key; });
+    manageBox.hidden = !removable.length;
+    list.innerHTML = removable.map(function (m) {
+      const name = m.parent_name || m.display_name || m.family_name || m.name || '';
       const key = esc(m.member_key);
       return '<div class="member-row">' +
-        '<p class="hint member-line">' + line +
+        '<p class="hint member-line"><span class="member-name">' + esc(name) + '</span>' +
         ' <button class="text-btn danger member-remove-btn" type="button" data-remove-member="' + key + '">Remove</button></p>' +
         '<div data-member-confirm hidden>' +
         '<p class="hint">Remove ' + esc(name) + ' from this hub?</p>' +
@@ -2508,6 +2557,13 @@
     });
   }
 
+  // Brief 058: a new hub shows two first steps until both are done.
+  function renderHubStartHere(hasMaterial, hasOtherFamily) {
+    document.getElementById('hubStepAdd').classList.toggle('done', hasMaterial);
+    document.getElementById('hubStepInvite').classList.toggle('done', hasOtherFamily);
+    document.getElementById('hubStartHere').hidden = hasMaterial && hasOtherFamily;
+  }
+
   async function loadHubDetail(hubId) {
     currentHubId = hubId;
     markSelectedHub();
@@ -2519,9 +2575,18 @@
       document.getElementById('hubChooserText').hidden = true;
       renderPlacementCard(data);
       const detailTeam = teamLine(data.hub);
-      document.getElementById('hubMeta').textContent = data.member_count + ' families in this hub · you are ' +
-        (data.hub.role === 'admin' ? 'an admin' : 'a member') +
+      const isTeam = data.hub.kind === 'team';
+      document.getElementById('hubMeta').textContent =
+        data.member_count + (data.member_count === 1 ? ' family' : ' families') + ' · ' +
+        (data.hub.role === 'admin' ? 'You’re the admin' : 'You’re a member') +
         (detailTeam ? ' · ' + detailTeam : '');
+      const purposeEl = document.getElementById('hubPurpose');
+      purposeEl.textContent = 'A shared space for this ' + (isTeam ? 'team’s' : 'school’s') + ' parents. ' +
+        'Add the newsletters and notices you get, and ParentLoop turns them into dates and to-dos ' +
+        'in each family’s evening check. Your family’s details stay private.';
+      purposeEl.hidden = false;
+      document.getElementById('hubAddLabel').textContent =
+        isTeam ? 'Got something from the team or league?' : 'Got something from the school?';
       renderHubMembers(data);
       document.getElementById('hubDanger').hidden = data.hub.role !== 'admin';
       document.getElementById('deleteHubConfirm').hidden = true;
@@ -2531,6 +2596,7 @@
       const materials = data.materials || [];
       renderHubSourcesSection(data.hub);
       renderHubSources(facts, materials);
+      renderHubStartHere(materials.length > 0, data.member_count > 1);
       if (data.hub.role === 'admin') {
         const rRes = await fetch('/api/hubs/' + encodeURIComponent(hubId) + '/join-requests');
         const rData = await rRes.json();
@@ -2563,6 +2629,8 @@
     } catch (e) {
       document.getElementById('hubTitle').textContent = 'Choose a hub';
       document.getElementById('hubChooserText').hidden = false;
+      document.getElementById('hubPurpose').hidden = true;
+      document.getElementById('hubStartHere').hidden = true;
       document.getElementById('hubMeta').textContent = e.message;
       renderHubMembers({ members: [], contact_names: [] });
       document.getElementById('hubDanger').hidden = true;
@@ -3007,6 +3075,18 @@
     paintGroupsToggle();
   });
 
+  document.getElementById('hubStepAddBtn').addEventListener('click', function () {
+    const box = document.getElementById('materialText');
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    box.focus({ preventScroll: true });
+  });
+
+  document.getElementById('hubStepInviteBtn').addEventListener('click', function () {
+    const btn = document.getElementById('inviteBtn');
+    btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    btn.focus({ preventScroll: true });
+  });
+
   document.getElementById('hubBackBtn').addEventListener('click', function () {
     showView('hubs');
     loadHubs();
@@ -3411,7 +3491,7 @@
       }
       statusEl.textContent = data.facts_pending
         ? (data.facts_error || 'Saved, but the notes could not be read this time.')
-        : 'Added — ' + data.facts_added + ' shared notes found.';
+        : 'Added — it’s now under Shared so far.';
       document.getElementById('materialText').value = '';
       clearMaterialImage();
       clearMaterialPdf();

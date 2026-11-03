@@ -183,9 +183,8 @@ test('hub membership is visible to members and every hub names a contact', async
 
   await t.test('hub page carries the families section and contact line', async () => {
     const page = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
-    assert.ok(page.includes('Families in this hub'), 'families section heading present');
+    assert.ok(page.includes('Parents here'), 'families section heading present');
     assert.ok(page.includes('id="hubMembers"'), 'members container present');
-    assert.ok(page.includes('id="hubContact"'), 'contact element present');
-    assert.ok(page.includes('Hub contact:'), 'contact line renders in the app voice');
+    assert.ok(page.includes("'Hub contact'"), 'the contact is named on their roster row');
   });
 });
