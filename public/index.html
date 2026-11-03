@@ -508,7 +508,8 @@
   }
   .small-btn.secondary { background: var(--wash); color: var(--pine-dark); border: 1px solid var(--line); }
   .small-btn:disabled { opacity: 0.55; cursor: wait; }
-  .add-material { display: grid; gap: 12px; }
+  .add-material { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; max-width: 100%; }
+  .add-material > * { min-width: 0; max-width: 100%; }
   .add-material .field { margin-bottom: 0; }
   /* Start-a-hub form: one consistent vertical rhythm (12px field-to-field,
      matching .field's own margin and the add-material grid), so the form
@@ -583,6 +584,8 @@
     align-items: center;
     gap: 10px;
     width: 100%;
+    min-width: 0;
+    max-width: 100%;
     border: 1px solid var(--line);
     border-radius: 12px;
     padding: 8px;
@@ -625,14 +628,15 @@
   .paste-image-chip {
     display: flex; align-items: center; gap: 10px;
     border: 1px solid var(--line); border-radius: 12px; padding: 8px; background: #fff;
+    min-width: 0; max-width: 100%; width: 100%; overflow: hidden;
   }
   .paste-image-chip[hidden] { display: none; }
   .paste-image-chip img {
-    width: 48px; height: 48px; object-fit: cover; border-radius: 8px; flex: none; background: var(--wash);
+    width: 48px; height: 48px; max-width: 100%; object-fit: cover; border-radius: 8px; flex: none; background: var(--wash);
   }
-  .paste-image-meta { flex: 1; min-width: 0; font-size: 14.5px; }
-  .paste-image-meta b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .paste-image-meta span { color: var(--muted); font-size: 13.5px; }
+  .paste-image-meta { flex: 1; min-width: 0; max-width: 100%; overflow: hidden; font-size: 14.5px; }
+  .paste-image-meta b { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .paste-image-meta span { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 13.5px; }
   .paste-image-remove {
     flex: none; border: 1px solid var(--line); border-radius: 999px; background: var(--wash);
     color: var(--pine-dark); width: 32px; height: 32px; font-size: 18px; line-height: 1; cursor: pointer;
