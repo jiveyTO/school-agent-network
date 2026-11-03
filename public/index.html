@@ -268,6 +268,10 @@
   .group-subhead .count { font-weight: 400; color: var(--muted); }
   .note-list { margin: 6px 0 6px 20px; padding: 0; }
   .note-list li { margin: 5px 0; }
+  /* Quote verification: a verified note's proof, the exact words it came
+     from, as a small muted line under the note (same look as .source-line). */
+  .note-quote { display: block; margin-top: 2px; font-size: 13px; color: var(--muted); overflow-wrap: break-word; }
+  .note-quote .quote { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-style: italic; font-size: 12.5px; color: #55645a; }
   details.source-card { margin-bottom: 10px; }
   details.source-card summary { cursor: pointer; }
   details.source-card summary .added { font-weight: 400; color: var(--muted); }
@@ -1125,7 +1129,17 @@
     if (kind) chips.push('<span class="chip action-chip">' + esc(f.action || 'Action needed') + '</span>');
     else if (f.action_required) chips.push('<span class="chip action-chip">Action needed</span>');
     return '<li>' + esc(String(f.detail || f.title || '').trim()) +
-      (chips.length ? ' ' + chips.join(' ') : '') + '</li>';
+      (chips.length ? ' ' + chips.join(' ') : '') + noteQuoteLines(f) + '</li>';
+  }
+
+  // A note whose quote was checked against the original at extraction time
+  // shows that quote under it. Merged notes can carry more than one quote.
+  function noteQuoteLines(f) {
+    if (!(f && f.quote_verified)) return '';
+    return String(f.source_text || '').split(/\n\s*\n/).map(function (q) { return q.trim(); })
+      .filter(Boolean)
+      .map(function (q) { return '<span class="note-quote"><span class="quote">“' + esc(q) + '”</span></span>'; })
+      .join('');
   }
 
   function groupBulletList(items, key) {
@@ -1139,7 +1153,9 @@
   }
 
   function groupQuotesBlock(items, key) {
-    const quoted = items.filter(function (f) { return String((f && f.source_text) || '').trim(); });
+    // Verified notes already show their quote inline; this toggle stays
+    // for notes stored before quotes were verified.
+    const quoted = items.filter(function (f) { return !f.quote_verified && String((f && f.source_text) || '').trim(); });
     if (!quoted.length) return '';
     return '<button class="toggle-btn" type="button" data-quote-toggle="' + key + '">Show sources</button>' +
       '<div data-quotes="' + key + '" hidden>' +
@@ -1282,6 +1298,9 @@
         body += '<p class="hint" style="margin:6px 0">Some pages were pictures — read with OCR.</p>';
       } else if (m.may_have_unread_pictures) {
         body += '<p class="hint" style="margin:6px 0">Part of this document may be inside pictures, so we couldn\'t read it. If something looks missing, have a look at the original.</p>';
+      }
+      if (m.unverified_count > 0) {
+        body += '<p class="hint" style="margin:6px 0">Some items couldn\'t be verified against the original and were left out (' + esc(String(m.unverified_count)) + ').</p>';
       }
       if (m.can_remove) {
         body += '<div class="material-remove">' +

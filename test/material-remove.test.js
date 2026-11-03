@@ -118,11 +118,20 @@ test('material removal API: permissions, demo protection, evening check', async 
         });
       } else {
         extractCount += 1;
+        // Quote verification: like a well-behaved model, quote the
+        // material's own first sentence so the server can verify it.
+        let quote = 'Stub notice text ' + extractCount + '.';
+        try {
+          const body = JSON.parse(raw);
+          const user = body.messages.find((m) => m.role === 'user');
+          const text = String((user && user.content) || '').split('Newsletter text:\n\n')[1] || '';
+          if (text) quote = text.split(/(?<=\.)\s/)[0];
+        } catch { /* keep the fallback */ }
         content = JSON.stringify([{
           id: 'mr-stub-' + extractCount, type: 'event', title: 'Stub notice ' + extractCount,
           detail: 'A fictional notice.', date: '2026-11-20', time: '',
           applies_to: 'all students', action_required: false, action: '', link: '',
-          source_document: 'stub', source_text: 'Stub notice text ' + extractCount + '.',
+          source_document: 'stub', source_text: quote,
           published_at: '', extracted_at: '', confidence: 1, supersedes: '',
           group_label: 'Notices', group_summary: '',
         }]);

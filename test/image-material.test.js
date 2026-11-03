@@ -85,9 +85,17 @@ test('image material: vision extraction, retention, member-only view', async (t)
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
-      try { modelRequests.push(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { modelRequests.push(null); }
+      let body = null;
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { body = null; }
+      modelRequests.push(body);
+      // Quote verification: an image read also returns its transcript (the
+      // pictured notice), and the facts' quotes are checked against it.
+      const system = String(((body && body.messages) || [])[0] && body.messages[0].content || '');
+      const content = /source_transcript/.test(system)
+        ? JSON.stringify({ material_title: 'School picnic notice', source_transcript: NOTICE_TEXT, facts: JSON.parse(GOOD_FACTS) })
+        : GOOD_FACTS;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ choices: [{ message: { content: GOOD_FACTS }, finish_reason: 'stop' }] }));
+      res.end(JSON.stringify({ choices: [{ message: { content }, finish_reason: 'stop' }] }));
     });
   });
   await new Promise((resolve) => fakeModel.listen(0, '127.0.0.1', resolve));
