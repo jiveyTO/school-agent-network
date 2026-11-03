@@ -560,20 +560,14 @@ test('grade and class live in hub placements, editable from the hub view or My f
   }
 });
 
-test('demo viewers get a text-only demo bar; the Start path lives in the header', () => {
-  for (const token of ['id="demoBar"', 'demoViewing', 'paintDemoBar',
-    'You’re exploring as the demo family.']) {
+test('demo viewers see one demo indicator, the header pill; the Start path lives in the header', () => {
+  for (const token of ['id="demoPill"', 'demoViewing', 'paintDemoBar']) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
+  assert.ok(!PAGE.includes('id="demoBar"'), 'no second demo bar under the header');
+  assert.ok(!PAGE.includes('You’re exploring as the demo family.<'), 'the bar sentence is gone');
+  assert.ok(!PAGE.includes('.demo-bar'), 'no leftover demo bar styles');
   assert.ok(!PAGE.includes('id="demoBarBtn"'), 'banner button is gone — no duplicate Start path in the banner');
-  const barOpen = PAGE.indexOf('id="demoBar"');
-  const barClose = PAGE.indexOf('</div>', barOpen);
-  const barMarkup = PAGE.slice(barOpen, barClose);
-  assert.ok(!barMarkup.includes('<button'), 'demo bar contains no button, only the notice sentence');
-  const barAt = PAGE.indexOf('id="demoBar"');
-  const tabAt = PAGE.indexOf('id="tabBar"');
-  assert.ok(barAt !== -1 && barAt < tabAt, 'demo bar sits under the header, above the tab row');
-  assert.ok(PAGE.includes('demoBar.hidden = !(demoViewing && !tabBar.hidden)'), 'bar shows for demo viewers in main views only');
   assert.ok(!PAGE.includes('>Start over</button>'), 'quiet control renamed to match');
 });
 
@@ -699,12 +693,12 @@ test('demo pill tracks the live viewer through the real boot sequence', () => {
   assert.ok(paintBody.includes("getElementById('demoPill').hidden = !demoViewing"),
     'paintDemoBar drives the pill from the current viewer flag');
   function repaint(els, demoViewing) {
-    const fn = new Function('document', 'demoBar', 'tabBar', 'demoViewing', paintBody);
-    fn({ getElementById: (id) => els[id] }, els.demoBar, els.tabBar, demoViewing);
+    const fn = new Function('document', 'tabBar', 'demoViewing', paintBody);
+    fn({ getElementById: (id) => els[id] }, els.tabBar, demoViewing);
   }
-  // Fresh markup state: pill, demo bar, and tabs all start hidden.
+  // Fresh markup state: pill and tabs both start hidden.
   function freshEls() {
-    return { demoPill: { hidden: true }, demoBar: { hidden: true }, tabBar: { hidden: true } };
+    return { demoPill: { hidden: true }, tabBar: { hidden: true } };
   }
   // showMain(): tabs unhide, then repaint — the same order as the page.
   function showMain(els, demoViewing) {
@@ -719,14 +713,12 @@ test('demo pill tracks the live viewer through the real boot sequence', () => {
   demoViewing = Boolean({ is_demo: false } && { is_demo: false }.is_demo);
   showMain(els, demoViewing);
   assert.equal(els.demoPill.hidden, true, 'signed-in family boot ends with the pill hidden');
-  assert.equal(els.demoBar.hidden, true, 'signed-in family boot ends with the demo bar hidden');
 
   // Boot as the demo viewer: the same sequence must leave the pill visible.
   els = freshEls();
   demoViewing = Boolean({ is_demo: true } && { is_demo: true }.is_demo);
   showMain(els, demoViewing);
   assert.equal(els.demoPill.hidden, false, 'demo boot ends with the pill visible');
-  assert.equal(els.demoBar.hidden, false, 'demo boot ends with the demo bar visible');
 
   // Switching both ways mid-session repaints too, so the pill never sticks.
   showMain(els, false); // create-profile / reset path clears the flag, then shows main
@@ -1089,13 +1081,12 @@ test('invite landing and account choice hide the demo pill for the demo viewer (
   }
   const body = paintBody();
   function repaint(els, demoViewing, joinFlowActive) {
-    const fn = new Function('document', 'demoBar', 'tabBar', 'demoViewing', 'joinFlowActive', body);
-    fn({ getElementById: (id) => els[id] }, els.demoBar, els.tabBar, demoViewing, joinFlowActive);
+    const fn = new Function('document', 'tabBar', 'demoViewing', 'joinFlowActive', body);
+    fn({ getElementById: (id) => els[id] }, els.tabBar, demoViewing, joinFlowActive);
   }
   function freshEls(joinVisible) {
     return {
       demoPill: { hidden: true },
-      demoBar: { hidden: true },
       tabBar: { hidden: true },
       joinView: { hidden: !joinVisible },
     };
@@ -1113,7 +1104,6 @@ test('invite landing and account choice hide the demo pill for the demo viewer (
   els.tabBar.hidden = false;
   repaint(els, true, false);
   assert.equal(els.demoPill.hidden, false, 'demo home still shows the pill for the demo viewer');
-  assert.equal(els.demoBar.hidden, false, 'demo home still shows the demo bar for the demo viewer');
   els = freshEls(false);
   els.tabBar.hidden = false;
   repaint(els, false, false);
