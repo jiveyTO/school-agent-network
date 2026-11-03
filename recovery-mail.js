@@ -38,9 +38,17 @@ async function sendRecoveryEmail({ to, link }) {
     '— ParentLoop',
   ].join('\n');
 
+  return sendEmail({ to, subject, text });
+}
+
+// One transport for every ParentLoop email (recovery links, the evening
+// email). html and headers (e.g. List-Unsubscribe) are optional and only
+// reach Resend; the test capture and the generic endpoint get the same
+// fields as JSON.
+async function sendEmail({ to, subject, text, html, headers }) {
   const testFile = process.env.PARENTLOOP_TEST_MAIL_FILE || '';
   if (testFile) {
-    fs.appendFileSync(testFile, JSON.stringify({ to, subject, text }) + '\n');
+    fs.appendFileSync(testFile, JSON.stringify({ to, subject, text, html: html || '', headers: headers || {} }) + '\n');
     return { sent: true, via: 'test-capture' };
   }
 
@@ -49,10 +57,10 @@ async function sendRecoveryEmail({ to, link }) {
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, subject, text }),
+      body: JSON.stringify({ to, subject, text, html: html || '' }),
       signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) throw new Error('recovery mail endpoint HTTP ' + res.status);
+    if (!res.ok) throw new Error('mail endpoint HTTP ' + res.status);
     return { sent: true, via: 'endpoint' };
   }
 
@@ -60,17 +68,20 @@ async function sendRecoveryEmail({ to, link }) {
   const from = process.env.RESEND_FROM || '';
   if (!apiKey || !from) return { sent: false, reason: 'not_configured' };
   const apiUrl = process.env.RESEND_API_URL || 'https://api.resend.com/emails';
+  const payload = { from, to: [to], subject, text };
+  if (html) payload.html = html;
+  if (headers && Object.keys(headers).length) payload.headers = headers;
   const res = await fetch(apiUrl, {
     method: 'POST',
     headers: {
       Authorization: 'Bearer ' + apiKey,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ from, to: [to], subject, text }),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) throw new Error('Resend HTTP ' + res.status);
   return { sent: true, via: 'resend' };
 }
 
-module.exports = { sendRecoveryEmail, isRecoveryMailConfigured };
+module.exports = { sendRecoveryEmail, sendEmail, isRecoveryMailConfigured, isMailConfigured: isRecoveryMailConfigured };

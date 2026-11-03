@@ -268,6 +268,8 @@
   .group-subhead .count { font-weight: 400; color: var(--muted); }
   .note-list { margin: 6px 0 6px 20px; padding: 0; }
   .note-list li { margin: 5px 0; }
+  .evening-email-toggle { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; min-height: 36px; }
+  .evening-email-toggle input { width: 20px; height: 20px; }
   /* Quote verification: a verified note's proof, the exact words it came
      from, as a small muted line under the note (same look as .source-line). */
   .note-quote { display: block; margin-top: 2px; font-size: 13px; color: var(--muted); overflow-wrap: break-word; }
@@ -679,8 +681,8 @@
     <p class="auth-error" id="authError" hidden></p>
   </header>
   <nav id="tabBar" aria-label="ParentLoop views" hidden>
+    <button class="tab" id="tabEvening" type="button" data-view="evening">Tonight</button>
     <button class="tab active" id="tabHubs" type="button" data-view="hubs">My hubs</button>
-    <button class="tab" id="tabEvening" type="button" data-view="evening">Evening check</button>
     <button class="tab" id="tabFamily" type="button" data-view="family">My family</button>
   </nav>
   <main>
@@ -977,6 +979,7 @@
         <div class="thinking-dots" id="parentDots" hidden aria-hidden="true"><span></span><span></span><span></span></div>
         <p class="hint thinking-label" id="parentStatus">One calm summary of what’s still open for Maya tonight.</p>
       </div>
+      <p class="hint" id="eveningEmailHint" hidden>Want this in your inbox each evening? <button class="text-btn" type="button" id="eveningEmailHintBtn">Turn on the evening email</button></p>
       <div class="error-card" id="parentError" hidden>
         <p><b>That didn’t work.</b> <span id="parentErrorText"></span></p>
         <button class="retry-btn" id="parentRetry" type="button">Try again</button>
@@ -985,7 +988,7 @@
 
     <section aria-labelledby="parent-results-h">
       <h2 id="parent-results-h">Needs your attention tonight</h2>
-      <div id="parentResults"><p class="facts-empty">All calm — run your evening check to see tonight’s list.</p></div>
+      <div id="parentResults"><p class="facts-empty">Loading tonight’s check…</p></div>
     </section>
     </div>
 
@@ -1013,6 +1016,16 @@
         </label>
         <p style="margin:8px 0 0"><button class="small-btn" id="familyEmailSaveBtn" type="button">Save email</button></p>
         <p class="hint" id="familyEmailStatus"></p>
+      </div>
+      <div class="card" id="eveningEmailBox" hidden style="margin-top:12px">
+        <p style="margin-top:0"><b>Evening email</b></p>
+        <p class="hint" style="margin-top:0">Tonight’s evening check in your inbox — what to do, any clashes, and what’s coming up this week.</p>
+        <label class="evening-email-toggle"><input type="checkbox" id="eveningEmailOn"> Email me the evening check each evening</label>
+        <label class="field" style="margin-top:10px">Send it at
+          <select id="eveningEmailTime"></select>
+        </label>
+        <p style="margin:8px 0 0"><button class="small-btn" id="eveningEmailSaveBtn" type="button">Save</button></p>
+        <p class="hint" id="eveningEmailStatus"></p>
       </div>
     </section>
 
@@ -1860,7 +1873,15 @@
     document.getElementById('recoveryView').hidden = true;
     tabBar.hidden = false;
     paintDemoBar();
-    showView('hubs');
+    // The evening check is home for any family with a hub; a family with
+    // none yet starts on hub setup.
+    if (currentHubs.length) {
+      showView('evening');
+      loadEveningHome();
+      loadEveningEmail();
+    } else {
+      showView('hubs');
+    }
   }
 
   function showJoin() {
@@ -1878,7 +1899,8 @@
     btn.addEventListener('click', function () {
       const view = btn.getAttribute('data-view');
       showView(view);
-      if (view === 'family') { loadFamilyPlacements(); loadAgentTokens(); }
+      if (view === 'family') { loadFamilyPlacements(); loadAgentTokens(); loadEveningEmail(); }
+      if (view === 'evening') loadEveningHome();
     });
   });
 
@@ -2677,19 +2699,22 @@
     }
   }
 
-  parentRunBtn.addEventListener('click', async function () {
+  async function runEveningCheck(opts) {
+    const background = Boolean(opts && opts.background);
     parentRunBtn.disabled = true;
     parentRunBtn.textContent = 'Checking…';
     document.getElementById('parentDots').hidden = false;
-    const stages = startStagedStatus(parentStatus, [
+    // A background refresh keeps the saved check on screen and says so
+    // quietly; a first or requested run shows the staged progress.
+    const stages = background ? null : startStagedStatus(parentStatus, [
       'Pulling together tonight’s summary…',
       'Checking every hub for what’s still open…',
       'Writing one calm summary…',
     ]);
+    if (background) parentStatus.textContent = 'Updating with the latest notes…';
     parentError.hidden = true;
     renderParentLogs([
       { at: new Date().toISOString(), message: 'evening check started (browser → server)' },
-      { at: new Date().toISOString(), message: 'simulated time: Thursday, November 5, 2026, 7:30 PM' },
     ]);
     try {
       // Wait state (thinking dots + staged status) stays up across the
@@ -2701,6 +2726,10 @@
       renderParentLogs(data.logs || []);
       if (!data.ok) {
         const msg = data.error || 'Something went wrong during your evening check.';
+        if (background) {
+          parentStatus.textContent = 'Couldn’t update just now — this is your last check.';
+          return;
+        }
         parentErrorText.textContent = msg;
         parentError.hidden = false;
         parentStatus.textContent = 'That check didn’t work — here’s what happened.';
@@ -2708,12 +2737,16 @@
         return;
       }
       renderParentResult(data);
-      parentStatus.textContent = 'Done — one calm summary for tonight.';
+      parentStatus.textContent = eveningUpdatedText(data.ran_at) || 'Done — one calm summary for tonight.';
     } catch (e) {
       renderParentLogs([
         { at: new Date().toISOString(), message: 'evening check started (browser → server)' },
         { at: new Date().toISOString(), message: 'error: ' + e.message },
       ]);
+      if (background) {
+        parentStatus.textContent = 'Couldn’t update just now — this is your last check.';
+        return;
+      }
       parentErrorText.textContent = e.message;
       parentError.hidden = false;
       parentStatus.textContent = 'That check didn’t work — here’s what happened.';
@@ -2723,7 +2756,100 @@
       parentRunBtn.disabled = false;
       parentRunBtn.textContent = 'Run my evening check';
     }
+  }
+
+  parentRunBtn.addEventListener('click', function () { runEveningCheck(); });
+
+  // Evening email preferences (My family) and the nudge to turn it on
+  // (Tonight). Shown only to a family of its own, never the demo.
+  function timeLabel(hhmm) {
+    const parts = String(hhmm).split(':');
+    const h = Number(parts[0]);
+    return (h % 12 || 12) + ':' + parts[1] + ' ' + (h < 12 ? 'AM' : 'PM');
+  }
+
+  async function loadEveningEmail() {
+    const box = document.getElementById('eveningEmailBox');
+    const hint = document.getElementById('eveningEmailHint');
+    try {
+      const res = await fetch('/api/evening-email');
+      const data = await res.json();
+      if (!res.ok || !data.ok || !data.available) { box.hidden = true; hint.hidden = true; return; }
+      const select = document.getElementById('eveningEmailTime');
+      select.innerHTML = (data.times || []).map(function (t) {
+        return '<option value="' + esc(t) + '"' + (t === data.time ? ' selected' : '') + '>' + esc(timeLabel(t)) + '</option>';
+      }).join('');
+      document.getElementById('eveningEmailOn').checked = Boolean(data.enabled);
+      document.getElementById('eveningEmailStatus').textContent = data.enabled
+        ? 'On — sent to ' + data.email + ' at ' + timeLabel(data.time) + '.'
+        : (data.email ? '' : 'Add your email above to turn this on.');
+      box.hidden = false;
+      hint.hidden = Boolean(data.enabled);
+    } catch (e) {
+      box.hidden = true;
+      hint.hidden = true;
+    }
+  }
+
+  document.getElementById('eveningEmailSaveBtn').addEventListener('click', async function () {
+    const statusEl = document.getElementById('eveningEmailStatus');
+    statusEl.textContent = 'Saving…';
+    try {
+      const data = await postJson('/api/evening-email', {
+        enabled: document.getElementById('eveningEmailOn').checked,
+        time: document.getElementById('eveningEmailTime').value,
+      });
+      statusEl.textContent = data.enabled
+        ? 'On — sent to ' + data.email + ' at ' + timeLabel(data.time) + '.'
+        : 'Off — no evening email.';
+      document.getElementById('eveningEmailHint').hidden = Boolean(data.enabled);
+    } catch (e) {
+      statusEl.textContent = e.message;
+    }
   });
+
+  document.getElementById('eveningEmailHintBtn').addEventListener('click', function () {
+    showView('family');
+    loadFamilyPlacements();
+    loadAgentTokens();
+    loadEveningEmail();
+    const box = document.getElementById('eveningEmailBox');
+    if (box && !box.hidden) box.scrollIntoView({ block: 'center' });
+  });
+
+  // "Updated 6:42 PM" (or "Updated Tue, Nov 3, 6:42 PM" for an older day).
+  function eveningUpdatedText(iso) {
+    const d = new Date(iso || '');
+    if (isNaN(d.getTime())) return '';
+    const sameDay = d.toDateString() === new Date().toDateString();
+    return 'Updated ' + d.toLocaleString('en-US', sameDay
+      ? { hour: 'numeric', minute: '2-digit' }
+      : { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+
+  // Home screen: show the saved check at once, then refresh it in the
+  // background when it is stale (new notes, placements, or a new day) or
+  // when there is none yet — no button press, no blank screen.
+  let eveningLoading = false;
+  async function loadEveningHome() {
+    if (eveningLoading || parentRunBtn.disabled) return;
+    eveningLoading = true;
+    try {
+      const res = await fetch('/api/parent/latest');
+      const data = await res.json();
+      if (!res.ok || !data.ok) return;
+      if (data.check) {
+        renderParentResult(data.check);
+        parentStatus.textContent = eveningUpdatedText(data.ran_at);
+      }
+      const visible = !document.getElementById('viewEvening').hidden;
+      if ((data.stale || !data.check) && visible) await runEveningCheck({ background: Boolean(data.check) });
+    } catch (e) {
+      // Leave whatever is on screen; the button still works.
+    } finally {
+      eveningLoading = false;
+    }
+  }
 
   document.getElementById('createProfileBtn').addEventListener('click', async function () {
     const btn = document.getElementById('createProfileBtn');
@@ -2799,6 +2925,7 @@
       const data = await postJson('/api/profile/update', { parent_email: value });
       renderFamily(data.profile);
       document.getElementById('familyEmailStatus').textContent = 'Saved.';
+      loadEveningEmail();
     } catch (e) {
       statusEl.textContent = e.message;
     }

@@ -692,6 +692,15 @@ async function initDb() {
   // 1 only for facts whose quote code-verified against the material's text
   // at extraction time; facts stored before verification stay 0.
   addColumnIfMissing('facts', 'quote_verified', 'quote_verified INTEGER DEFAULT 0');
+  // Each family's latest evening check, saved so the home screen, agents,
+  // and the evening email can show it without recomputing.
+  run(`CREATE TABLE IF NOT EXISTS evening_checks (
+    profile_id TEXT PRIMARY KEY,
+    result_json TEXT NOT NULL,
+    ran_at TEXT NOT NULL,
+    moment_label TEXT,
+    fingerprint TEXT
+  )`);
   // Audit trail for items dropped because their quote did not verify.
   run(`CREATE TABLE IF NOT EXISTS fact_rejections (
     id TEXT PRIMARY KEY,
@@ -718,6 +727,11 @@ async function initDb() {
   addColumnIfMissing('profiles', 'parent_email', "parent_email TEXT DEFAULT ''");
   addColumnIfMissing('profiles', 'google_sub', "google_sub TEXT DEFAULT ''");
   addColumnIfMissing('profiles', 'google_email', "google_email TEXT DEFAULT ''");
+  // Evening email: opt-in (off by default), the local time the family
+  // wants it, and the local day it was last sent (one email per day).
+  addColumnIfMissing('profiles', 'evening_email', 'evening_email INTEGER DEFAULT 0');
+  addColumnIfMissing('profiles', 'evening_email_time', "evening_email_time TEXT DEFAULT '19:00'");
+  addColumnIfMissing('profiles', 'evening_email_last_day', "evening_email_last_day TEXT DEFAULT ''");
   addColumnIfMissing('sessions', 'google_sub', "google_sub TEXT DEFAULT ''");
   addColumnIfMissing('sessions', 'google_email', "google_email TEXT DEFAULT ''");
   // Rows from before expiry existed get 0, so they count as expired.
@@ -2358,6 +2372,69 @@ function recordFactRejections(hubId, materialId, rejected) {
   return (rejected || []).length;
 }
 
+function saveEveningCheck(profileId, { result, ran_at, moment_label, fingerprint }) {
+  if (!profileId) return;
+  run(
+    'INSERT OR REPLACE INTO evening_checks (profile_id, result_json, ran_at, moment_label, fingerprint) VALUES (?, ?, ?, ?, ?)',
+    [profileId, JSON.stringify(result || {}), ran_at || new Date().toISOString(), moment_label || '', fingerprint || '']
+  );
+  persist();
+}
+
+function getEveningCheck(profileId) {
+  const row = profileId ? one('SELECT * FROM evening_checks WHERE profile_id = ?', [profileId]) : null;
+  if (!row) return null;
+  let result = null;
+  try { result = JSON.parse(row.result_json); } catch { result = null; }
+  if (!result) return null;
+  return { result, ran_at: row.ran_at, moment_label: row.moment_label || '', fingerprint: row.fingerprint || '' };
+}
+
+// Evening email preferences. Kept out of rowToProfile on purpose: the
+// profile object is sent to the evening-check model, which has no use for
+// them.
+function getEveningEmailPrefs(profileId) {
+  const row = profileId ? one('SELECT parent_email, is_demo, evening_email, evening_email_time, evening_email_last_day FROM profiles WHERE id = ?', [profileId]) : null;
+  if (!row) return null;
+  return {
+    enabled: Boolean(row.evening_email),
+    time: row.evening_email_time || '19:00',
+    last_day: row.evening_email_last_day || '',
+    email: row.parent_email || '',
+    is_demo: Boolean(row.is_demo),
+  };
+}
+
+function setEveningEmailPrefs(profileId, enabled, time) {
+  run('UPDATE profiles SET evening_email = ?, evening_email_time = ? WHERE id = ?', [enabled ? 1 : 0, String(time || '19:00'), profileId]);
+  persist();
+  return getEveningEmailPrefs(profileId);
+}
+
+function markEveningEmailSent(profileId, day) {
+  run('UPDATE profiles SET evening_email_last_day = ? WHERE id = ?', [String(day || ''), profileId]);
+  persist();
+}
+
+// Server-side secret that signs email links (unsubscribe). Created once and
+// kept in the database, so it survives deploys with the durable store.
+function emailLinkSecret() {
+  let secret = getSetting('email_link_secret');
+  if (!secret) {
+    secret = crypto.randomBytes(32).toString('hex');
+    setSetting('email_link_secret', secret);
+    persist();
+  }
+  return secret;
+}
+
+// Real families who asked for the evening email and have an address.
+function listEveningEmailProfiles() {
+  return all(
+    "SELECT id, evening_email_time, evening_email_last_day, parent_email FROM profiles WHERE evening_email = 1 AND is_demo = 0 AND COALESCE(parent_email, '') != ''"
+  ).map((r) => ({ id: r.id, time: r.evening_email_time || '19:00', last_day: r.evening_email_last_day || '', email: r.parent_email }));
+}
+
 function listFactRejections(materialId) {
   if (!materialId) return [];
   return all('SELECT fact_title, fact_detail, quote, reason, created_at FROM fact_rejections WHERE material_id = ? ORDER BY created_at ASC', [materialId]);
@@ -2748,6 +2825,13 @@ module.exports = {
   updateMaterialText,
   recordFactRejections,
   listFactRejections,
+  saveEveningCheck,
+  getEveningCheck,
+  getEveningEmailPrefs,
+  setEveningEmailPrefs,
+  markEveningEmailSent,
+  listEveningEmailProfiles,
+  emailLinkSecret,
   updateMaterialScope,
   listMaterials,
   insertFacts,
