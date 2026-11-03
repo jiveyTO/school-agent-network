@@ -148,18 +148,6 @@
   #signedInAs[hidden], #signInBtn[hidden], #signOutBtn[hidden], #startFamilyBtn[hidden] { display: none; }
   .auth-error { margin: 10px 0 0; font-size: 14px; color: #ffe1a8; }
   .auth-error[hidden] { display: none; }
-  .demo-bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px 12px;
-    background: var(--amber-soft);
-    border: 1px solid var(--amber);
-    border-radius: 16px;
-    padding: 12px 16px;
-    margin: 12px 16px 0;
-  }
-  .demo-bar[hidden] { display: none; }
   .save-notice {
     background: var(--pine-soft);
     border: 1px solid var(--pine);
@@ -180,13 +168,6 @@
     gap: 8px 12px;
     margin-top: 10px;
   }
-  .demo-bar p {
-    margin: 0;
-    flex: 1 1 200px;
-    font-weight: 700;
-    color: var(--pine-dark);
-  }
-  .demo-bar .small-btn { flex: 0 0 auto; }
   main { padding: 20px 16px 8px; display: grid; gap: 26px; }
   /* One consistent vertical-rhythm mechanism: every section after the first
      in its container sits 28px below the previous one. */
@@ -712,9 +693,6 @@
     </div>
     <p class="auth-error" id="authError" hidden></p>
   </header>
-  <div id="demoBar" class="demo-bar" hidden>
-    <p>You’re exploring as the demo family.</p>
-  </div>
   <nav id="tabBar" aria-label="ParentLoop views" hidden>
     <button class="tab active" id="tabHubs" type="button" data-view="hubs">My hubs</button>
     <button class="tab" id="tabEvening" type="button" data-view="evening">Evening check</button>
@@ -1733,12 +1711,12 @@
   const onboardingView = document.getElementById('onboardingView');
 
   const tabBar = document.getElementById('tabBar');
-  const demoBar = document.getElementById('demoBar');
   let demoViewing = false;
   let joinFlowActive = false;
 
+  // The header pill is the one demo indicator (the separate "exploring as
+  // the demo family" bar repeated it and is gone).
   function paintDemoBar() {
-    demoBar.hidden = !(demoViewing && !tabBar.hidden);
     var inJoinFlow = false;
     try { inJoinFlow = typeof joinFlowActive !== 'undefined' && Boolean(joinFlowActive); } catch (e) {}
     if (!inJoinFlow) {
