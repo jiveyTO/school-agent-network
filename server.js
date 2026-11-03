@@ -474,6 +474,8 @@ function extractJsonArray(text) {
 // plain array (older prompt, or a model that ignored the object form)
 // still parses with no title. A truncated object keeps its complete facts
 // (via extractJsonArray from the "facts" key on) and any readable title.
+// Quote verification adds source_transcript (an image's own read) the same
+// way.
 function parseExtractionReply(content) {
   const t = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
   const firstObj = t.indexOf('{');
@@ -483,20 +485,59 @@ function parseExtractionReply(content) {
     try {
       const parsed = JSON.parse(t.slice(firstObj, end + 1));
       if (parsed && Array.isArray(parsed.facts)) {
-        return { facts: parsed.facts, title: typeof parsed.material_title === 'string' ? parsed.material_title : '' };
+        return {
+          facts: parsed.facts,
+          title: typeof parsed.material_title === 'string' ? parsed.material_title : '',
+          transcript: typeof parsed.source_transcript === 'string' ? parsed.source_transcript : '',
+        };
       }
     } catch {
       // truncated or malformed: salvage below
     }
-    const titleMatch = t.match(/"material_title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-    let title = '';
-    if (titleMatch) {
-      try { title = JSON.parse('"' + titleMatch[1] + '"'); } catch { title = ''; }
-    }
+    const stringField = (key) => {
+      const m = t.match(new RegExp('"' + key + '"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"'));
+      if (!m) return '';
+      try { return JSON.parse('"' + m[1] + '"'); } catch { return ''; }
+    };
     const factsAt = t.indexOf('"facts"');
-    return { facts: extractJsonArray(factsAt === -1 ? t : t.slice(factsAt)), title };
+    return {
+      facts: extractJsonArray(factsAt === -1 ? t : t.slice(factsAt)),
+      title: stringField('material_title'),
+      transcript: stringField('source_transcript'),
+    };
   }
-  return { facts: extractJsonArray(t), title: '' };
+  return { facts: extractJsonArray(t), title: '', transcript: '' };
+}
+
+// --- Quote verification ---------------------------------------------------
+// A fact from a parent-added material is kept only when its quote
+// (source_text) is found, by this code and not the model, in the
+// material's own text. Both sides are normalized the same way: Unicode
+// compatibility forms (PDF ligatures, non-breaking spaces), lowercase,
+// curly quotes and en/em dashes folded to plain ones, whitespace runs
+// collapsed. Quotes shorter than this many normalized characters never pass.
+const MIN_QUOTE_CHARS = 8;
+
+function normalizeQuoteText(text) {
+  return String(text || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[‘’‚‛′`]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/[‐‑‒–—―−]/g, '-')
+    .replace(/[   ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// { ok, reason } for one quote against already-normalized source text. A
+// quote wrapped in its own quotation marks is checked without them.
+function verifyQuote(quote, normalizedSource) {
+  const q = normalizeQuoteText(quote).replace(/^["']+|["']+$/g, '').trim();
+  if (!q) return { ok: false, reason: 'no quote given' };
+  if (q.length < MIN_QUOTE_CHARS) return { ok: false, reason: 'quote too short to verify' };
+  if (!normalizedSource.includes(q)) return { ok: false, reason: 'quote not found in the original' };
+  return { ok: true, reason: '' };
 }
 
 const FILE_NAME_TITLE = /\.(png|jpe?g|webp|gif|heic|pdf|docx?)\b|^(cleanshot|screen ?shot|screenshot|img[_-]|pxl[_-]|dsc[_-])|\b\d{4}-\d{2}-\d{2} at \d/i;
@@ -621,10 +662,6 @@ async function postMetaChat(system, user, maxTokens, timeoutMs) {
 // object carrying material_title alongside the usual facts array. Pasted
 // text and the demo school run keep the plain-array prompt unchanged.
 const JSON_ARRAY_FORMAT_LINE = 'Return ONLY a JSON array. No markdown fences, no commentary.';
-const TITLED_FORMAT_LINES = [
-  'Return ONLY a JSON object of the form {"material_title": "...", "facts": [ ... ]}, material_title first. No markdown fences, no commentary.',
-  'facts is the array of extracted facts.',
-].join('\n');
 const MATERIAL_TITLE_RULES = [
   '- material_title names what this document IS, for a parent scanning a list of materials.',
   '  Prefer the document’s own subject line or main heading when it has one (a short descriptor may follow, e.g. "Remembrance Day & Anti-Bullying Week — principal’s email").',
@@ -632,13 +669,41 @@ const MATERIAL_TITLE_RULES = [
   '- material_title must be grounded in the document: no events, dates, or names that are not in it. Never use a file name, a file timestamp, or a file extension.',
 ].join('\n');
 
-function withMaterialTitleInstructions(system) {
-  return system.replace(JSON_ARRAY_FORMAT_LINE, TITLED_FORMAT_LINES) + '\n' + MATERIAL_TITLE_RULES;
+// Quote verification: an image has no text of its own, so the same read
+// also returns its transcript, which is kept as the material's text and is
+// what the image's quotes are checked against.
+const TRANSCRIPT_RULES = [
+  '- source_transcript is every word visible in the image, transcribed exactly as written, in reading order. Copy each fact\'s source_text from it.',
+].join('\n');
+const QUOTE_RULES = [
+  '- source_text is checked by code against the source: copy ONE short span (a sentence or less) character-for-character from the pasted text, the document text, or source_transcript.',
+  '  Do not paraphrase, fix spelling, abbreviate, or join separate passages. A fact whose source_text is not found in the source is discarded.',
+].join('\n');
+
+// The extraction reply shape for one call: a plain facts array, or an
+// object when a title and/or an image transcript is asked for too.
+function withExtractionOptions(system, options) {
+  const opts = options || {};
+  let out = system;
+  if (opts.withTitle || opts.withTranscript) {
+    const keys = [];
+    if (opts.withTitle) keys.push('"material_title": "..."');
+    if (opts.withTranscript) keys.push('"source_transcript": "..."');
+    keys.push('"facts": [ ... ]');
+    out = out.replace(JSON_ARRAY_FORMAT_LINE, [
+      'Return ONLY a JSON object of the form {' + keys.join(', ') + '}, in that order. No markdown fences, no commentary.',
+      'facts is the array of extracted facts.',
+    ].join('\n'));
+  }
+  if (opts.withTitle) out += '\n' + MATERIAL_TITLE_RULES;
+  if (opts.withTranscript) out += '\n' + TRANSCRIPT_RULES;
+  if (opts.verifyQuotes) out += '\n' + QUOTE_RULES;
+  return out;
 }
 
 async function callMetaApi(newsletterText, options) {
   const built = buildPrompt(newsletterText);
-  const system = options && options.withTitle ? withMaterialTitleInstructions(built.system) : built.system;
+  const system = withExtractionOptions(built.system, options);
   const user = built.user;
   // Brief 051e: extraction waits on long text and long model reasoning,
   // so it gets a 180 s call budget (vision and other calls keep the 90 s
@@ -684,7 +749,7 @@ function buildImagePrompt(accompanyingText) {
 
 async function callMetaApiImage(accompanyingText, image, options) {
   const built = buildImagePrompt(accompanyingText);
-  const system = options && options.withTitle ? withMaterialTitleInstructions(built.system) : built.system;
+  const system = withExtractionOptions(built.system, options);
   const userText = built.userText;
   const dataUrl = `data:${image.mime};base64,${Buffer.from(image.data).toString('base64')}`;
   const user = [
@@ -1246,18 +1311,29 @@ function extractionCallFailed(err) {
 // Brief 053: titleFrom = { fileName } asks the same read for a material
 // title; a usable one replaces the material's neutral title BEFORE facts
 // are stamped, so source_document and group labels carry it too.
-async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride, stampSource, image, titleFrom) {
+// Quote verification: verifyQuotes keeps only facts whose quote is found in
+// the material's own text (pasted text; a PDF's text layer plus OCR reads;
+// an image's transcript from this same read). Dropped items go to the
+// material's audit log and its unverified count. Off for the demo run.
+async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride, stampSource, image, titleFrom, verifyQuotes) {
   const push = (message) => logs.push({ at: nowIso(), message });
   const hasImage = Boolean(image && image.data && image.mime);
-  const modelOptions = { withTitle: Boolean(titleFrom) };
+  const modelOptions = {
+    withTitle: Boolean(titleFrom),
+    withTranscript: Boolean(verifyQuotes && hasImage),
+    verifyQuotes: Boolean(verifyQuotes),
+  };
   const callModel = () => (hasImage ? callMetaApiImage(newsletterText, image, modelOptions) : callMetaApi(newsletterText, modelOptions));
-  const parseReply = (reply) => (titleFrom ? parseExtractionReply(reply) : { facts: extractJsonArray(reply), title: '' });
+  const parseReply = (reply) => (titleFrom || verifyQuotes
+    ? parseExtractionReply(reply)
+    : { facts: extractJsonArray(reply), title: '', transcript: '' });
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
   let content = await callModel();
   push('API responded — parsing facts');
   let parsedReply = parseReply(content);
   let rawFacts = parsedReply.facts;
   let proposedTitle = parsedReply.title;
+  let transcript = parsedReply.transcript;
   // The model sometimes returns a valid but empty fact list for a
   // non-trivial source. Retry the model call ONCE before giving up, so one
   // flaky reply cannot silently save zero facts as a success. An image
@@ -1272,6 +1348,7 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
     parsedReply = parseReply(content);
     rawFacts = parsedReply.facts;
     proposedTitle = parsedReply.title || proposedTitle;
+    transcript = parsedReply.transcript || transcript;
   }
   if (rawFacts.length === 0 && nonTrivial) {
     // Every material route marks the material 'failed' on a throw and
@@ -1289,7 +1366,7 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
     }
   }
   const extractedAt = nowIso();
-  const facts = rawFacts.map((f) => normalizeFact(f, extractedAt));
+  let facts = rawFacts.map((f) => normalizeFact(f, extractedAt));
   // Guarantee id uniqueness even if two facts slugify the same.
   const seen = new Set();
   for (const fact of facts) {
@@ -1301,6 +1378,24 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
     seen.add(fact.id);
   }
   push(`${facts.length} facts extracted`);
+  if (verifyQuotes) {
+    const readText = String(transcript || '').trim();
+    if (hasImage && materialId && readText) {
+      const pasted = String(newsletterText || '').trim();
+      store.updateMaterialText(materialId, pasted ? pasted + '\n\n' + readText : readText);
+    }
+    const source = normalizeQuoteText([newsletterText, readText].filter(Boolean).join('\n'));
+    const verified = [];
+    const rejected = [];
+    for (const fact of facts) {
+      const check = verifyQuote(fact.source_text, source);
+      if (check.ok) verified.push({ ...fact, quote_verified: true });
+      else rejected.push({ title: fact.title, detail: fact.detail, quote: fact.source_text, reason: check.reason });
+    }
+    if (materialId) store.recordFactRejections(hubId, materialId, rejected);
+    push(`quotes verified against the original: ${verified.length} kept, ${rejected.length} left out`);
+    facts = verified;
+  }
   let materialTitle = '';
   if (materialId) {
     try {
@@ -2192,7 +2287,7 @@ const server = http.createServer(async (req, res) => {
         const override = resolveAudience(actor, body.audience, hub.id);
         material = store.createMaterial(hub.id, actor ? actor.id : '', 'paste', String(body.title || 'Pasted newsletter'), text, 'stored');
         logs.push({ at: nowIso(), message: 'pasted newsletter received' });
-        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true);
+        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, undefined, null, true);
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
           ok: true,
@@ -2383,7 +2478,7 @@ const server = http.createServer(async (req, res) => {
         material = store.createMaterial(hub.id, active.id, 'email', headers.subject || 'Email newsletter', text, 'stored');
         logs.push({ at: nowIso(), message: 'run started' });
         logs.push({ at: nowIso(), message: 'Gmail message loaded as a hub newsletter' });
-        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true);
+        const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, undefined, null, true);
         store.updateMaterialStatus(material.id, 'extracted');
         sendJson(res, 200, {
           ok: true,
@@ -2925,13 +3020,13 @@ const server = http.createServer(async (req, res) => {
           (titleFromContent ? neutralFileMaterialTitle(kind, new Date()) : deriveMaterialTitle(text));
         material = store.createMaterial(hub.id, actor.id, kind, materialTitle, text, 'stored', undefined, undefined, retainedFile);
         const facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, imageFile,
-          titleFromContent ? { fileName: retainedFile.name } : null);
+          titleFromContent ? { fileName: retainedFile.name } : null, true);
         store.updateMaterialStatus(material.id, 'extracted');
         material = store.getMaterial(material.id) || material;
         if (bearerAuth) logs.push({ at: nowIso(), message: 'material added via agent: ' + bearerAuth.token.name });
         sendJson(res, 200, {
           ok: true,
-          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(retainedFile), file_name: retainedFile ? retainedFile.name : '', file_mime: retainedFile && retainedFile.mime ? retainedFile.mime : '', may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk), pictures_read_with_ocr: Boolean(pdfFile && pdfFile.picturesReadWithOcr) },
+          material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'extracted', created_at: material.created_at, has_file: Boolean(retainedFile), file_name: retainedFile ? retainedFile.name : '', file_mime: retainedFile && retainedFile.mime ? retainedFile.mime : '', may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk), pictures_read_with_ocr: Boolean(pdfFile && pdfFile.picturesReadWithOcr), unverified_count: Number(material.unverified_count || 0) },
           facts,
           facts_added: facts.length,
           count: facts.length,
@@ -2945,7 +3040,7 @@ const server = http.createServer(async (req, res) => {
           // block-scoped to the try above and do not exist here.
           sendJson(res, 200, {
             ok: true,
-            material: { id: material.id, hub_id: material.hub_id, kind: material.kind, title: material.title, status: 'stored', created_at: material.created_at, has_file: Boolean(material.has_file), file_name: material.file_name || '', file_mime: material.file_mime || '', may_have_unread_pictures: Boolean(material.may_have_unread_pictures), pictures_read_with_ocr: Boolean(material.pictures_read_with_ocr) },
+            material: { id: material.id, hub_id: material.hub_id, kind: material.kind, title: material.title, status: 'stored', created_at: material.created_at, has_file: Boolean(material.has_file), file_name: material.file_name || '', file_mime: material.file_mime || '', may_have_unread_pictures: Boolean(material.may_have_unread_pictures), pictures_read_with_ocr: Boolean(material.pictures_read_with_ocr), unverified_count: Number(material.unverified_count || 0) },
             facts: [],
             facts_added: 0,
             count: 0,

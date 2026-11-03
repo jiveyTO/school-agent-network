@@ -686,6 +686,23 @@ async function initDb() {
   addColumnIfMissing('materials', 'file_mime', "file_mime TEXT DEFAULT ''");
   addColumnIfMissing('materials', 'may_have_unread_pictures', 'may_have_unread_pictures INTEGER DEFAULT 0');
   addColumnIfMissing('materials', 'pictures_read_with_ocr', 'pictures_read_with_ocr INTEGER DEFAULT 0');
+  // Quote verification: how many extracted items a material lost because
+  // their quote was not found in its source text. Existing rows stay 0.
+  addColumnIfMissing('materials', 'unverified_count', 'unverified_count INTEGER DEFAULT 0');
+  // 1 only for facts whose quote code-verified against the material's text
+  // at extraction time; facts stored before verification stay 0.
+  addColumnIfMissing('facts', 'quote_verified', 'quote_verified INTEGER DEFAULT 0');
+  // Audit trail for items dropped because their quote did not verify.
+  run(`CREATE TABLE IF NOT EXISTS fact_rejections (
+    id TEXT PRIMARY KEY,
+    hub_id TEXT,
+    material_id TEXT,
+    fact_title TEXT,
+    fact_detail TEXT,
+    quote TEXT,
+    reason TEXT,
+    created_at TEXT NOT NULL
+  )`);
   addColumnIfMissing('facts', 'scope', "scope TEXT DEFAULT 'school'");
   addColumnIfMissing('facts', 'scope_value', "scope_value TEXT DEFAULT ''");
   addColumnIfMissing('facts', 'group_label', "group_label TEXT DEFAULT ''");
@@ -1833,6 +1850,7 @@ function deleteMaterial(materialId) {
   if (!materialId) return false;
   if (!one('SELECT id FROM materials WHERE id = ?', [materialId])) return false;
   run('DELETE FROM facts WHERE material_id = ?', [materialId]);
+  run('DELETE FROM fact_rejections WHERE material_id = ?', [materialId]);
   run('DELETE FROM materials WHERE id = ?', [materialId]);
   persist();
   return true;
@@ -1842,6 +1860,7 @@ function deleteHub(hubId) {
   if (!hubId) return false;
   if (!getHubRow(hubId)) return false;
   run('DELETE FROM facts WHERE hub_id = ?', [hubId]);
+  run('DELETE FROM fact_rejections WHERE hub_id = ?', [hubId]);
   run('DELETE FROM materials WHERE hub_id = ?', [hubId]);
   run('DELETE FROM hub_members WHERE hub_id = ?', [hubId]);
   run('DELETE FROM invites WHERE hub_id = ?', [hubId]);
@@ -2272,11 +2291,11 @@ function updateMaterialScope(id, scope, scopeValue) {
 function getMaterial(id) {
   if (!id) return null;
   const row = one(
-    "SELECT id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, (file_data IS NOT NULL) AS has_file FROM materials WHERE id = ?",
+    "SELECT id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, unverified_count, (file_data IS NOT NULL) AS has_file FROM materials WHERE id = ?",
     [id]
   );
   if (!row) return null;
-  return { ...row, has_file: Boolean(row.has_file), may_have_unread_pictures: Boolean(row.may_have_unread_pictures), pictures_read_with_ocr: Boolean(row.pictures_read_with_ocr) };
+  return { ...row, has_file: Boolean(row.has_file), may_have_unread_pictures: Boolean(row.may_have_unread_pictures), pictures_read_with_ocr: Boolean(row.pictures_read_with_ocr), unverified_count: Number(row.unverified_count || 0) };
 }
 
 // The retained original file behind a material (brief 042 PDF uploads and
@@ -2316,8 +2335,36 @@ function updateMaterialTitle(id, title) {
   persist();
 }
 
+// Quote verification: an image's own read (the vision transcript) becomes
+// part of its stored text, so its facts verify against what was read.
+function updateMaterialText(id, text) {
+  run('UPDATE materials SET raw_text = ? WHERE id = ?', [String(text || ''), id]);
+  persist();
+}
+
+// Quote verification outcome for one extraction: the dropped items go to
+// the audit log and the material records how many were left out.
+function recordFactRejections(hubId, materialId, rejected) {
+  if (!materialId) return 0;
+  const now = new Date().toISOString();
+  for (const r of rejected || []) {
+    run(
+      'INSERT INTO fact_rejections (id, hub_id, material_id, fact_title, fact_detail, quote, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [crypto.randomUUID(), hubId || '', materialId, String(r.title || ''), String(r.detail || ''), String(r.quote || ''), String(r.reason || ''), now]
+    );
+  }
+  run('UPDATE materials SET unverified_count = ? WHERE id = ?', [(rejected || []).length, materialId]);
+  persist();
+  return (rejected || []).length;
+}
+
+function listFactRejections(materialId) {
+  if (!materialId) return [];
+  return all('SELECT fact_title, fact_detail, quote, reason, created_at FROM fact_rejections WHERE material_id = ? ORDER BY created_at ASC', [materialId]);
+}
+
 function listMaterials(hubId, profileId) {
-  const rows = all("SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, (file_data IS NOT NULL) AS has_file FROM materials WHERE hub_id = ? ORDER BY created_at ASC", [hubId]).map(scopedMaterialRow);
+  const rows = all("SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, unverified_count, (file_data IS NOT NULL) AS has_file FROM materials WHERE hub_id = ? ORDER BY created_at ASC", [hubId]).map(scopedMaterialRow);
   if (!profileId) return rows;
   return rows.filter((m) => rowInScope(m, placementScopeSets(profileId, hubId)));
 }
@@ -2392,6 +2439,7 @@ function factRowToObject(r) {
     scope_value: r.scope_value || '',
     group_label: r.group_label || '',
     group_summary: r.group_summary || '',
+    quote_verified: Boolean(r.quote_verified),
   };
 }
 
@@ -2412,6 +2460,7 @@ function scopedMaterialRow(r) {
     file_mime: r.file_mime || '',
     may_have_unread_pictures: Boolean(r.may_have_unread_pictures),
     pictures_read_with_ocr: Boolean(r.pictures_read_with_ocr),
+    unverified_count: Number(r.unverified_count || 0),
   };
 }
 
@@ -2438,25 +2487,27 @@ function insertFacts(hubId, materialId, facts, replaceMaterialFacts) {
     if (!hit) {
       run(
         `INSERT OR REPLACE INTO facts
-         (id, hub_id, material_id, type, title, detail, date, time, applies_to, action_required, action, link, source_document, source_text, published_at, extracted_at, confidence, supersedes, scope, scope_value, group_label, group_summary)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, hub_id, material_id, type, title, detail, date, time, applies_to, action_required, action, link, source_document, source_text, published_at, extracted_at, confidence, supersedes, scope, scope_value, group_label, group_summary, quote_verified)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           incoming.id, hubId, materialId || '', incoming.type, incoming.title, incoming.detail || '', incoming.date || '', incoming.time || '',
           incoming.applies_to || '', incoming.action_required ? 1 : 0, incoming.action || '', incoming.link || '',
           incoming.source_document || '', incoming.source_text || '', incoming.published_at || '', incoming.extracted_at || '',
           typeof incoming.confidence === 'number' ? incoming.confidence : 0, incoming.supersedes || '',
           derived.scope, derived.value, incoming.group_label || '', incoming.group_summary || '',
+          incoming.quote_verified ? 1 : 0,
         ]
       );
       known.push(incoming);
       continue;
     }
     const merged = mergeFactPair(hit, incoming);
+    // A merged row's quotes are all proven only when both sides were.
     run(
       `UPDATE facts
        SET type = ?, title = ?, detail = ?, date = ?, time = ?, applies_to = ?, action_required = ?,
            action = ?, link = ?, source_document = ?, source_text = ?, confidence = ?,
-           scope = ?, scope_value = ?, group_label = ?, group_summary = ?
+           scope = ?, scope_value = ?, group_label = ?, group_summary = ?, quote_verified = ?
        WHERE id = ?`,
       [
         merged.type, merged.title, merged.detail || '', merged.date || '', merged.time || '',
@@ -2464,10 +2515,11 @@ function insertFacts(hubId, materialId, facts, replaceMaterialFacts) {
         merged.source_document || '', merged.source_text || '',
         typeof merged.confidence === 'number' ? merged.confidence : 0,
         merged.scope || 'school', merged.scope_value || '', merged.group_label || '', merged.group_summary || '',
+        hit.quote_verified && incoming.quote_verified ? 1 : 0,
         hit.id,
       ]
     );
-    Object.assign(hit, merged, { id: hit.id, hub_id: hit.hub_id, material_id: hit.material_id });
+    Object.assign(hit, merged, { id: hit.id, hub_id: hit.hub_id, material_id: hit.material_id, quote_verified: Boolean(hit.quote_verified && incoming.quote_verified) });
   }
   persist();
   return (facts || []).length;
@@ -2693,6 +2745,9 @@ module.exports = {
   findMaterial,
   updateMaterialStatus,
   updateMaterialTitle,
+  updateMaterialText,
+  recordFactRejections,
+  listFactRejections,
   updateMaterialScope,
   listMaterials,
   insertFacts,
