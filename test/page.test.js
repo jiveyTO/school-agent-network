@@ -20,12 +20,13 @@ test('page has no Gmail card or standalone newsletter paste box', () => {
   }
 });
 
-test('real non-demo profiles get an empty school demo strip', () => {
-  for (const token of ['id="newsSummary"', 'applySchoolAudience', 'viewer.is_demo']) {
-    assert.ok(PAGE.includes(token), `${token} must be present`);
+test('no demo-only school strip: every viewer sees the same hub page', () => {
+  // The demo shows only what real parents see (owner rule, Nov 2026): the
+  // Phase 1 "This week's newsletter" / "School updates" panels are gone.
+  for (const token of ['id="newsSummary"', 'applySchoolAudience', 'loadSchoolDemo',
+    'No school newsletter for your family yet', 'School updates appear under the demo family.']) {
+    assert.ok(!PAGE.includes(token), `${token} must not appear on the page`);
   }
-  assert.ok(PAGE.includes('No school newsletter for your family yet — your hub feeds will appear here.'));
-  assert.ok(PAGE.includes('School updates appear under the demo family.'));
 });
 
 test('onboarding is one step: family fields only, preferences sent silently', () => {
@@ -408,10 +409,10 @@ test('hub page no longer renders the "What the school announced" or Activity sec
     'Nothing announced yet.', 'Nothing here yet — check for school updates']) {
     assert.ok(!hubMarkup.includes(token), `hub view must not render ${token}`);
   }
-  // The renderers survive as no-ops so the demo run and loaders never throw.
-  assert.ok(PAGE.includes('if (!logEl) return;'), 'renderLogs tolerates the missing Activity list');
-  assert.ok(PAGE.includes('if (!factsEl || !factsToggle) return;'), 'paintFacts tolerates the missing section');
-  assert.ok(PAGE.includes('if (factsToggle) factsToggle.addEventListener'), 'no listener on a missing toggle');
+  // Their renderers went with the demo panels that fed them.
+  for (const token of ['function renderLogs(', 'function renderFacts(', 'function paintFacts(', 'FACTS_PREVIEW_COUNT']) {
+    assert.ok(!PAGE.includes(token), `${token} is gone`);
+  }
   // The family page keeps its own evening-check Activity log.
   assert.ok(PAGE.includes('id="parent-log-h"') && PAGE.includes('id="parentLog"'));
 });
@@ -645,42 +646,17 @@ test('signed-in header is unchanged: identity plus sign out, no Start button', (
   assert.ok(signedInBranch.includes('signOutBtn.hidden = false'), 'signed in shows Sign out');
 });
 
-test('newsletter section renders only with content: hidden for real families, shown for demo', () => {
-  assert.ok(PAGE.includes('id="newsletterSection"'), 'newsletter section carries a gate id');
+test('hub page has no demo-only newsletter or School updates panels', () => {
   const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
-  assert.ok(hubMarkup.includes('id="newsletterSection"'), 'gated section lives in the hub view');
-  assert.ok(hubMarkup.indexOf('id="newsletterSection"') < hubMarkup.indexOf('id="newsletter-h"'),
-    'gate wraps the heading so both hide together');
-  for (const token of ['setHubDemoPanels(false)', 'setHubDemoPanels(true)',
-    "getElementById('newsletterSection').hidden"]) {
-    assert.ok(PAGE.includes(token), `${token} must be present`);
+  for (const token of ['id="newsletterSection"', 'This week’s newsletter', 'id="newsletterToggle"',
+    'id="runSection"', 'School updates', 'id="runBtn"', 'Check for school updates', 'id="schoolError"']) {
+    assert.ok(!hubMarkup.includes(token), `hub view must not render ${token}`);
   }
-  const audienceFn = PAGE.slice(PAGE.indexOf('async function applySchoolAudience'),
-    PAGE.indexOf('async function applySchoolAudience') + 1400);
-  assert.ok(audienceFn.includes('setHubDemoPanels(false)'), 'real family hides the newsletter section');
-  assert.ok(audienceFn.includes('setHubDemoPanels(true)'), 'demo family shows the newsletter section');
-  assert.ok(PAGE.includes('hasNewsletter'), 'demo load checks for actual newsletter content');
-  assert.ok(PAGE.includes("document.getElementById('newsletterSection').hidden = !hasNewsletter"),
-    'empty demo newsletter hides the section; content shows it');
-});
-
-test('School updates panel is demo-only: hidden for real families, unchanged for demo', () => {
-  assert.ok(PAGE.includes('id="runSection"'), 'run panel carries a gate id');
-  const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
-  assert.ok(hubMarkup.includes('id="runSection"'), 'gated panel lives in the hub view');
-  assert.ok(hubMarkup.indexOf('id="runSection"') < hubMarkup.indexOf('id="runBtn"'),
-    'gate wraps the run button so both hide together');
-  assert.ok(PAGE.includes("getElementById('runSection').hidden"),
-    'panel visibility is toggled with the viewer');
-  const audienceFn = PAGE.slice(PAGE.indexOf('async function applySchoolAudience'),
-    PAGE.indexOf('async function applySchoolAudience') + 1400);
-  assert.ok(audienceFn.includes('setHubDemoPanels(false)'), 'real family omits the panel');
-  assert.ok(audienceFn.includes('setHubDemoPanels(true)'), 'demo family keeps the panel');
-  assert.ok(PAGE.includes('Check for school updates'), 'demo run button copy unchanged');
-  assert.ok(PAGE.includes('Reads the newest newsletter and pulls out what matters.'),
-    'demo hint copy unchanged');
-  assert.ok(PAGE.includes('School updates appear under the demo family.'),
-    'non-demo fallback message still set while hidden');
+  for (const token of ['setHubDemoPanels', "fetch('/api/run'", "fetch('/api/newsletter')", "fetch('/api/facts')", '#runBtn']) {
+    assert.ok(!PAGE.includes(token), `${token} is gone from the page`);
+  }
+  // The hub view still opens straight on the real hub.
+  assert.ok(hubMarkup.indexOf('id="hubBackBtn"') < hubMarkup.indexOf('id="hub-view-h"'));
 });
 
 test('demo pill shows only to the demo viewer, never to a signed-in family', () => {
@@ -689,7 +665,7 @@ test('demo pill shows only to the demo viewer, never to a signed-in family', () 
   const pillMarkup = PAGE.slice(PAGE.indexOf('id="demoPill"') - 60, PAGE.indexOf('id="demoPill"') + 60);
   assert.ok(pillMarkup.includes('hidden'), 'pill starts hidden so real families never see a flash of it');
   assert.ok(PAGE.includes('demoViewing = Boolean(status.profile && status.profile.is_demo)'),
-    'viewer identity comes from the profile, same source as the School updates gate');
+    'viewer identity comes from the profile');
   assert.ok(PAGE.includes("getElementById('demoPill').hidden = !demoViewing"),
     'pill is present when the viewer is the demo family and absent otherwise');
   assert.ok(PAGE.includes('demoViewing = false;'), 'leaving the demo (new family or reset) clears the viewer flag');
