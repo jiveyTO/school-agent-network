@@ -711,9 +711,27 @@ async function initDb() {
   purgeDemoMemberships();
   restampDemoFactScopes();
   backfillSeedGroups();
+  // A restored database that boot left unchanged (schema-only migrations
+  // don't count: they re-run every boot) is not uploaded. Uploading it would
+  // move the stored generation during a deploy, so the old instance's final
+  // flush, or this instance's first real write, would fail with HTTP 412.
+  if (durableRestoreOutcome === 'restored' && totalRowChanges() === 0) {
+    durableDirty = false;
+    if (durableUploadTimer) {
+      clearTimeout(durableUploadTimer);
+      durableUploadTimer = null;
+    }
+    console.log('durable store: restored database unchanged at boot; no upload');
+  }
   // First boot with the durable store enabled uploads the seeded database so
   // later instances restore it. No-op when disabled or nothing changed.
   await flushDurableStore();
+}
+
+// Rows inserted, updated or deleted on this connection since it opened.
+function totalRowChanges() {
+  const res = db.exec('SELECT total_changes()');
+  return res.length ? Number(res[0].values[0][0]) : 0;
 }
 
 function migrateChildren() {
@@ -842,12 +860,14 @@ function backfillSchoolKeys() {
       schoolName = parts.school_name;
       city = parts.city || '';
     }
-    run('UPDATE hubs SET school_name = ?, city = ?, school_key = ? WHERE id = ?', [
-      schoolName || '',
-      city || '',
-      schoolKey(schoolName, city, row.province, row.country),
-      row.id,
-    ]);
+    const key = schoolKey(schoolName, city, row.province, row.country);
+    // Only when something differs: a no-op UPDATE still counts as a change
+    // and would make every boot upload the database (see initDb).
+    run(
+      "UPDATE hubs SET school_name = ?, city = ?, school_key = ? WHERE id = ? " +
+        "AND (COALESCE(school_name, '') <> ? OR COALESCE(city, '') <> ? OR COALESCE(school_key, '') <> ?)",
+      [schoolName || '', city || '', key, row.id, schoolName || '', city || '', key]
+    );
   }
 }
 
@@ -2332,9 +2352,14 @@ function backfillSeedGroups() {
       if (f && f.id && (f.group_label || f.group_summary)) wanted.push(f);
     }
     for (const f of wanted) {
+      // Only rows with an empty field the seed can fill, so an unchanged
+      // database boots with zero row changes (see initDb).
+      const label = String(f.group_label || '');
+      const summary = String(f.group_summary || '');
       run(
-        "UPDATE facts SET group_label = COALESCE(NULLIF(group_label, ''), ?), group_summary = COALESCE(NULLIF(group_summary, ''), ?) WHERE id = ?",
-        [String(f.group_label || ''), String(f.group_summary || ''), String(f.id)]
+        "UPDATE facts SET group_label = COALESCE(NULLIF(group_label, ''), ?), group_summary = COALESCE(NULLIF(group_summary, ''), ?) " +
+          "WHERE id = ? AND ((COALESCE(group_label, '') = '' AND ? <> '') OR (COALESCE(group_summary, '') = '' AND ? <> ''))",
+        [label, summary, String(f.id), label, summary]
       );
     }
     persist();
