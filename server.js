@@ -2098,7 +2098,7 @@ const server = http.createServer(async (req, res) => {
             ok: true,
             facts: [],
             logs,
-            material: { id: material.id, hub_id: hub.id, kind: 'paste', title: material.title, status: 'stored' },
+            material: { id: material.id, hub_id: material.hub_id, kind: 'paste', title: material.title, status: 'stored' },
             facts_added: 0,
             facts_pending: true,
             facts_error: FACTS_PENDING_MESSAGE,
@@ -2283,7 +2283,7 @@ const server = http.createServer(async (req, res) => {
             ok: true,
             facts: [],
             logs,
-            material: { id: material.id, hub_id: hub.id, kind: 'email', title: material.title, status: 'stored' },
+            material: { id: material.id, hub_id: material.hub_id, kind: 'email', title: material.title, status: 'stored' },
             facts_added: 0,
             facts_pending: true,
             facts_error: FACTS_PENDING_MESSAGE,
@@ -2782,9 +2782,11 @@ const server = http.createServer(async (req, res) => {
         const message = err && err.message ? err.message : String(err);
         if (material && extractionCallFailed(err)) {
           logs.push({ at: nowIso(), message: `extraction call failed, material kept: ${message}` });
+          // Built from the saved row only: kind/retainedFile/pdfFile are
+          // block-scoped to the try above and do not exist here.
           sendJson(res, 200, {
             ok: true,
-            material: { id: material.id, hub_id: hub.id, kind, title: material.title, status: 'stored', created_at: material.created_at, has_file: Boolean(retainedFile), file_name: retainedFile ? retainedFile.name : '', file_mime: retainedFile && retainedFile.mime ? retainedFile.mime : '', may_have_unread_pictures: Boolean(pdfFile && pdfFile.pictureRisk), pictures_read_with_ocr: Boolean(pdfFile && pdfFile.picturesReadWithOcr) },
+            material: { id: material.id, hub_id: material.hub_id, kind: material.kind, title: material.title, status: 'stored', created_at: material.created_at, has_file: Boolean(material.has_file), file_name: material.file_name || '', file_mime: material.file_mime || '', may_have_unread_pictures: Boolean(material.may_have_unread_pictures), pictures_read_with_ocr: Boolean(material.pictures_read_with_ocr) },
             facts: [],
             facts_added: 0,
             count: 0,

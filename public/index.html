@@ -3355,7 +3355,9 @@
           text: document.getElementById('materialText').value,
         });
       }
-      statusEl.textContent = 'Added — ' + data.facts_added + ' shared notes found.';
+      statusEl.textContent = data.facts_pending
+        ? (data.facts_error || 'Saved, but the notes could not be read this time.')
+        : 'Added — ' + data.facts_added + ' shared notes found.';
       document.getElementById('materialText').value = '';
       clearMaterialImage();
       clearMaterialPdf();
