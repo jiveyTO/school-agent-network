@@ -116,6 +116,16 @@ test('evening check runs for the agent token\'s own family', async (t) => {
     assert.ok(!/Maya|pizza/i.test(prompts[0]), 'model never saw demo data');
   });
 
+  await t.test('the token reads its family\'s saved check instantly from /api/parent/latest', async () => {
+    const latest = await call('/api/parent/latest', { token: live });
+    assert.equal(latest.res.status, 200, latest.text.slice(0, 300));
+    assert.equal(latest.data.stale, false, 'the run above is current');
+    assert.deepEqual((latest.data.check.relevant_facts || []).map((f) => f.id), ['br-skate-1']);
+    assert.ok(!/Maya|Rivera|pizza/i.test(latest.text), 'never the demo family');
+    const bad = await call('/api/parent/latest', { token: 'pl_agent_not-a-real-token' });
+    assert.equal(bad.res.status, 401, 'a bad token is refused here too');
+  });
+
   await t.test('a garbage or revoked token gets 401, not the demo check', async () => {
     for (const bad of ['pl_agent_not-a-real-token', 'garbage', revoked.token]) {
       const run = await call('/api/parent/run', { token: bad, body: {} });

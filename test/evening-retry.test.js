@@ -12,7 +12,9 @@ const vm = require('node:vm');
 const PAGE = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
 
 const HELPER_START = 'async function fetchWithEveningRetry';
-const HANDLER_MARKER = "parentRunBtn.addEventListener('click'";
+// The evening check runs from one function, shared by the button and the
+// home screen's background refresh.
+const HANDLER_MARKER = 'async function runEveningCheck(';
 const helperSrc = PAGE.slice(PAGE.indexOf(HELPER_START), PAGE.indexOf(HANDLER_MARKER));
 
 // Load the page's real retry helper with a stubbed fetch/setTimeout pair.

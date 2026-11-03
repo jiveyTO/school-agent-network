@@ -545,7 +545,9 @@ test('page uses three tabbed views and a name-only family card', () => {
     'id="viewHubs"', 'id="viewEvening"', 'id="viewFamily"']) {
     assert.ok(PAGE.includes(token), `${token} must be present`);
   }
-  assert.ok(PAGE.match(/>My hubs<\/button>/) && PAGE.match(/>Evening check<\/button>/) && PAGE.match(/>My family<\/button>/));
+  assert.ok(PAGE.match(/>My hubs<\/button>/) && PAGE.match(/>Tonight<\/button>/) && PAGE.match(/>My family<\/button>/));
+  // The evening check is the home screen: its tab comes first.
+  assert.ok(PAGE.indexOf('id="tabEvening"') < PAGE.indexOf('id="tabHubs"'), 'Tonight is the first tab');
   for (const token of ['What matters most', 'data-source-save']) {
     assert.ok(!PAGE.includes(token), `${token} must not appear on the page`);
   }

@@ -71,6 +71,8 @@ function assertRealRoute(endpoint) {
     assert.ok(SERVER_SOURCE.includes('hubMaterialsMatch') && SERVER_SOURCE.includes("req.method === 'POST' && hubMaterialsMatch"), 'add material route exists');
   } else if (p === '/api/parent/run' && method === 'POST') {
     assert.ok(SERVER_SOURCE.includes("req.method === 'POST' && url.pathname === '/api/parent/run'"), 'evening check route exists');
+  } else if (p === '/api/parent/latest' && method === 'GET') {
+    assert.ok(SERVER_SOURCE.includes("req.method === 'GET' && url.pathname === '/api/parent/latest'"), 'latest evening check route exists');
   } else {
     assert.fail(`manifest lists an endpoint with no known real route: ${method} ${p}`);
   }
@@ -86,6 +88,7 @@ const EXPECTED_ENDPOINTS = [
   ['GET', '/api/hubs/{hub_id}'],
   ['POST', '/api/hubs/{hub_id}/materials'],
   ['POST', '/api/parent/run'],
+  ['GET', '/api/parent/latest'],
 ];
 
 test('GET /api/agent manifest: shape, real routes, recipe, no data', async (t) => {
@@ -139,6 +142,15 @@ test('GET /api/agent manifest: shape, real routes, recipe, no data', async (t) =
       assert.ok(typeof endpoint.description === 'string' && endpoint.description.length > 0, `description for ${endpoint.method} ${endpoint.path}`);
       assertRealRoute(endpoint);
     }
+  });
+
+  await t.test('evening routine tells an agent to read, refresh if stale, and tell the parent', async () => {
+    const routine = manifest.evening_routine;
+    assert.ok(Array.isArray(routine) && routine.length >= 3, 'evening routine is listed');
+    const text = routine.join('\n');
+    assert.ok(text.indexOf('GET /api/parent/latest') !== -1 && text.indexOf('POST /api/parent/run') > text.indexOf('GET /api/parent/latest'),
+      'read the saved check first, run only when stale');
+    assert.ok(/stale/.test(text) && /tell the parent/i.test(text), 'refresh when stale, then tell the parent');
   });
 
   await t.test('find-or-create recipe is ordered lookup -> join/create -> placements -> report', async () => {

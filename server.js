@@ -7,9 +7,10 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const store = require('./db');
-const { sendRecoveryEmail, isRecoveryMailConfigured } = require('./recovery-mail');
+const { sendRecoveryEmail, sendEmail, isRecoveryMailConfigured } = require('./recovery-mail');
 const pdfParse = require('pdf-parse');
 const zlib = require('zlib');
+const crypto = require('crypto');
 const { mergeSameEventFacts, detectConflicts } = require('./event-dedupe');
 
 const ROOT = __dirname;
@@ -20,6 +21,34 @@ const INDEX_PATH = path.join(ROOT, 'public', 'index.html');
 
 // Simulated scheduler moment for the Phase 2 evening check (demo only).
 const SIMULATED_NOW_LABEL = 'Thursday, November 5, 2026, 7:30 PM';
+// Real families' evening checks run on real local time (the hosted
+// families are in Ontario); only the demo family keeps the simulated moment,
+// so its fixed counts stay the regression baseline.
+const FAMILY_TIME_ZONE = 'America/Toronto';
+
+// The moment an evening check is written for. label goes into the prompt;
+// day decides when a saved check goes stale (a new day needs a new check).
+function eveningMoment(profile, overrideLabel, now) {
+  if (overrideLabel) return { label: String(overrideLabel), tomorrow: '', simulated: true, day: 'simulated:' + overrideLabel };
+  if (!profile || profile.is_demo) {
+    return { label: SIMULATED_NOW_LABEL, tomorrow: 'Friday, November 6, 2026', simulated: true, day: 'simulated' };
+  }
+  const at = now instanceof Date ? now : new Date();
+  const fmt = (d, opts) => d.toLocaleString('en-US', { timeZone: FAMILY_TIME_ZONE, ...opts });
+  const dayKey = (d) => {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+      timeZone: FAMILY_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(d).map((x) => [x.type, x.value]));
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  };
+  const tomorrow = new Date(at.getTime() + 24 * 60 * 60 * 1000);
+  return {
+    label: fmt(at, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }),
+    tomorrow: fmt(tomorrow, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
+    simulated: false,
+    day: dayKey(at),
+  };
+}
 const PRIVACY_CHECK_LINE =
   "PRIVACY CHECK: family profile data used only inside this Parent Agent run — nothing sent to the school or group.";
 
@@ -1008,7 +1037,8 @@ async function extractIdentityFields(pageText, kind, opts) {
   return fields;
 }
 
-function buildParentPrompt(profile, facts, simulatedLabel, placementLines) {
+function buildParentPrompt(profile, facts, moment, placementLines) {
+  const when = moment || eveningMoment(profile);
   const soul = profile.soul || {};
   const child = profile.child || {};
   const children = profile.children && profile.children.length ? profile.children : [child];
@@ -1019,13 +1049,17 @@ function buildParentPrompt(profile, facts, simulatedLabel, placementLines) {
     'Soul rules (shared core — obey exactly):',
     '- I work for this family alone.',
     "- I never share this family's private information anywhere (not to the school, not to any group, not to anyone).",
-    '- I say where my facts came from (source: School Agent facts from the Maple Grove Elementary newsletter).',
+    when.simulated
+      ? '- I say where my facts came from (source: School Agent facts from the Maple Grove Elementary newsletter).'
+      : '- I say where my facts came from (source: the newsletters and notices in the family\'s hubs).',
     '- I am a secretary, not a decision-maker: I surface, remind, and prepare; the parent decides.',
     'Family soul:',
     `- Priorities: ${(soul.priorities || []).join('; ')}`,
     `- Nudge style: ${soul.nudge_style || 'one short message in the evening'}`,
     `- Wishes: ${(soul.wishes || []).join('; ')}`,
-    `Simulated current moment: ${simulatedLabel || SIMULATED_NOW_LABEL}. Tomorrow is Friday, November 6, 2026.`,
+    when.simulated
+      ? `Simulated current moment: ${when.label}. Tomorrow is Friday, November 6, 2026.`
+      : `Current moment: ${when.label} (${FAMILY_TIME_ZONE} time). Tomorrow is ${when.tomorrow}.`,
     `The family belongs to these hubs and takes part in each one: ${hubNames.join(', ') || 'none'}. Belonging to a hub means that hub's context applies to the family — for example, U9 Hockey facts apply to the child because the child plays U9 hockey. Never filter out a hub's facts only because they name the hub's team, activity, or cohort.`,
     (placementLines && placementLines.length
       ? 'Placements (each child’s grade and class inside each school hub — a grade- or class-scoped fact applies only when it matches that child’s placement in the hub the fact came from):\n' +
@@ -1174,9 +1208,159 @@ function normalizeParentResult(raw, facts) {
   };
 }
 
-async function callParentMetaApi(profile, facts, simulatedLabel, placementLines) {
-  const { system, user } = buildParentPrompt(profile, facts, simulatedLabel, placementLines);
-  return postMetaChat(system, user, 8192);
+async function callParentMetaApi(profile, facts, moment, placementLines) {
+  const { system, user } = buildParentPrompt(profile, facts, moment, placementLines);
+  // 16k (was 8k): the model can spend most of 8k reasoning and return no
+  // content (finish_reason "length"); the evening check is now the home
+  // screen and the nightly email, so it gets room to finish.
+  return postMetaChat(system, user, 16384);
+}
+
+// What a saved evening check was computed from. When any of it changes —
+// the family's facts, placements, tracked actions, children, or (for real
+// families) the day — the saved check is stale and gets recomputed.
+function eveningFingerprint(profile, facts, moment) {
+  const basis = {
+    day: moment.day,
+    kids: (profile.children || [profile.child]).map((c) => (c && c.name) || ''),
+    actions: profile.actions || {},
+    placements: placementLinesForRun(profile),
+    facts: (facts || []).map((f) => [f.id, f.title, f.detail, f.date, f.time, f.action_required, f.action, f.scope, f.scope_value]),
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(basis)).digest('hex');
+}
+
+// --- Evening email ---------------------------------------------------------
+// Opt-in, once per local day, at the family's chosen time. A scheduler
+// (Cloud Scheduler, every 15 minutes) calls POST /api/cron/evening-emails
+// with EVENING_EMAIL_CRON_SECRET; families whose time has come (within a
+// 3-hour window, so an outage never sends at midnight) get a fresh-enough
+// check and one email. Unsubscribe is a signed one-click link.
+const EVENING_EMAIL_TIMES = [];
+for (let h = 16; h <= 21; h += 1) for (const m of ['00', '30']) EVENING_EMAIL_TIMES.push(`${h}:${m}`);
+const EVENING_EMAIL_WINDOW_MINUTES = 180;
+const EVENING_EMAILS_PER_RUN = 5;
+
+function localClock(now) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: FAMILY_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(now instanceof Date ? now : new Date()).map((x) => [x.type, x.value]));
+  return { day: `${parts.year}-${parts.month}-${parts.day}`, minutes: Number(parts.hour) * 60 + Number(parts.minute) };
+}
+
+function clockMinutes(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ''));
+  return m ? Number(m[1]) * 60 + Number(m[2]) : 19 * 60;
+}
+
+function eveningUnsubscribeToken(profileId) {
+  return crypto.createHmac('sha256', store.emailLinkSecret()).update('evening-email-off:' + profileId).digest('hex').slice(0, 40);
+}
+
+function friendlyDay(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+  if (!m) return String(iso || '');
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+function escapeHtml(text) {
+  return String(text == null ? '' : text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Subject + plain text + simple HTML for one family's evening check: what to
+// do, timing conflicts, and what's coming up in the next week.
+function eveningEmailContent(profile, result, links, today) {
+  const kids = (profile.children || []).map((c) => c && c.name).filter(Boolean).join(' and ') || 'your family';
+  const nudges = (result && result.nudges) || [];
+  const conflicts = (result && result.conflicts) || [];
+  const horizon = new Date(Date.parse(today + 'T00:00:00Z') + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const nudged = new Set(nudges.map((n) => n.fact_id));
+  const upcoming = ((result && result.relevant_facts) || [])
+    .filter((f) => f.date && f.date >= today && f.date <= horizon && !nudged.has(f.id))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .slice(0, 8);
+  const subject = nudges.length
+    ? `Tonight: ${nudges.length} ${nudges.length === 1 ? 'thing' : 'things'} to do`
+    : conflicts.length
+      ? `Tonight: ${conflicts.length} timing ${conflicts.length === 1 ? 'conflict' : 'conflicts'}`
+      : 'Tonight: a calm evening';
+  const nudgeLine = (n) => `${n.title}${n.action ? ' — ' + n.action : ''}${n.deadline ? ' (by ' + friendlyDay(n.deadline) + ')' : ''}`;
+  const conflictLine = (c) => String(c.message || c.title || '').trim();
+  const upcomingLine = (f) => `${friendlyDay(f.date)}: ${f.title}`;
+  const text = [
+    `Here's tonight's evening check for ${kids}.`,
+    '',
+    nudges.length ? 'To do:' : 'Nothing to do tonight.',
+    ...nudges.map((n) => '- ' + nudgeLine(n)),
+    ...(conflicts.length ? ['', 'Heads up:', ...conflicts.map((c) => '- ' + conflictLine(c))] : []),
+    ...(upcoming.length ? ['', 'Coming up this week:', ...upcoming.map((f) => '- ' + upcomingLine(f))] : []),
+    '',
+    'Open ParentLoop: ' + links.app,
+    '',
+    'You get this because you turned on the evening email in ParentLoop. Stop these emails: ' + links.unsubscribe,
+  ].join('\n');
+  const list = (items, fn) => '<ul>' + items.map((x) => '<li>' + escapeHtml(fn(x)) + '</li>').join('') + '</ul>';
+  const html = [
+    `<p>Here's tonight's evening check for ${escapeHtml(kids)}.</p>`,
+    nudges.length ? '<p><b>To do</b></p>' + list(nudges, nudgeLine) : '<p>Nothing to do tonight.</p>',
+    conflicts.length ? '<p><b>Heads up</b></p>' + list(conflicts, conflictLine) : '',
+    upcoming.length ? '<p><b>Coming up this week</b></p>' + list(upcoming, upcomingLine) : '',
+    `<p><a href="${escapeHtml(links.app)}">Open ParentLoop</a></p>`,
+    `<p style="color:#68766d;font-size:12px">You get this because you turned on the evening email in ParentLoop. <a href="${escapeHtml(links.unsubscribe)}">Stop these emails</a>.</p>`,
+  ].join('');
+  return { subject, text, html };
+}
+
+// One scheduler tick: send the evening email to every family whose time has
+// come today. Never throws for one family's failure; returns counts only.
+async function sendDueEveningEmails(now) {
+  const clock = localClock(now);
+  const out = { considered: 0, sent: 0, skipped: 0, failed: 0 };
+  const base = PUBLIC_BASE_URL || '';
+  for (const candidate of store.listEveningEmailProfiles()) {
+    out.considered += 1;
+    const late = clock.minutes - clockMinutes(candidate.time);
+    if (candidate.last_day === clock.day || late < 0 || late > EVENING_EMAIL_WINDOW_MINUTES || out.sent >= EVENING_EMAILS_PER_RUN) {
+      out.skipped += 1;
+      continue;
+    }
+    try {
+      const profile = store.rowToProfile(store.getProfileRowById(candidate.id));
+      if (!profile || profile.is_demo) { out.skipped += 1; continue; }
+      const latest = latestEveningCheck(profile);
+      const result = latest.check && !latest.stale ? latest.check : await runParentAgent([], '', profile);
+      const content = eveningEmailContent(profile, result, {
+        app: base + '/',
+        unsubscribe: base + '/evening-email/off?t=' + eveningUnsubscribeToken(profile.id),
+      }, clock.day);
+      const sent = await sendEmail({
+        to: candidate.email,
+        subject: content.subject,
+        text: content.text,
+        html: content.html,
+        headers: { 'List-Unsubscribe': '<' + base + '/evening-email/off?t=' + eveningUnsubscribeToken(profile.id) + '>' },
+      });
+      if (!sent || !sent.sent) { out.failed += 1; continue; }
+      store.markEveningEmailSent(profile.id, clock.day);
+      out.sent += 1;
+    } catch (err) {
+      out.failed += 1;
+      console.warn('evening email failed for one family:', err && err.message ? err.message : err);
+    }
+  }
+  return out;
+}
+
+// The family's latest saved check plus whether it is still current.
+function latestEveningCheck(profile) {
+  const saved = store.getEveningCheck(profile.id);
+  const fingerprint = eveningFingerprint(profile, store.listFactsForProfile(profile.id), eveningMoment(profile));
+  return {
+    check: saved ? saved.result : null,
+    ran_at: saved ? saved.ran_at : '',
+    moment_label: saved ? saved.moment_label : '',
+    stale: !saved || saved.fingerprint !== fingerprint,
+  };
 }
 
 // Structured placements for the prompt's profile JSON: each child's grade and
@@ -1210,9 +1394,9 @@ function placementLinesForRun(profile) {
 
 async function runParentAgent(logs, simulatedLabel, viewer) {
   const push = (message) => logs.push({ at: nowIso(), message });
-  const simulated = simulatedLabel || SIMULATED_NOW_LABEL;
+  const moment = eveningMoment(viewer, simulatedLabel);
   push('evening check started');
-  push(`simulated time: ${simulated}`);
+  push(moment.simulated ? `simulated time: ${moment.label}` : `current time: ${moment.label}`);
   if (!API_KEY) {
     throw new Error(
       'SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.'
@@ -1243,7 +1427,7 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
   push(`${facts.length} facts checked against the family profile`);
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
   const promptProfile = { ...profile, placements: placementRecordsForRun(profile) };
-  const content = await callParentMetaApi(promptProfile, facts, simulated, placementLinesForRun(profile));
+  const content = await callParentMetaApi(promptProfile, facts, moment, placementLinesForRun(profile));
   push('API responded — validating filtering result');
   const raw = extractJsonObject(content);
   const result = normalizeParentResult(raw, facts);
@@ -1265,6 +1449,17 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
     for (const conflict of result.conflicts) push(`CONFLICTS: ${conflict.message}`);
   }
   push(PRIVACY_CHECK_LINE);
+  // The latest check is saved per family so the home screen, agents, and
+  // the evening email can show it without recomputing (an explicit
+  // simulated_now override is a what-if and is not saved).
+  if (!simulatedLabel) {
+    store.saveEveningCheck(profile.id, {
+      result,
+      ran_at: nowIso(),
+      moment_label: moment.label,
+      fingerprint: eveningFingerprint(profile, facts, moment),
+    });
+  }
   return result;
 }
 
@@ -1682,6 +1877,22 @@ const AGENT_MANIFEST = {
       auth: 'Bearer agent token',
       description: 'Run the evening check for the token\'s family: its hubs, children, and facts. Returns { ok, nudges, conflicts, relevant_facts, relevant_count, filtered_out_count, summary, logs }. Can take up to a minute.',
     },
+    {
+      name: 'latest evening check',
+      method: 'GET',
+      path: '/api/parent/latest',
+      auth: 'Bearer agent token',
+      description: 'Read the token\'s family\'s most recent evening check instantly: { ok, check, ran_at, moment_label, stale }. check has the same shape as the evening check result (or null if none yet). stale is true when the family\'s notes, placements, or the day changed since it ran — then POST /api/parent/run to refresh.',
+    },
+  ],
+  // The evening check is ParentLoop's main output. A connected agent keeps
+  // its parent informed by reading it each evening; ParentLoop does not
+  // push to agents.
+  evening_routine: [
+    'Each evening (around 6–8 PM in the family\'s time zone), GET /api/parent/latest with the token.',
+    'If check is null or stale is true, POST /api/parent/run, then use its result.',
+    'Tell the parent in a few lines: each nudge (title, action, deadline), each conflict, and the dated items for the next few days. If there is nothing open, say it is a calm evening.',
+    'Never share the family\'s check with anyone but the parent.',
   ],
   recipe: AGENT_RECIPE,
   find_or_create: AGENT_RECIPE,
@@ -2536,26 +2747,102 @@ const server = http.createServer(async (req, res) => {
       }
       return;
     }
+    // The family's latest saved evening check, instantly, with stale:true
+    // when its facts, placements, actions, or day have changed since. The
+    // home screen shows it and refreshes in the background; agents read it
+    // with their token (falls back to the session viewer, like the run).
+    // Evening email preferences: the signed-in family's own, never the demo.
+    if (url.pathname === '/api/evening-email' && (req.method === 'GET' || req.method === 'POST')) {
+      const own = store.getSessionOwnProfile(session);
+      if (!own || own.is_demo) {
+        if (req.method === 'GET') { sendJson(res, 200, { ok: true, available: false }); return; }
+        sendJson(res, 400, { ok: false, error: 'Start your own family first, then you can get the evening email.' });
+        return;
+      }
+      if (req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const enabled = Boolean(body.enabled);
+        const time = String(body.time || '19:00');
+        if (!EVENING_EMAIL_TIMES.includes(time)) { sendJson(res, 400, { ok: false, error: 'Pick a time between 4 PM and 9:30 PM.' }); return; }
+        const current = store.getEveningEmailPrefs(own.id);
+        if (enabled && !(current && current.email)) { sendJson(res, 400, { ok: false, error: 'Add your email above first, then turn on the evening email.' }); return; }
+        const prefs = store.setEveningEmailPrefs(own.id, enabled, time);
+        sendJson(res, 200, { ok: true, available: true, enabled: prefs.enabled, time: prefs.time, email: prefs.email, times: EVENING_EMAIL_TIMES });
+        return;
+      }
+      const prefs = store.getEveningEmailPrefs(own.id);
+      sendJson(res, 200, { ok: true, available: true, enabled: prefs.enabled, time: prefs.time, email: prefs.email, times: EVENING_EMAIL_TIMES });
+      return;
+    }
+    // One-click unsubscribe from the link in every evening email. The token
+    // is a signature, not a profile id; a wrong token changes nothing.
+    if (req.method === 'GET' && url.pathname === '/evening-email/off') {
+      const token = String(url.searchParams.get('t') || '');
+      const match = token
+        ? store.listEveningEmailProfiles().find((p) => eveningUnsubscribeToken(p.id) === token)
+        : null;
+      if (match) {
+        const prefs = store.getEveningEmailPrefs(match.id);
+        store.setEveningEmailPrefs(match.id, false, prefs ? prefs.time : '19:00');
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ParentLoop</title>' +
+        '<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem;color:#1f2a24">' +
+        '<h1 style="font-size:1.4rem">You’re unsubscribed</h1>' +
+        '<p>You won’t get the ParentLoop evening email anymore. You can turn it back on any time under My family.</p>' +
+        '<p><a href="/">Open ParentLoop</a></p></body>');
+      return;
+    }
+    // Scheduler tick (Cloud Scheduler, every 15 minutes). Refused unless the
+    // shared secret matches; replies with counts only, never addresses.
+    if (req.method === 'POST' && url.pathname === '/api/cron/evening-emails') {
+      const expected = String(process.env.EVENING_EMAIL_CRON_SECRET || '');
+      const given = String(req.headers['x-parentloop-cron'] || '');
+      const ok = expected.length >= 16 && given.length === expected.length &&
+        crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+      if (!ok) { sendJson(res, 403, { ok: false, error: 'Not allowed.' }); return; }
+      // Tests (PARENTLOOP_TEST_AUTH=1 only) may pin the clock with { now }.
+      let now = new Date();
+      if (TEST_AUTH_ENABLED) {
+        const body = await readJsonBody(req).catch(() => ({}));
+        if (body && body.now && !isNaN(Date.parse(body.now))) now = new Date(body.now);
+      }
+      const summary = await sendDueEveningEmails(now);
+      sendJson(res, 200, { ok: true, ...summary });
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/parent/latest') {
+      const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
+      if (!actor) { sendJson(res, 404, { ok: false, error: 'No family profile found — finish setup first.' }); return; }
+      sendJson(res, 200, { ok: true, ...latestEveningCheck(actor) });
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/parent/run') {
       const logs = [];
       try {
-        let simulatedLabel = SIMULATED_NOW_LABEL;
+        // An explicit simulated_now is a what-if run; otherwise the demo
+        // family runs at its simulated moment and real families at real
+        // local time (eveningMoment).
+        let simulatedLabel = '';
         try {
           const body = await readJsonBody(req);
           if (body && (body.simulated_now || body.simulatedNow)) {
             simulatedLabel = String(body.simulated_now || body.simulatedNow);
           }
         } catch {
-          // No body is fine; the default simulated moment applies.
+          // No body is fine.
         }
         // Brief 059: a valid agent token runs the check for ITS family
         // (bearerAuth resolved above; a bad token was already refused with
         // 401). Without a token the session viewer runs it, as before.
         const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
         const result = await runParentAgent(logs, simulatedLabel, actor);
+        const moment = eveningMoment(actor, simulatedLabel);
         sendJson(res, 200, {
           ok: true,
-          simulated_now: SIMULATED_NOW_LABEL,
+          simulated_now: moment.simulated ? moment.label : '',
+          checked_at_label: moment.label,
+          ran_at: nowIso(),
           ...result,
           result,
           logs,
