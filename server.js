@@ -3475,10 +3475,20 @@ if (require.main === module) {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  // Keep the event loop busy until the server is listening. While initDb
+  // waits on V8 compiling sql.js's WebAssembly, nothing else holds the loop
+  // open, so libuv returns and Node drains V8's task queues. Boot then
+  // carries on inside that drain, listens, and can deadlock in
+  // NodePlatform::DrainTasks (nodejs/node#54918, unfixed in Node 20): the
+  // server accepts TCP connections but never answers and ignores SIGTERM.
+  // Under parallel load about 15% of boots hung this way; 0 of 144 with
+  // this hold.
+  const bootHold = setInterval(() => {}, 1000);
   store
     .initDb()
     .then(() => {
       server.listen(PORT, '0.0.0.0', () => {
+        clearInterval(bootHold);
         console.log(`School Agent Network listening at http://0.0.0.0:${PORT}`);
         console.log(`Model: ${MODEL} via ${API_URL}`);
         console.log(
