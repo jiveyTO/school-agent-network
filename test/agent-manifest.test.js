@@ -69,6 +69,8 @@ function assertRealRoute(endpoint) {
     assert.ok(SERVER_SOURCE.includes('hubMatch') && SERVER_SOURCE.includes("req.method === 'GET' && hubMatch"), 'hub read route exists');
   } else if (/^\/api\/hubs\/\{[^}]+\}\/materials$/.test(p)) {
     assert.ok(SERVER_SOURCE.includes('hubMaterialsMatch') && SERVER_SOURCE.includes("req.method === 'POST' && hubMaterialsMatch"), 'add material route exists');
+  } else if (p === '/api/parent/run' && method === 'POST') {
+    assert.ok(SERVER_SOURCE.includes("req.method === 'POST' && url.pathname === '/api/parent/run'"), 'evening check route exists');
   } else {
     assert.fail(`manifest lists an endpoint with no known real route: ${method} ${p}`);
   }
@@ -83,6 +85,7 @@ const EXPECTED_ENDPOINTS = [
   ['POST', '/api/join/{token}/accept'],
   ['GET', '/api/hubs/{hub_id}'],
   ['POST', '/api/hubs/{hub_id}/materials'],
+  ['POST', '/api/parent/run'],
 ];
 
 test('GET /api/agent manifest: shape, real routes, recipe, no data', async (t) => {

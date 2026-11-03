@@ -1580,6 +1580,13 @@ const AGENT_MANIFEST = {
       body: { kind: 'paste', title: 'notice title', text: 'newsletter or notice text' },
       description: 'Add material to a hub the family belongs to and extract its facts. For pasted text send kind paste with title and text. Returns { ok, material, facts_added }.',
     },
+    {
+      name: 'evening check',
+      method: 'POST',
+      path: '/api/parent/run',
+      auth: 'Bearer agent token',
+      description: 'Run the evening check for the token\'s family: its hubs, children, and facts. Returns { ok, nudges, conflicts, relevant_facts, relevant_count, filtered_out_count, summary, logs }. Can take up to a minute.',
+    },
   ],
   recipe: AGENT_RECIPE,
   find_or_create: AGENT_RECIPE,
@@ -2446,7 +2453,11 @@ const server = http.createServer(async (req, res) => {
         } catch {
           // No body is fine; the default simulated moment applies.
         }
-        const result = await runParentAgent(logs, simulatedLabel, currentViewer(session));
+        // Brief 059: a valid agent token runs the check for ITS family
+        // (bearerAuth resolved above; a bad token was already refused with
+        // 401). Without a token the session viewer runs it, as before.
+        const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
+        const result = await runParentAgent(logs, simulatedLabel, actor);
         sendJson(res, 200, {
           ok: true,
           simulated_now: SIMULATED_NOW_LABEL,
