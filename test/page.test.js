@@ -1198,3 +1198,15 @@ test('invite account choice reads as two separated option blocks (brief 038)', (
   assert.ok(!PAGE.includes('overflow-x: hidden'),
     'no page-level overflow clipping masks unwrapped content');
 });
+
+test('email fields are styled like every other text field', () => {
+  // The family email, onboarding and recovery inputs are type="email"; the
+  // shared field style must cover them or they render as bare browser boxes.
+  assert.ok(PAGE.includes('.field input[type="text"], .field input[type="url"], .field input[type="email"], .field input[type="password"], .field textarea {'),
+    'type="email" inputs get the field style');
+  for (const id of ['familyEmailInput', 'obParentEmail', 'recoveryEmail']) {
+    const at = PAGE.indexOf('id="' + id + '"');
+    assert.ok(at !== -1 && PAGE.lastIndexOf('<label class="field">', at) > PAGE.lastIndexOf('</label>', at),
+      id + ' sits inside a .field label');
+  }
+});
