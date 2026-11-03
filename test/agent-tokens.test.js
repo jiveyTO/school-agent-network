@@ -76,6 +76,10 @@ test('agent token store: hash-only, demo refusal, lifecycle', async (t) => {
     const listed = db.listAgentTokens(amy.id);
     assert.equal(listed.length, 1);
     assert.ok(!('token_hash' in listed[0]), 'listings never carry the hash');
+    // Brief 060: the last 4 characters, captured at creation as a label.
+    assert.equal(record.hint, raw.slice(-4), 'the new record carries the last-4 hint');
+    assert.equal(listed[0].hint, raw.slice(-4), 'the listing carries the last-4 hint');
+    assert.equal(row.display_hint, raw.slice(-4), 'only the last 4 characters are stored');
     assert.ok(!JSON.stringify(listed).includes(raw), 'listings never carry the raw token');
     assert.deepEqual(db.listAgentTokens(ben.id), [], 'tokens are per-family');
   });
@@ -261,6 +265,8 @@ test('agent tokens over HTTP: lifecycle, scope, and guards', async (t) => {
 
     const listed = await amy.get('/api/agent-tokens');
     assert.equal(listed.data.tokens.length, 1);
+    assert.equal(record.hint, raw.slice(-4), 'brief 060: the issued record carries the last-4 hint');
+    assert.equal(listed.data.tokens[0].hint, raw.slice(-4), 'brief 060: GET lists the last-4 hint');
     assert.ok(!listed.text.includes(raw), 'the raw token is never listed again');
     assert.ok(!listed.text.includes('token_hash'), 'the hash is never listed');
   });
