@@ -2680,14 +2680,16 @@ const server = http.createServer(async (req, res) => {
       // Brief 055: a founder/admin's view of the roster also carries, per
       // removable member, an opaque member_key for the remove action. Plain
       // members (and agents) get the roster exactly as before.
+      // Brief 058: every roster row says whether it is the viewer, so the
+      // page can mark "(you)" without seeing any profile id.
       const viewerIsAdmin = !bearerAuth && store.getMemberRole(hub.id, actor.id) === 'admin';
-      const members = viewerIsAdmin
-        ? listedMembers.map((m, i) => {
-            const profileId = listedMembers._profileIds[i];
-            const removable = !hub.is_demo && !m.is_founder && profileId !== actor.id && profileId !== hub.created_by;
-            return removable ? { ...m, can_remove: true, member_key: store.hubMemberKey(hub.id, profileId) } : { ...m, can_remove: false };
-          })
-        : listedMembers;
+      const members = listedMembers.map((m, i) => {
+        const profileId = listedMembers._profileIds[i];
+        const row = { ...m, is_you: profileId === actor.id };
+        if (!viewerIsAdmin) return row;
+        const removable = !hub.is_demo && !m.is_founder && profileId !== actor.id && profileId !== hub.created_by;
+        return removable ? { ...row, can_remove: true, member_key: store.hubMemberKey(hub.id, profileId) } : { ...row, can_remove: false };
+      });
       const contacts = store.listHubContacts(hub.id);
       const contactNames = contacts.map((c) => c.parent_name);
       const contactLine = contactNames.join(', ');

@@ -165,6 +165,7 @@ test('founder/admin removes a member family from a hub', async (t) => {
     assert.ok(page.includes('data-remove-member='), 'Remove control on removable rows');
     assert.ok(page.includes("'<p class=\"hint\">Remove ' + esc(name) + ' from this hub?</p>'"), 'confirm names the family');
     assert.ok(page.includes("'/members/'") && page.includes("{ method: 'DELETE' }"), 'confirm calls the member DELETE');
-    assert.ok(page.includes('if (!(m.can_remove && m.member_key))'), 'rows without a key render as before');
+    assert.ok(page.includes('members.filter(function (m) { return m.can_remove && m.member_key; })'),
+      'only rows with a key get a Remove control (brief 058: under Manage this hub)');
   });
 });
