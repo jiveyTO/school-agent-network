@@ -329,6 +329,30 @@ test('add material panel cannot be stretched by a long pasted-image filename', (
     'pdf picker filename truncates instead of forcing width');
 });
 
+test('hub header uses two columns on desktop and one sensible column on phones', () => {
+  // Brief 056: same facts, laid out across the card's width.
+  const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
+  const header = hubMarkup.slice(hubMarkup.indexOf('<div class="hub-header">'), hubMarkup.indexOf('id="placementCard"'));
+  assert.ok(header.includes('<div class="hub-header-main">') && header.includes('class="hub-header-side" id="hubSourcesCard"'),
+    'header has a main column and a sources column');
+  const at = (token) => header.indexOf(token);
+  for (const token of ['id="hubTitle"', 'id="hubMeta"', 'id="hubContact"', 'Families in this hub', 'id="hubMembersList"',
+    'Sources for this hub', 'id="hubSources"', 'id="hubWebsiteAdd"']) {
+    assert.ok(at(token) !== -1, `header keeps ${token}`);
+  }
+  assert.ok(at('id="hubTitle"') < at('id="hubMeta"') && at('id="hubMeta"') < at('Families in this hub') &&
+    at('Families in this hub') < at('Sources for this hub'), 'phone order: title → meta → families → sources');
+  assert.ok(!PAGE.includes('class="card" id="hubSourcesCard"'), 'sources is no longer a card nested in a card');
+  assert.ok(PAGE.includes('.hub-header { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);'),
+    'two columns from the 900px breakpoint, on the hub-grid split');
+  assert.ok(PAGE.includes('.hub-title { margin: 0 0 6px; font-size: 21px; line-height: 1.25; overflow-wrap: anywhere; }'),
+    'long hub names wrap inside the title column');
+  assert.ok(PAGE.includes('.member-remove-btn { flex: none; min-height: 36px;'), 'Remove keeps a comfortable tap target');
+  assert.ok(hubMarkup.indexOf('id="placementCard"') > hubMarkup.indexOf('id="hubSourcesCard"') &&
+    hubMarkup.indexOf('id="placementCard"') < hubMarkup.indexOf('What is in this hub'),
+    'placement prompt sits under the header, above the hub content');
+});
+
 test('hub page no longer renders the "What the school announced" or Activity sections', () => {
   // Brief 054: both sat permanently empty at the bottom of every hub page.
   const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));

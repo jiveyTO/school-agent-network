@@ -68,6 +68,17 @@
   .view[hidden] { display: none; }
   .hub-grid { display: grid; gap: 16px; }
   .hub-grid > * { min-width: 0; }
+  /* Brief 056: hub header. One column on phones; two from 900px (below),
+     on the same 3fr/2fr split as the hub-grid so the columns line up. */
+  .hub-header { display: grid; gap: 18px; margin-bottom: 18px; }
+  .hub-header > * { min-width: 0; }
+  .hub-title { margin: 0 0 6px; font-size: 21px; line-height: 1.25; overflow-wrap: anywhere; }
+  .hub-meta { margin: 2px 0 0; }
+  .hub-members { margin-top: 16px; }
+  .hub-label { margin: 0 0 6px; font-weight: 800; color: var(--pine-dark); }
+  .hub-header-side { border-top: 1px solid var(--line); padding-top: 16px; }
+  .hub-header-side .hub-side-hint { margin: 0 0 6px; }
+  .hub-header-side .source-row { overflow-wrap: anywhere; }
   main > * { min-width: 0; }
   pre, p, h1, h2, h3 { overflow-wrap: break-word; }
   /* Long unbroken strings (URLs, source lines) must wrap inside the
@@ -489,6 +500,8 @@
     .phone { max-width: 960px; }
     main { padding: 24px 24px 8px; }
     .hub-grid { grid-template-columns: 3fr 2fr; align-items: start; }
+    .hub-header { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); column-gap: 16px; align-items: start; }
+    .hub-header-side { border-top: 0; padding-top: 4px; border-left: 1px solid var(--line); padding-left: 20px; }
   }
   @media (max-width: 899px) {
     #tabBar { padding-left: 16px; padding-right: 16px; }
@@ -663,9 +676,9 @@
   .text-btn { border: 0; background: none; color: var(--muted); font: inherit; font-size: 14px; text-decoration: underline; cursor: pointer; padding: 6px; }
   /* Brief 055: families list rows; Remove sits beside the name with a
      comfortable tap target. */
-  .member-line { margin: 4px 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
-  .member-name { min-width: 0; overflow-wrap: anywhere; }
-  .member-remove-btn { min-height: 36px; padding: 6px 10px; }
+  .member-line { margin: 2px 0; min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+  .member-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .member-remove-btn { flex: none; min-height: 36px; padding: 6px 10px; }
   footer {
     padding: 6px 20px 0;
     font-size: 13.5px;
@@ -891,13 +904,32 @@
     <section id="hubViewSection" aria-labelledby="hub-view-h">
       <h2 id="hub-view-h">Hub</h2>
       <div class="card">
-        <h3 id="hubTitle" style="margin:0 0 4px">Choose a hub</h3>
-        <p id="hubChooserText">Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.</p>
-        <p class="hint" id="hubMeta"></p>
-        <p class="hint" id="hubContact" hidden></p>
-        <div id="hubMembers" hidden style="margin:12px 0">
-          <p style="margin:0 0 6px"><b>Families in this hub</b></p>
-          <div id="hubMembersList"></div>
+        <!-- Brief 056: the header uses the card's full width — who is in the
+             hub on the left, what it is built from on the right; one column
+             on phones (title → meta → families → sources). -->
+        <div class="hub-header">
+          <div class="hub-header-main">
+            <h3 id="hubTitle" class="hub-title">Choose a hub</h3>
+            <p id="hubChooserText">Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.</p>
+            <p class="hint hub-meta" id="hubMeta"></p>
+            <p class="hint hub-meta" id="hubContact" hidden></p>
+            <div id="hubMembers" class="hub-members" hidden>
+              <p class="hub-label">Families in this hub</p>
+              <div id="hubMembersList"></div>
+            </div>
+          </div>
+          <div class="hub-header-side" id="hubSourcesCard">
+            <p class="hub-label">Sources for this hub</p>
+            <p class="hint hub-side-hint">Everything this hub is built from.</p>
+            <div id="hubSources"></div>
+            <div id="hubWebsiteAdd" hidden>
+              <label class="field"><span id="hubWebsiteAddLabel">Add the school website</span>
+                <input type="url" id="hubWebsiteAddInput" placeholder="https://" inputmode="url">
+              </label>
+              <p style="margin:8px 0 0"><button class="small-btn secondary" id="hubWebsiteSaveBtn" type="button">Save website</button></p>
+              <p class="hint" id="hubWebsiteAddStatus"></p>
+            </div>
+          </div>
         </div>
         <div class="card" id="placementCard" hidden style="margin-bottom:12px">
           <p style="margin:0"><b>Place your children in this hub</b></p>
@@ -908,18 +940,6 @@
             <button class="small-btn secondary" id="placementSkipBtn" type="button">Skip for now</button>
           </p>
           <p class="hint" id="placementStatus"></p>
-        </div>
-        <div class="card" id="hubSourcesCard" style="margin-bottom:12px">
-          <p style="margin:0"><b>Sources for this hub</b></p>
-          <p class="hint">Everything this hub is built from.</p>
-          <div id="hubSources"></div>
-          <div id="hubWebsiteAdd" hidden>
-            <label class="field"><span id="hubWebsiteAddLabel">Add the school website</span>
-              <input type="url" id="hubWebsiteAddInput" placeholder="https://" inputmode="url">
-            </label>
-            <p style="margin:8px 0 0"><button class="small-btn secondary" id="hubWebsiteSaveBtn" type="button">Save website</button></p>
-            <p class="hint" id="hubWebsiteAddStatus"></p>
-          </div>
         </div>
         <div class="hub-grid">
           <div>
