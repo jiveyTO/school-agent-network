@@ -133,6 +133,12 @@ function assessPdfPictureRisk(pageTexts, text, fileBytes) {
 // Brief 048: OCR pass caps, in line with the file-size caps above. Only
 // flagged pages are read, at most this many, one vision call per page.
 const MAX_OCR_PAGES = 10;
+// Brief 051d: crash guards for picture reading. Absurd images are dropped,
+// not decoded (~50 MP cap); decoded pixels are downscaled to at most this
+// long edge before PNG encoding; no new OCR page starts after this budget.
+const OCR_MAX_IMAGE_PIXELS = 50 * 1024 * 1024;
+const OCR_DOWNSCALE_LONG_EDGE = 2000;
+const OCR_TIME_BUDGET_MS = 120000;
 // OCR text at or above this many non-whitespace characters counts as a
 // substantial recovery: the picture caution is replaced by the OCR note.
 const OCR_SUBSTANTIAL_CHARS = PICTURE_RISK_PAGE_CHARS;
@@ -183,9 +189,11 @@ function pngChunk(type, data) {
   return out;
 }
 
-// pdf.js image kinds: 1 = 1bpp grayscale, 2 = RGB 24bpp, 3 = RGBA 32bpp.
-// Anything else is inferred from the decoded data length.
-function encodeImageAsPng(img) {
+// Brief 051d: decoded pixels are normalized to { width, height, channels,
+// data } first (channels 1/3/4), so the downscale and the PNG encoder each
+// see one shape. pdf.js image kinds: 1 = 1bpp grayscale, 2 = RGB 24bpp,
+// 3 = RGBA 32bpp. Anything else is inferred from the decoded data length.
+function normalizeImagePixels(img) {
   if (!img || !img.width || !img.height || !img.data || !img.data.length) return null;
   const { width, height } = img;
   let kind = img.kind;
@@ -195,41 +203,70 @@ function encodeImageAsPng(img) {
     else if (img.data.length >= width * height) kind = 4; // 8-bit grayscale
     else return null;
   }
-  let colorType;
-  let rows;
-  if (kind === 2) {
-    colorType = 2;
-    rows = Buffer.alloc(height * (1 + width * 3));
-    for (let y = 0; y < height; y++) {
-      rows[y * (1 + width * 3)] = 0;
-      Buffer.from(img.data.buffer, img.data.byteOffset + y * width * 3, width * 3).copy(rows, y * (1 + width * 3) + 1);
-    }
-  } else if (kind === 3) {
-    colorType = 6;
-    rows = Buffer.alloc(height * (1 + width * 4));
-    for (let y = 0; y < height; y++) {
-      rows[y * (1 + width * 4)] = 0;
-      Buffer.from(img.data.buffer, img.data.byteOffset + y * width * 4, width * 4).copy(rows, y * (1 + width * 4) + 1);
-    }
-  } else if (kind === 1) {
-    colorType = 0;
+  if (kind === 1) {
     const rowBytes = Math.ceil(width / 8);
-    rows = Buffer.alloc(height * (1 + width));
+    const data = Buffer.alloc(width * height);
     for (let y = 0; y < height; y++) {
-      rows[y * (1 + width)] = 0;
       for (let x = 0; x < width; x++) {
         const byte = img.data[y * rowBytes + (x >> 3)] || 0;
-        rows[y * (1 + width) + 1 + x] = byte & (0x80 >> (x & 7)) ? 0 : 255;
+        data[y * width + x] = byte & (0x80 >> (x & 7)) ? 0 : 255;
       }
     }
-  } else {
-    colorType = 0;
-    rows = Buffer.alloc(height * (1 + width));
-    for (let y = 0; y < height; y++) {
-      rows[y * (1 + width)] = 0;
-      Buffer.from(img.data.buffer, img.data.byteOffset + y * width, width).copy(rows, y * (1 + width) + 1);
+    return { width, height, channels: 1, data };
+  }
+  const channels = kind === 3 ? 4 : kind === 2 ? 3 : 1;
+  const need = width * height * channels;
+  if (img.data.length < need) return null;
+  const data = Buffer.alloc(need);
+  Buffer.from(img.data.buffer, img.data.byteOffset, need).copy(data);
+  return { width, height, channels, data };
+}
+
+// Pure-JS area-average (box filter) downscale to at most maxEdge on the
+// long edge. The full-size buffer is zeroed before returning, so peak
+// memory drops as soon as the small copy exists.
+function boxDownscale(pix, maxEdge) {
+  if (!pix) return null;
+  if (Math.max(pix.width, pix.height) <= maxEdge) return pix;
+  const scale = maxEdge / Math.max(pix.width, pix.height);
+  const nw = Math.max(1, Math.round(pix.width * scale));
+  const nh = Math.max(1, Math.round(pix.height * scale));
+  const out = Buffer.alloc(nw * nh * pix.channels);
+  for (let y = 0; y < nh; y++) {
+    const y0 = Math.floor(y / scale);
+    const y1 = Math.min(pix.height, Math.max(y0 + 1, Math.ceil((y + 1) / scale)));
+    for (let x = 0; x < nw; x++) {
+      const x0 = Math.floor(x / scale);
+      const x1 = Math.min(pix.width, Math.max(x0 + 1, Math.ceil((x + 1) / scale)));
+      for (let c = 0; c < pix.channels; c++) {
+        let sum = 0;
+        let n = 0;
+        for (let sy = y0; sy < y1; sy++) {
+          const row = (sy * pix.width + x0) * pix.channels + c;
+          for (let sx = x0; sx < x1; sx++) {
+            sum += pix.data[row + (sx - x0) * pix.channels];
+            n++;
+          }
+        }
+        out[(y * nw + x) * pix.channels + c] = n ? Math.round(sum / n) : 0;
+      }
     }
   }
+  pix.data.fill(0);
+  return { width: nw, height: nh, channels: pix.channels, data: out };
+}
+
+function encodePixelsAsPng(pix) {
+  if (!pix || !pix.width || !pix.height || !pix.data || !pix.data.length) return null;
+  const { width, height, channels } = pix;
+  const colorType = channels === 3 ? 2 : channels === 4 ? 6 : 0;
+  const stride = width * channels;
+  const rows = Buffer.alloc(height * (1 + stride));
+  for (let y = 0; y < height; y++) {
+    rows[y * (1 + stride)] = 0;
+    pix.data.copy(rows, y * (1 + stride) + 1, y * stride, (y + 1) * stride);
+  }
+  pix.data.fill(0);
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
@@ -243,6 +280,11 @@ function encodeImageAsPng(img) {
   ]);
 }
 
+// Largest-image -> pixels -> downscale -> PNG, in that order.
+function encodeImageAsPng(img) {
+  return encodePixelsAsPng(boxDownscale(normalizeImagePixels(img), OCR_DOWNSCALE_LONG_EDGE));
+}
+
 let pdfJsLibCache = undefined;
 function pdfJsLib() {
   if (pdfJsLibCache !== undefined) return pdfJsLibCache;
@@ -252,57 +294,57 @@ function pdfJsLib() {
     // same-named local const puts it in the temporal dead zone.
     pdfJsLibCache = require('pdf-parse/lib/pdf.js/v1.10.100/build/pdf.js');
     pdfJsLibCache.disableWorker = true;
+    // Brief 051d: the bundled pdf.js assumes a browser DOM in three
+    // places. The production crash (ReferenceError: document is not
+    // defined in FontLoader) and the untested JPEG native-decoder path
+    // both die without these. The lib exposes its PDFJS settings object,
+    // which getDocument reads for all three flags.
+    pdfJsLibCache.PDFJS = pdfJsLibCache.PDFJS || {};
+    pdfJsLibCache.PDFJS.maxImageSize = OCR_MAX_IMAGE_PIXELS;
+    pdfJsLibCache.PDFJS.disableFontFace = true;
+    pdfJsLibCache.PDFJS.isEvalSupported = false;
   } catch {
     pdfJsLibCache = null;
   }
   return pdfJsLibCache;
 }
 
-// Largest embedded image on each requested page, as PNG bytes.
-// Returns a Map of 1-based page number -> Buffer. Never throws.
-async function extractPageImages(pdfBuffer, pageNumbers) {
-  const images = new Map();
-  const lib = pdfJsLib();
-  if (!lib || !pageNumbers.length) return images;
-  let doc = null;
+// Largest embedded image on ONE page, as a downscaled PNG. Never throws.
+// The page is cleaned up before returning, and pixel/PNG references are
+// dropped by the caller before the next page, so at most one page's
+// pixels are ever live at once.
+async function extractOnePageImagePng(doc, lib, pageNumber, imageOps) {
+  let page = null;
   try {
-    const task = lib.getDocument(new Uint8Array(pdfBuffer));
-    doc = await (task && task.promise ? task.promise : task);
-    const imageOps = new Set(
-      [lib.OPS.paintImageXObject, lib.OPS.paintInlineImageXObject, lib.OPS.paintJpegXObject]
-        .filter((v) => typeof v === 'number')
-    );
-    for (const pageNumber of pageNumbers) {
-      try {
-        const page = await doc.getPage(pageNumber);
-        const opList = await page.getOperatorList();
-        let best = null;
-        for (let i = 0; i < opList.fnArray.length; i++) {
-          if (!imageOps.has(opList.fnArray[i])) continue;
-          const arg = (opList.argsArray[i] || [])[0];
-          let img = null;
-          if (arg && typeof arg === 'object' && arg.data) {
-            img = arg; // inline image
-          } else if (typeof arg === 'string') {
-            try { img = page.objs.get(arg); } catch { img = null; }
-            if (!img) { try { img = doc.commonObjs.get(arg); } catch { img = null; } }
-          }
-          if (img && img.width && img.height && (!best || img.width * img.height > best.width * best.height)) best = img;
-        }
-        if (best) {
-          const png = encodeImageAsPng(best);
-          if (png) images.set(pageNumber, png);
-        }
-      } catch {
-        // One unreadable page must not sink the others.
+    page = await doc.getPage(pageNumber);
+    const opList = await page.getOperatorList();
+    let best = null;
+    let bestArea = 0;
+    for (let i = 0; i < opList.fnArray.length; i++) {
+      if (!imageOps.has(opList.fnArray[i])) continue;
+      const arg = (opList.argsArray[i] || [])[0];
+      let img = null;
+      if (arg && typeof arg === 'object' && arg.data) {
+        img = arg; // inline image
+      } else if (typeof arg === 'string') {
+        try { img = page.objs.get(arg); } catch { img = null; }
+        if (!img) { try { img = doc.commonObjs.get(arg); } catch { img = null; } }
+      }
+      if (img && img.width && img.height) {
+        const area = img.width * img.height;
+        if (area > bestArea) { bestArea = area; best = img; }
       }
     }
+    if (!best) return null;
+    const png = encodeImageAsPng(best);
+    best = null;
+    return png;
   } catch {
-    // Fall through with whatever was collected (possibly nothing).
+    return null;
   } finally {
-    if (doc) { try { doc.destroy(); } catch { /* already gone */ } }
+    if (page) { try { page.cleanup(); } catch { /* already gone */ } }
+    page = null;
   }
-  return images;
 }
 
 const FACT_TYPES = ['deadline', 'event', 'requirement', 'change', 'announcement'];
@@ -588,28 +630,61 @@ async function readFlaggedPagesWithOcr(pdfBuffer, pageTexts, text, logs) {
   const push = logs ? (m) => logs.push({ at: nowIso(), message: m }) : () => {};
   const pages = flaggedPdfPages(pageTexts, text, pdfBuffer ? pdfBuffer.length : 0);
   if (!pages.length) return { ocrText: '', picturesRead: false, pages: [] };
-  let images;
-  try {
-    images = await extractPageImages(pdfBuffer, pages);
-  } catch {
-    return { ocrText: '', picturesRead: false, pages };
-  }
+  const lib = pdfJsLib();
+  if (!lib) return { ocrText: '', picturesRead: false, pages };
   const recovered = [];
-  for (const pageNumber of pages) {
-    const png = images.get(pageNumber);
-    if (!png) continue;
-    try {
-      const raw = await callMetaApiOcr({ data: png, mime: 'image/png' });
-      const pageText = String(raw || '').trim();
-      if (pageText) recovered.push(pageText);
-    } catch (err) {
-      push(`picture read failed for page ${pageNumber}: ${err && err.message ? err.message : String(err)}`);
+  const readPages = [];
+  // One page at a time: get page -> operator list -> largest image ->
+  // downscale -> PNG -> vision call -> page.cleanup(), with references
+  // dropped before the next page. A stop-the-clock budget keeps a slow
+  // file from hitting the platform request timeout; unread pages keep
+  // the material's picture caution.
+  const deadline = Date.now() + OCR_TIME_BUDGET_MS;
+  let doc = null;
+  try {
+    const task = lib.getDocument({
+      data: new Uint8Array(pdfBuffer.buffer, pdfBuffer.byteOffset, pdfBuffer.length),
+      nativeImageDecoderSupport: 'none',
+    });
+    doc = await (task && task.promise ? task.promise : task);
+    const imageOps = new Set(
+      [lib.OPS.paintImageXObject, lib.OPS.paintInlineImageXObject, lib.OPS.paintJpegXObject]
+        .filter((v) => typeof v === 'number')
+    );
+    for (const pageNumber of pages) {
+      if (Date.now() > deadline) {
+        push('picture reading stopped at the time budget; unread pages keep the caution');
+        break;
+      }
+      let png = null;
+      try {
+        png = await extractOnePageImagePng(doc, lib, pageNumber, imageOps);
+      } catch {
+        png = null;
+      }
+      if (!png) continue;
+      readPages.push(pageNumber);
+      try {
+        const raw = await callMetaApiOcr({ data: png, mime: 'image/png' });
+        png = null;
+        const pageText = String(raw || '').trim();
+        if (pageText) recovered.push(pageText);
+      } catch (err) {
+        png = null;
+        push(`picture read failed for page ${pageNumber}: ${err && err.message ? err.message : String(err)}`);
+      }
     }
+  } catch {
+    // Whole-document failure: fall through with whatever was recovered
+    // (possibly nothing) and keep the text-layer-only behavior.
+  } finally {
+    if (doc) { try { doc.destroy(); } catch { /* already gone */ } }
+    doc = null;
   }
   const ocrText = recovered.join('\n\n');
   const substantial = ocrText.replace(/\s/g, '').length >= OCR_SUBSTANTIAL_CHARS;
   if (substantial) push(`pictures read with OCR: ${recovered.length} page(s) recovered text`);
-  return { ocrText, picturesRead: substantial, pages };
+  return { ocrText, picturesRead: substantial, pages: readPages };
 }
 
 function extractJsonObject(text) {
@@ -2594,6 +2669,7 @@ const server = http.createServer(async (req, res) => {
         } else if (kind === 'pdf') {
           if (!body.fileBase64) throw new Error('Choose a PDF file first.');
           const pdfBuffer = Buffer.from(String(body.fileBase64), 'base64');
+          body.fileBase64 = null; // release the ~4/3-size source string now
           if (pdfBuffer.length > MAX_PDF_BYTES) {
             throw new Error('That PDF is too large — the limit is 10 MB. Choose a smaller file.');
           }
