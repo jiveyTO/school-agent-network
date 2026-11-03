@@ -708,6 +708,18 @@ const QUOTE_RULES = [
   '- source_text is checked by code against the source: copy ONE short span (a sentence or less) character-for-character from the pasted text, the document text, or source_transcript.',
   '  Do not paraphrase, fix spelling, abbreviate, or join separate passages. A fact whose source_text is not found in the source is discarded.',
 ].join('\n');
+// Brief 061: a rule the source attaches to an item (a parenthetical "no
+// masks", "helmets required", small print) must reach the note a parent
+// reads, not only the quote. Same quote-verified extractions only, so the
+// demo school run and existing facts are unchanged.
+const RULE_CARRY_RULES = [
+  '- HARD RULE: when the source attaches a condition, restriction, prohibition, requirement, or exception that changes what a family must do, bring, wear, or avoid',
+  '  (e.g. "no masks", "helmets required", "no nuts", "bring indoor shoes", "no rentals on site", "please remember…"), carry that rule into the same fact\'s detail,',
+  '  or into its action when it is something to do, in your own summary words. Never summarize away small print, capitals, or parentheticals that carry a rule.',
+  '- Keep the rule on the fact it qualifies (the dress-up day, the skate, the lunch order). Make it a separate fact only when it has its own date or stands alone as an instruction.',
+  '- When a fact\'s detail or action carries such a rule, its source_text must be one unbroken span that covers both the main claim and the rule, even if that is longer than a sentence',
+  '  (for one day of a poster or calendar, copy that day\'s whole block). Never put a rule in detail or action that the source does not state.',
+].join('\n');
 
 // The extraction reply shape for one call: a plain facts array, or an
 // object when a title and/or an image transcript is asked for too.
@@ -726,7 +738,7 @@ function withExtractionOptions(system, options) {
   }
   if (opts.withTitle) out += '\n' + MATERIAL_TITLE_RULES;
   if (opts.withTranscript) out += '\n' + TRANSCRIPT_RULES;
-  if (opts.verifyQuotes) out += '\n' + QUOTE_RULES;
+  if (opts.verifyQuotes) out += '\n' + QUOTE_RULES + '\n' + RULE_CARRY_RULES;
   return out;
 }
 
