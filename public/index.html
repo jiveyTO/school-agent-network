@@ -824,6 +824,20 @@
       <p class="home-row"><a class="small-btn secondary" id="approveHomeLink" href="/">Go to ParentLoop</a></p>
     </section>
 
+    <!-- Brief 074: a family made with the typed-email form, found by the
+         Google sign-in's verified email. Nothing links until a Yes. -->
+    <section id="linkOfferView" aria-labelledby="link-offer-h" hidden>
+      <h2 id="link-offer-h">Is this your family?</h2>
+      <div class="card">
+        <p id="linkOfferText" style="margin-top:0"></p>
+        <div id="linkOfferList"></div>
+        <p class="share-row">
+          <button class="small-btn secondary" id="linkOfferNoBtn" type="button">No — start fresh</button>
+        </p>
+        <p class="hint" id="linkOfferStatus"></p>
+      </div>
+    </section>
+
     <section id="recoveryView" aria-labelledby="recovery-h" hidden>
       <h2 id="recovery-h">Get back into your family</h2>
       <div class="card">
@@ -1834,6 +1848,8 @@
     }
     refreshAuthChrome();
     document.getElementById('editFamilyBtn').hidden = !(profile && !profile.is_demo);
+    // Brief 074: no "switch back" to the family already on screen.
+    document.getElementById('demoBtn').hidden = Boolean(profile && profile.is_demo);
     if (!profile) {
       familyCardEl.innerHTML = '<h3>Your Family</h3><p>Family details are unavailable right now.</p>';
       const emailBox = document.getElementById('familyEmailBox');
@@ -3313,6 +3329,63 @@
   // parent lands back here with no second tap on the agent's link.
   let approveId = '';
 
+  // Brief 074: "We found a family created with this email — is it yours?"
+  // One family: Yes / No. Several: the parent picks one, or No; nothing is
+  // ever picked for them. Either answer reloads into the normal flow.
+  function showLinkOffer(offer) {
+    joinFlowActive = true;
+    onboardingView.hidden = true;
+    ['recoveryView', 'joinView', 'approveView'].forEach(function (id) { document.getElementById(id).hidden = true; });
+    tabBar.hidden = true;
+    viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
+    const families = offer.families || [];
+    const describe = function (f) {
+      return (f.parent_name || 'A family') + (f.children && f.children.length ? ' (' + f.children.join(', ') + ')' : '');
+    };
+    document.getElementById('linkOfferText').textContent = families.length === 1
+      ? 'We found a family created with this email — ' + describe(families[0]) + '. Is this your family?'
+      : 'We found ' + families.length + ' families created with this email. Which one is yours?';
+    const list = document.getElementById('linkOfferList');
+    list.innerHTML = '';
+    families.forEach(function (f) {
+      const row = document.createElement('div');
+      row.className = 'join-choice';
+      if (families.length > 1) {
+        const name = document.createElement('p');
+        name.innerHTML = '<b></b>';
+        name.firstChild.textContent = describe(f);
+        row.appendChild(name);
+      }
+      const yes = document.createElement('button');
+      yes.className = 'small-btn';
+      yes.type = 'button';
+      yes.textContent = families.length === 1 ? 'Yes, this is my family' : 'This is my family';
+      yes.addEventListener('click', async function () {
+        const status = document.getElementById('linkOfferStatus');
+        yes.disabled = true;
+        status.textContent = 'Linking your family…';
+        try {
+          await postJson('/api/auth/link-offer/accept', { key: f.key });
+          window.location.href = '/';
+        } catch (e) {
+          status.textContent = e.message;
+          yes.disabled = false;
+        }
+      });
+      row.appendChild(yes);
+      list.appendChild(row);
+    });
+    document.getElementById('linkOfferView').hidden = false;
+    paintDemoBar();
+    window.scrollTo(0, 0);
+  }
+
+  document.getElementById('linkOfferNoBtn').addEventListener('click', async function () {
+    this.disabled = true;
+    try { await postJson('/api/auth/link-offer/decline', {}); } catch (e) {}
+    window.location.href = '/';
+  });
+
   function showApprove() {
     joinFlowActive = true;
     onboardingView.hidden = true;
@@ -3562,6 +3635,12 @@
       renderFamily(null);
     }
     await loadHubs();
+    // Brief 074: a signed-in parent with no family yet, whose verified
+    // Google email made a family with the typed-email form, is asked first.
+    if (status.link_offer && status.link_offer.families && status.link_offer.families.length) {
+      showLinkOffer(status.link_offer);
+      return;
+    }
     // Brief 067: back from Google sign-in mid-approval → the approval page.
     try {
       const pendingApprove = sessionStorage.getItem('pendingApproveId');

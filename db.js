@@ -777,6 +777,10 @@ async function initDb() {
   addColumnIfMissing('profiles', 'evening_email_last_day', "evening_email_last_day TEXT DEFAULT ''");
   addColumnIfMissing('sessions', 'google_sub', "google_sub TEXT DEFAULT ''");
   addColumnIfMissing('sessions', 'google_email', "google_email TEXT DEFAULT ''");
+  // Brief 074: whether Google said the signed-in email is verified, and the
+  // Google account (sub) whose "is this your family?" offer was declined.
+  addColumnIfMissing('sessions', 'google_email_verified', 'google_email_verified INTEGER DEFAULT 0');
+  addColumnIfMissing('sessions', 'link_declined_sub', "link_declined_sub TEXT DEFAULT ''");
   // Rows from before expiry existed get 0, so they count as expired.
   addColumnIfMissing('login_states', 'expires_at', 'expires_at INTEGER NOT NULL DEFAULT 0');
   // Brief 067: invite links expire 7 days after they're made. A hub can ask
@@ -1416,11 +1420,12 @@ function getSessionIdentity(session) {
   return { signed_in: Boolean(sub), email: sub ? session.google_email || '' : '' };
 }
 
-function setSessionIdentity(sessionId, sub, email) {
+function setSessionIdentity(sessionId, sub, email, emailVerified) {
   if (!sessionId) return null;
-  run('UPDATE sessions SET google_sub = ?, google_email = ? WHERE id = ?', [
+  run('UPDATE sessions SET google_sub = ?, google_email = ?, google_email_verified = ? WHERE id = ?', [
     sub ? String(sub) : null,
     sub ? String(email || '') : null,
+    sub && emailVerified ? 1 : 0,
     String(sessionId),
   ]);
   persist();
@@ -1493,24 +1498,93 @@ function consumeGmailState(state, sessionId) {
 // (b) otherwise the session's own non-demo family is attached to the
 // account; (c) the demo family is never attachable — signing in while
 // viewing it lands on the account family or on onboarding.
-function completeGoogleSignIn(sessionId, sub, email) {
+// Brief 074: emailVerified is Google's email_verified for this sign-in. It
+// changes none of (a)-(c); it only lets a session left with no family see
+// the "is this your family?" offer below.
+function completeGoogleSignIn(sessionId, sub, email, emailVerified) {
   const session = getSession(sessionId);
   if (!session || !sub) return null;
   const accountProfile = getProfileByGoogleSub(sub);
   if (accountProfile && !accountProfile.is_demo) {
     setSessionProfile(sessionId, accountProfile.id);
-    setSessionIdentity(sessionId, sub, email);
+    setSessionIdentity(sessionId, sub, email, emailVerified);
     return { profile: getProfileByGoogleSub(sub), attached: false, switched: true };
   }
   const currentRow = session.active_profile_id ? getProfileRowById(session.active_profile_id) : null;
   if (currentRow && !currentRow.is_demo) {
     const linked = setProfileGoogleLink(currentRow.id, sub, email);
-    setSessionIdentity(sessionId, sub, email);
+    setSessionIdentity(sessionId, sub, email, emailVerified);
     return { profile: linked, attached: true, switched: false };
   }
   setSessionProfile(sessionId, null);
-  setSessionIdentity(sessionId, sub, email);
-  return { profile: null, attached: false, switched: false };
+  setSessionIdentity(sessionId, sub, email, emailVerified);
+  return { profile: null, attached: false, switched: false, link_offer: linkOfferCandidates(getSession(sessionId)).length };
+}
+
+// Brief 074: a family made with the typed-email form carries the address
+// only as parent_email, so Google sign-in (by google_sub) can't see it.
+// When a signed-in session holds no family of its own, Google says the
+// email is verified, and the parent hasn't said No for this account, the
+// families whose contact email matches it exactly (case-normalized) and
+// that no Google account owns yet are offered: "is this your family?".
+// Nothing links until the parent taps Yes on one of them.
+const LINK_OFFER_MAX = 5;
+
+function linkOfferCandidates(session) {
+  if (!session || !session.google_sub || Number(session.google_email_verified) !== 1) return [];
+  if (String(session.link_declined_sub || '') === String(session.google_sub)) return [];
+  if (getProfileByGoogleSub(session.google_sub)) return [];
+  const own = session.active_profile_id ? getProfileRowById(session.active_profile_id) : null;
+  if (own && !own.is_demo) return [];
+  const email = String(session.google_email || '').trim().toLowerCase();
+  if (!email) return [];
+  return all(
+    `SELECT * FROM profiles WHERE is_demo = 0 AND COALESCE(google_sub, '') = ''
+     AND LOWER(TRIM(COALESCE(parent_email, ''))) = ? ORDER BY created_at ASC LIMIT ?`,
+    [email, LINK_OFFER_MAX]
+  ).map(rowToProfile);
+}
+
+// An opaque per-session handle for one offered family (never its id).
+function linkOfferKey(sessionId, profileId) {
+  return crypto.createHash('sha256').update(String(sessionId) + ':' + String(profileId)).digest('hex').slice(0, 20);
+}
+
+// What the page shows: the parent's name and the children's names only.
+function getLinkOffer(session) {
+  const candidates = linkOfferCandidates(session);
+  if (!candidates.length) return null;
+  return {
+    email: String(session.google_email || ''),
+    families: candidates.map((p) => ({
+      key: linkOfferKey(session.id, p.id),
+      parent_name: (p.parent && p.parent.name) || '',
+      children: (p.children || []).map((c) => c.name).filter(Boolean),
+    })),
+  };
+}
+
+// Yes on one offered family: re-checks the offer as it stands now, stamps
+// the Google identity onto that family, and switches the session to it.
+// The link is logged (family id and time; nothing secret).
+function acceptLinkOffer(sessionId, key) {
+  const session = getSession(sessionId);
+  const chosen = linkOfferCandidates(session).find((p) => linkOfferKey(sessionId, p.id) === String(key || ''));
+  if (!chosen) return null;
+  const linked = setProfileGoogleLink(chosen.id, session.google_sub, session.google_email);
+  if (!linked) return null;
+  setSessionProfile(sessionId, chosen.id);
+  console.log(`account link: family ${chosen.id} linked to its Google sign-in by matching email (parent confirmed) at ${new Date().toISOString()}`);
+  return linked;
+}
+
+// No: nothing is stamped; this session isn't asked again for this account.
+function declineLinkOffer(sessionId) {
+  const session = getSession(sessionId);
+  if (!session || !session.google_sub) return false;
+  run('UPDATE sessions SET link_declined_sub = ? WHERE id = ?', [String(session.google_sub), String(sessionId)]);
+  persist();
+  return true;
 }
 
 // Brief 041: email recovery. The raw token is returned to the caller once
@@ -3363,6 +3437,9 @@ module.exports = {
   createGmailState,
   consumeGmailState,
   completeGoogleSignIn,
+  getLinkOffer,
+  acceptLinkOffer,
+  declineLinkOffer,
   signOutSession,
   findProfileByParentEmail,
   createRecoveryToken,
