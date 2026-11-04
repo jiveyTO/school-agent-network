@@ -471,6 +471,15 @@
   .nudge-done { position: absolute; top: 12px; right: 12px; margin-top: 0; min-height: 40px; }
   .done-undo { margin: 0; font-size: 14.5px; color: var(--muted); }
   .done-undo .text-btn { color: var(--pine-dark); font-weight: 700; }
+  /* Evening hub cards: action items get a tick box. */
+  .note-list li.tick-item { list-style: none; margin-left: -20px; display: flex; gap: 10px; align-items: flex-start; }
+  .tick {
+    flex: none; width: 26px; height: 26px; margin-top: 1px; padding: 0;
+    border: 2px solid var(--pine); border-radius: 7px; background: var(--card);
+    color: #fff; font: inherit; font-size: 15px; font-weight: 800; line-height: 22px; cursor: pointer;
+  }
+  .tick-item.is-done .tick { background: var(--pine); }
+  .tick-item.is-done .note-text { text-decoration: line-through; color: var(--muted); }
   .deadline-chip {
     display: inline-block;
     margin-top: 8px;
@@ -1286,13 +1295,14 @@
       .join('');
   }
 
-  function groupBulletList(items, key) {
+  function groupBulletList(items, key, bulletFn) {
     const MAX_NOTES = 5;
-    const head = items.slice(0, MAX_NOTES).map(factBullet).join('');
+    const bullet = bulletFn || factBullet;
+    const head = items.slice(0, MAX_NOTES).map(bullet).join('');
     if (items.length <= MAX_NOTES) return '<ul class="note-list">' + head + '</ul>';
     return '<ul class="note-list">' + head + '</ul>' +
       '<div data-note-rest="' + key + '" hidden><ul class="note-list">' +
-      items.slice(MAX_NOTES).map(factBullet).join('') + '</ul></div>' +
+      items.slice(MAX_NOTES).map(bullet).join('') + '</ul></div>' +
       '<button class="toggle-btn" type="button" data-note-more="' + key + '" data-note-total="' + items.length + '">Show all ' + items.length + '</button>';
   }
 
@@ -1884,7 +1894,7 @@
     });
     const rest = facts.filter(function (f) { return !factMatters(f); });
     let body = '';
-    if (top.length) body += groupBulletList(top, 'e' + (eveningUid.count++));
+    if (top.length) body += groupBulletList(top, 'e' + (eveningUid.count++), eveningFactBullet);
     if (rest.length) {
       const link = g.hub_id
         ? ' — <a href="#" data-goto-hub="' + esc(g.hub_id) + '">catch up in My hubs</a>'
@@ -1906,12 +1916,57 @@
     else showView('hubs');
   });
 
-  // Real families can tick a nudge off (the demo stays as it is); the server
-  // says which on every check it serves.
-  let eveningCanMarkDone = false;
+  // Ticking things off. The server says how on every check it serves:
+  // 'saved' (a family's own page: stored with the family), 'browser' (the
+  // demo: kept in this browser only, the shared demo never changes), or ''.
+  let eveningDoneMode = '';
+  let eveningDoneSet = new Set();
+  let lastEveningResult = null;
   let lastDoneNudge = null;
+  const DEMO_DONE_KEY = 'parentloop_demo_done';
+
+  function demoDoneIds() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(DEMO_DONE_KEY) || '[]');
+      return Array.isArray(raw) ? raw.map(String) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function setEveningDoneMode(data) {
+    eveningDoneMode = (data && data.done_mode) || (data && data.can_mark_done ? 'saved' : '');
+  }
+
+  function isActionItem(f) {
+    return Boolean(f && (f.action_required || factActionKind(f) !== ''));
+  }
+
+  function eveningFactBullet(f) {
+    if (!eveningDoneMode || !f.id || !isActionItem(f)) return factBullet(f);
+    const done = eveningDoneSet.has(f.id);
+    const label = String(f.detail || f.title || '').trim();
+    const chips = [];
+    if (f.date) chips.push('<span class="chip date-chip">Due ' + esc(humanDate(f.date)) + '</span>');
+    if (done) chips.push('<span class="chip calm-chip">Done</span>');
+    else chips.push('<span class="chip action-chip">' + esc(factActionKind(f) ? (f.action || 'Action needed') : 'Action needed') + '</span>');
+    return '<li class="tick-item' + (done ? ' is-done' : '') + '">' +
+      '<button type="button" class="tick" data-fact-done="' + esc(f.id) + '" data-fact-title="' + esc(f.title || label) + '"' +
+      ' data-done="' + (done ? '1' : '0') + '" aria-pressed="' + (done ? 'true' : 'false') + '"' +
+      ' aria-label="' + esc((done ? 'Mark not done: ' : 'Mark done: ') + (f.title || label)) + '">' + (done ? '✓' : '') + '</button>' +
+      '<span><span class="note-text">' + esc(label) + '</span> ' + chips.join(' ') + noteQuoteLines(f) + '</span></li>';
+  }
 
   async function setNudgeDone(factId, title, done) {
+    if (eveningDoneMode === 'browser') {
+      const ids = new Set(demoDoneIds());
+      if (done) ids.add(factId);
+      else ids.delete(factId);
+      try { localStorage.setItem(DEMO_DONE_KEY, JSON.stringify(Array.from(ids))); } catch (e) { /* this view only */ }
+      lastDoneNudge = done ? { fact_id: factId, title: title } : null;
+      if (lastEveningResult) renderParentResult(lastEveningResult);
+      return;
+    }
     try {
       const res = await fetch('/api/parent/done', {
         method: 'POST',
@@ -1924,7 +1979,7 @@
         return;
       }
       lastDoneNudge = done ? { fact_id: factId, title: title } : null;
-      eveningCanMarkDone = Boolean(data.can_mark_done);
+      setEveningDoneMode(data);
       if (data.check) renderParentResult(data.check);
     } catch (e) {
       parentStatus.textContent = 'Couldn’t save that just now — try again.';
@@ -1940,6 +1995,12 @@
       setNudgeDone(doneBtn.getAttribute('data-nudge-done'), doneBtn.getAttribute('data-nudge-title') || 'That', true);
       return;
     }
+    const tick = t.closest('[data-fact-done]');
+    if (tick) {
+      tick.disabled = true;
+      setNudgeDone(tick.getAttribute('data-fact-done'), tick.getAttribute('data-fact-title') || 'That', tick.getAttribute('data-done') !== '1');
+      return;
+    }
     const undoBtn = t.closest('[data-nudge-undo]');
     if (undoBtn) {
       undoBtn.disabled = true;
@@ -1949,7 +2010,11 @@
 
   function renderParentResult(data) {
     const result = (data && data.result) || data || {};
-    const nudges = result.nudges || [];
+    lastEveningResult = result;
+    eveningDoneSet = new Set(eveningDoneMode === 'browser' ? demoDoneIds() : (result.done_fact_ids || []));
+    const nudges = (result.nudges || []).filter(function (n) {
+      return !(eveningDoneMode === 'browser' && n.fact_id && eveningDoneSet.has(n.fact_id));
+    });
     const hold = result.calendar_hold;
     let html = '';
     // A family whose hubs have no notes yet gets a calm empty state, not
@@ -1964,12 +2029,13 @@
       esc(result.filtered_out_count != null ? result.filtered_out_count : '') + ' set aside. ' +
       esc(result.filtering_summary || result.summary || '') + '</p>';
     if (lastDoneNudge) {
-      html += '<p class="done-undo">Marked “' + esc(lastDoneNudge.title) + '” done. ' +
+      html += '<p class="done-undo">Marked “' + esc(lastDoneNudge.title) + '” done' +
+        (eveningDoneMode === 'browser' ? ' (in this browser only — the demo stays the same for everyone else)' : '') + '. ' +
         '<button type="button" class="text-btn" data-nudge-undo="' + esc(lastDoneNudge.fact_id) + '">Undo</button></p>';
     }
     if (nudges.length) {
       html += nudges.map(function (n) {
-        const canDone = eveningCanMarkDone && n.fact_id;
+        const canDone = eveningDoneMode && n.fact_id;
         return '<article class="nudge-card' + (canDone ? ' has-done' : '') + '">' +
           (canDone ? '<button type="button" class="toggle-btn nudge-done" data-nudge-done="' + esc(n.fact_id) + '" data-nudge-title="' + esc(n.title) + '">Done</button>' : '') +
           '<h3>' + esc(n.title) + '</h3>' +
@@ -3533,7 +3599,7 @@
         parentResultsEl.innerHTML = '<p class="facts-empty">No summary yet — that check didn’t finish.</p>';
         return;
       }
-      eveningCanMarkDone = Boolean(data.can_mark_done);
+      setEveningDoneMode(data);
       lastDoneNudge = null;
       renderParentResult(data);
       parentStatus.textContent = eveningUpdatedText(data.ran_at) || 'Done — one calm summary for tonight.';
@@ -3643,7 +3709,7 @@
         return;
       }
       if (data.check) {
-        eveningCanMarkDone = Boolean(data.can_mark_done);
+        setEveningDoneMode(data);
         renderParentResult(data.check);
         const updated = eveningUpdatedText(data.ran_at);
         parentStatus.textContent = data.stale

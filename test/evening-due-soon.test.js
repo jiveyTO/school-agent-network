@@ -112,6 +112,7 @@ test('due-soon rule and done marks (pure helpers)', async (t) => {
     assert.equal(served.open_action_count, 1);
     assert.deepEqual(served.groups[1].nudges, []);
     assert.equal(full.nudges.length, 2, 'the saved check keeps it for Undo');
+    assert.deepEqual(served.done_fact_ids, ['form'], 'the page can show it ticked in the hub list');
   });
 });
 
@@ -181,12 +182,14 @@ test('a real family is nudged for a form due tomorrow and can tick it off', asyn
     assert.equal(run.data.nudges[0].deadline, plusDays(today, 1));
     assert.equal(run.data.open_action_count, 1);
     assert.equal(run.data.can_mark_done, true);
+    assert.equal(run.data.done_mode, 'saved');
   });
 
   await t.test('Done hides it, keeps the check current, and Undo brings it back', async () => {
     const done = await parent.post('/api/parent/done', { fact_id: 'ds-form' });
     assert.equal(done.res.status, 200, done.text.slice(0, 300));
     assert.deepEqual(done.data.check.nudges, []);
+    assert.deepEqual(done.data.check.done_fact_ids, ['ds-form'], 'ticked in the hub list too');
     assert.equal(done.data.stale, false, 'ticking off does not force a new run');
     const latest = await parent.get('/api/parent/latest');
     assert.deepEqual(latest.data.check.nudges, []);
@@ -205,10 +208,13 @@ test('a real family is nudged for a form due tomorrow and can tick it off', asyn
     const agent = client('', { Authorization: `Bearer ${token}` });
     const viaToken = await agent.post('/api/parent/done', { fact_id: 'ds-form' });
     assert.equal(viaToken.res.status, 403);
+    const tokenLatest = await agent.get('/api/parent/latest');
+    assert.equal(tokenLatest.data.done_mode, '');
     const visitor = client('');
     await visitor.post('/api/profile/demo', {});
     const demoLatest = await visitor.get('/api/parent/latest');
     assert.equal(demoLatest.data.can_mark_done, false);
+    assert.equal(demoLatest.data.done_mode, 'browser', 'demo visitors tick in their own browser only');
     const demoFact = db.listFactsForProfile(db.getDemoProfile().id)[0];
     const demoDone = await visitor.post('/api/parent/done', { fact_id: demoFact.id });
     assert.equal(demoDone.res.status, 403);
