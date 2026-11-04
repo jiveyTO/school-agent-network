@@ -761,8 +761,9 @@ async function postMetaChat(system, user, maxTokens, timeoutMs) {
 
 // Brief 053: materials added from a file (pasted/picked image, uploaded PDF)
 // get their title from the same extraction read: the reply becomes an
-// object carrying material_title alongside the usual facts array. Pasted
-// text and the demo school run keep the plain-array prompt unchanged.
+// object carrying material_title alongside the usual facts array. Emails
+// and (Brief 072) pastes ask for it too; the demo school run keeps the
+// plain-array prompt unchanged.
 const JSON_ARRAY_FORMAT_LINE = 'Return ONLY a JSON array. No markdown fences, no commentary.';
 const MATERIAL_TITLE_RULES = [
   '- material_title names what this document IS, for a parent scanning a list of materials.',
@@ -1911,7 +1912,11 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
   }
   if (titleFrom && materialId) {
     const title = cleanMaterialTitle(proposedTitle, hasImage ? '' : newsletterText, titleFrom.fileName);
-    if (title) {
+    // Brief 072: a rename made while the read was running wins.
+    const current = typeof titleFrom.ifTitle === 'string' ? store.getMaterial(materialId) : null;
+    if (current && String(current.title || '') !== titleFrom.ifTitle) {
+      push('material was renamed during the read — keeping its name');
+    } else if (title) {
       store.updateMaterialTitle(materialId, title);
       push('material titled from its content');
     } else {
@@ -1995,21 +2000,23 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
   return deduped;
 }
 
-// One-box adding has no title field: derive the material title from the
-// pasted content's first line (which usually carries the date range), so
-// extracted facts keep a readable group label. Falls back to a dated
-// newsletter label when the content has no usable first line.
+// One-box adding has no title field: a paste starts with a short title
+// from its first line (Brief 072: one line, capped, never the whole
+// paste), and the extraction read then proposes a content title.
 function deriveMaterialTitle(text, now) {
-  const first = String(text || '')
-    .split('\n')
-    .map((line) => line.trim().replace(/^#+\s*/, '').trim())
-    .find((line) => line);
-  if (first) {
-    const clean = first.length > 80 ? first.slice(0, 80).trim() + '…' : first;
-    if (clean) return clean;
-  }
-  const at = now instanceof Date && !isNaN(now.getTime()) ? now : new Date();
-  return `Newsletter — ${at.toISOString().slice(0, 10)}`;
+  return store.derivePasteTitle(text, now);
+}
+
+// Brief 072: a title the app set itself, which a content title may replace
+// when an earlier failed read is retried. Anything else is a parent's
+// rename and always stays.
+function isAutoMaterialTitle(material, text, emailMeta) {
+  const title = String((material && material.title) || '');
+  if (!title) return true;
+  if (/^(Photo|Document) — [A-Z][a-z]{2} \d{1,2}$/.test(title)) return true;
+  if (/^Newsletter — \d{4}-\d{2}-\d{2}$/.test(title)) return true;
+  if (title === deriveMaterialTitle(text) || title === store.legacyPasteTitle(text)) return true;
+  return Boolean(emailMeta && emailMeta.subject && title === emailMeta.subject);
 }
 
 function normalizeWebsiteUrl(value) {
@@ -4286,9 +4293,10 @@ const server = http.createServer(async (req, res) => {
         // starts with a neutral dated label, never its file name; the
         // extraction read below proposes the real title from the content.
         // An email starts as its subject and is titled from its content too.
+        // Brief 072: so does a paste, starting from its short first-line title.
         const titleFromContent = !suppliedTitle && Boolean(retainedFile);
-        const titleFrom = titleFromContent ? { fileName: retainedFile.name }
-          : !suppliedTitle && emailMeta ? { fileName: '' } : null;
+        let titleFrom = titleFromContent ? { fileName: retainedFile.name }
+          : !suppliedTitle && (emailMeta || kind === 'paste') ? { fileName: '' } : null;
         const materialTitle = suppliedTitle ||
           (titleFromContent ? neutralFileMaterialTitle(kind, new Date())
             : (emailMeta && emailMeta.subject) || deriveMaterialTitle(text));
@@ -4298,6 +4306,8 @@ const server = http.createServer(async (req, res) => {
           material = existing;
           reusedExisting = true;
           logs.push({ at: nowIso(), message: 'already in this hub with its notes pending — reading it again in place' });
+          // Brief 072: a parent's rename always wins over a content title.
+          if (titleFrom && !isAutoMaterialTitle(existing, text, emailMeta)) titleFrom = null;
         } else {
           material = store.createMaterial(hub.id, actor.id, kind, materialTitle, text, 'stored', undefined, undefined, retainedFile, {
             fingerprint,
@@ -4308,6 +4318,7 @@ const server = http.createServer(async (req, res) => {
         materialsExtracting.add(material.id);
         let facts;
         try {
+          if (titleFrom) titleFrom.ifTitle = String(material.title || '');
           facts = await extractAndSaveFacts(text, logs, hub.id, material.id, override, true, imageFile, titleFrom, true);
         } finally {
           materialsExtracting.delete(material.id);

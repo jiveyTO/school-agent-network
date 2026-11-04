@@ -1,7 +1,7 @@
 // Brief 053: materials added from a file (pasted image, uploaded PDF) are
 // titled from their content by the same extraction read, never by the file
 // name. No usable title -> a neutral dated label ("Photo — Nov 2"). Pasted
-// text keeps its first-line title and the plain-array prompt.
+// text is titled the same way (Brief 072).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -202,12 +202,14 @@ test('file materials are titled from their content, not the file name', async (t
     assert.equal(pdf.data.material.title, `Document — ${today}`);
   });
 
-  await t.test('pasted text keeps its first-line title and the plain prompt', async () => {
-    nextTitle = 'Should not be used';
+  // Brief 072: pasted text now asks the same read for a title too
+  // (test/paste-title.test.js covers it in full).
+  await t.test('pasted text is titled from its content too', async () => {
+    nextTitle = 'Photo Day notice';
     prompts.length = 0;
     const up = await client.post(`/api/hubs/${hubId}/materials`, { kind: 'paste', text: PHOTO_DAY_TEXT });
     assert.equal(up.res.status, 200, up.text.slice(0, 400));
-    assert.ok(prompts.length && prompts.every((p) => !/material_title/.test(p)), 'paste prompt is unchanged');
-    assert.ok(up.data.material.title.startsWith('Photo Day notice: Maple Grove'), up.data.material.title);
+    assert.ok(prompts.some((p) => /material_title/.test(p)), 'the paste read is asked for a title');
+    assert.equal(up.data.material.title, 'Photo Day notice');
   });
 });
