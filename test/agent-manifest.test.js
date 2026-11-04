@@ -74,6 +74,10 @@ function assertRealRoute(endpoint) {
     assert.ok(SERVER_SOURCE.includes('hubMatch') && SERVER_SOURCE.includes("req.method === 'GET' && hubMatch"), 'hub read route exists');
   } else if (/^\/api\/hubs\/\{[^}]+\}\/materials$/.test(p)) {
     assert.ok(SERVER_SOURCE.includes('hubMaterialsMatch') && SERVER_SOURCE.includes("req.method === 'POST' && hubMaterialsMatch"), 'add material route exists');
+  } else if (/^\/api\/hubs\/\{[^}]+\}\/materials\/\{[^}]+\}$/.test(p) && (method === 'PATCH' || method === 'DELETE')) {
+    assert.ok(SERVER_SOURCE.includes(`req.method === '${method}' && hubMaterialMatch`), `${method} material route exists`);
+    const at = SERVER_SOURCE.indexOf(`req.method === '${method}' && hubMaterialMatch`);
+    assert.ok(SERVER_SOURCE.slice(at, at + 200).includes('bearerAuth ? bearerAuth.profile'), `${method} material accepts an agent token`);
   } else if (p === '/api/parent/run' && method === 'POST') {
     assert.ok(SERVER_SOURCE.includes("req.method === 'POST' && url.pathname === '/api/parent/run'"), 'evening check route exists');
   } else if (p === '/api/parent/latest' && method === 'GET') {
@@ -96,6 +100,8 @@ const EXPECTED_ENDPOINTS = [
   ['POST', '/api/agent-connect/{request_id}/token'],
   ['GET', '/api/hubs/{hub_id}'],
   ['POST', '/api/hubs/{hub_id}/materials'],
+  ['PATCH', '/api/hubs/{hub_id}/materials/{material_id}'],
+  ['DELETE', '/api/hubs/{hub_id}/materials/{material_id}'],
   ['POST', '/api/parent/run'],
   ['GET', '/api/parent/latest'],
   ['GET', '/api/agent/context'],
