@@ -65,7 +65,9 @@ test('evening email: opt-in, on time, once a day, unsubscribable', async (t) => 
   const s2 = db.createSession();
   db.setSessionProfile(s2.id, noEmail.id);
 
+  let modelCalls = 0;
   const fakeModel = http.createServer((req, res) => {
+    modelCalls += 1;
     let raw = '';
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {
@@ -140,10 +142,23 @@ test('evening email: opt-in, on time, once a day, unsubscribable', async (t) => 
     assert.equal(mails().length, 0);
   });
 
-  await t.test('before the chosen time nothing is sent; at the time, one email with the check', async () => {
+  await t.test('the email never runs a check: no saved check, no email and no model call', async () => {
+    const before = modelCalls;
+    const none = await tick(AT('18:15'));
+    assert.equal(none.res.status, 200, none.text);
+    assert.equal(none.data.sent, 0, 'nothing saved yet, so nothing to send');
+    assert.equal(modelCalls, before, 'the scheduler never calls the model');
+    assert.equal(mails().length, 0);
+  });
+
+  await t.test('before the chosen time nothing is sent; at the time, one email with the saved check', async () => {
+    const run = await parent.post('/api/parent/run', {});
+    assert.equal(run.data.ok, true, run.text);
+    const afterRun = modelCalls;
     const early = await tick(AT('17:45'));
     assert.equal(early.data.sent, 0);
     const due = await tick(AT('18:15'));
+    assert.equal(modelCalls, afterRun, 'the email sends the check the parent ran, without another model call');
     assert.equal(due.res.status, 200, due.text);
     assert.equal(due.data.sent, 1);
     assert.ok(!/mail\.parent@example\.com/.test(due.text), 'the scheduler reply carries counts, never addresses');

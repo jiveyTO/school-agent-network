@@ -1150,7 +1150,7 @@
       </div>
       <div class="card" id="eveningEmailBox" hidden style="margin-top:12px">
         <p style="margin-top:0"><b>Evening email</b></p>
-        <p class="hint" style="margin-top:0">Tonight’s evening check in your inbox — what to do, any clashes, and what’s coming up this week.</p>
+        <p class="hint" style="margin-top:0">Your latest evening check in your inbox — what to do, any clashes, and what’s coming up this week. It sends the check you last ran; tap “Run my evening check” to bring it up to date.</p>
         <label class="evening-email-toggle"><input type="checkbox" id="eveningEmailOn"> Email me the evening check each evening</label>
         <label class="field" style="margin-top:10px">Send it at
           <select id="eveningEmailTime"></select>
@@ -3500,20 +3500,16 @@
     }
   }
 
-  async function runEveningCheck(opts) {
-    const background = Boolean(opts && opts.background);
+  async function runEveningCheck() {
     parentRunBtn.disabled = true;
     parentRunBtn.textContent = 'Checking…';
     document.getElementById('parentDots').hidden = false;
-    // A background refresh keeps the saved check on screen and says so
-    // quietly; a first or requested run shows the staged progress.
-    const stages = background ? null : startStagedStatus(parentStatus, [
+    const stages = startStagedStatus(parentStatus, [
       'Pulling together tonight’s summary…',
       'Checking every hub for what’s still open…',
       'Writing one calm summary…',
     ]);
-    if (background) parentStatus.textContent = 'Updating with the latest notes…';
-    else if (parentResultsEl.children.length === 1 && parentResultsEl.firstElementChild.classList.contains('facts-empty')) {
+    if (parentResultsEl.children.length === 1 && parentResultsEl.firstElementChild.classList.contains('facts-empty')) {
       parentResultsEl.innerHTML = '<p class="facts-empty">Loading tonight’s check…</p>';
     }
     parentError.hidden = true;
@@ -3531,10 +3527,6 @@
       renderParentLogs(data.logs || []);
       if (!data.ok) {
         const msg = data.error || 'Something went wrong during your evening check.';
-        if (background) {
-          parentStatus.textContent = 'Couldn’t update just now — this is your last check.';
-          return;
-        }
         parentErrorText.textContent = msg;
         parentError.hidden = false;
         parentStatus.textContent = 'That check didn’t work — here’s what happened.';
@@ -3550,10 +3542,6 @@
         { at: new Date().toISOString(), message: 'evening check started (browser → server)' },
         { at: new Date().toISOString(), message: 'error: ' + e.message },
       ]);
-      if (background) {
-        parentStatus.textContent = 'Couldn’t update just now — this is your last check.';
-        return;
-      }
       parentErrorText.textContent = e.message;
       parentError.hidden = false;
       parentStatus.textContent = 'That check didn’t work — here’s what happened.';
@@ -3635,15 +3623,13 @@
       : { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
 
-  // Home screen: show the saved check at once, then refresh it in the
-  // background when it is stale (new notes, placements, or a new day) or
-  // when there is none yet — no button press, no blank screen.
-  //
-  // Brief 068: a just-joined family lands on its hub, so its first check
-  // used to wait on a Tonight that already said "Loading…" and never ran.
-  // Now a hidden Tonight says the check runs when it is opened, an open one
-  // runs it, and a read that fails or takes over 15s says so (the Run
-  // button retries) — never "Loading…" forever.
+  // Home screen: show the saved check at once. The check itself (a model
+  // call) runs only when the parent taps "Run my evening check" — never on
+  // its own when Tonight opens, even if the saved one is out of date (owner
+  // request, 2026-11-04: automatic runs used too many tokens). A stale check
+  // stays on screen with a line saying there is news since; no check yet
+  // says to tap the button. A read that fails or takes over 15s says so —
+  // never "Loading…" forever (Brief 068).
   let eveningLoading = false;
   async function loadEveningHome() {
     if (eveningLoading || parentRunBtn.disabled) return;
@@ -3659,11 +3645,13 @@
       if (data.check) {
         eveningCanMarkDone = Boolean(data.can_mark_done);
         renderParentResult(data.check);
-        parentStatus.textContent = eveningUpdatedText(data.ran_at);
+        const updated = eveningUpdatedText(data.ran_at);
+        parentStatus.textContent = data.stale
+          ? (updated ? updated + ' — ' : '') + 'there’s news since. Tap “Run my evening check” to refresh it.'
+          : updated;
+      } else {
+        showEveningPlaceholder('No evening check yet — tap “Run my evening check” when you’re ready.');
       }
-      const visible = !document.getElementById('viewEvening').hidden;
-      if ((data.stale || !data.check) && visible) await runEveningCheck({ background: Boolean(data.check) });
-      else if (!data.check) showEveningPlaceholder('No evening check yet — it runs when you open Tonight, or tap “Run my evening check”.');
     } catch (e) {
       // The button still works; never leave the loading line up.
       showEveningPlaceholder('We couldn’t load tonight’s check. Tap “Run my evening check” to try again.');

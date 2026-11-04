@@ -149,7 +149,7 @@ test('evening check: app mode and agent mode', { timeout: 120000 }, async (t) =>
     const before = await call('/api/parent/latest', { cookie: joinedCookie });
     assert.equal(before.res.status, 200, before.text.slice(0, 300));
     assert.equal(before.data.check, null, 'no check yet right after joining');
-    assert.equal(before.data.stale, true, 'so Tonight runs one');
+    assert.equal(before.data.stale, true, 'so Tonight says there is news since');
     prompts.length = 0;
     const run = await call('/api/parent/run', { cookie: joinedCookie, body: {} });
     assert.equal(run.res.status, 200, run.text.slice(0, 300));

@@ -1410,8 +1410,9 @@ function eveningFingerprint(profile, facts, moment) {
 // Opt-in, once per local day, at the family's chosen time. A scheduler
 // (Cloud Scheduler, every 15 minutes) calls POST /api/cron/evening-emails
 // with EVENING_EMAIL_CRON_SECRET; families whose time has come (within a
-// 3-hour window, so an outage never sends at midnight) get a fresh-enough
-// check and one email. Unsubscribe is a signed one-click link.
+// 3-hour window, so an outage never sends at midnight) get their last saved
+// check in one email (none saved yet: none sent). Unsubscribe is a signed
+// one-click link.
 const EVENING_EMAIL_TIMES = [];
 for (let h = 16; h <= 21; h += 1) for (const m of ['00', '30']) EVENING_EMAIL_TIMES.push(`${h}:${m}`);
 const EVENING_EMAIL_WINDOW_MINUTES = 180;
@@ -1503,8 +1504,12 @@ async function sendDueEveningEmails(now) {
     try {
       const profile = store.rowToProfile(store.getProfileRowById(candidate.id));
       if (!profile || profile.is_demo) { out.skipped += 1; continue; }
+      // The email carries the family's last saved check; it never runs one
+      // (a model call). Checks run only when the parent taps "Run my evening
+      // check" (owner request, 2026-11-04). No saved check yet: no email.
       const latest = latestEveningCheck(profile);
-      const result = latest.check && !latest.stale ? latest.check : await runParentAgent([], '', profile);
+      if (!latest.check) { out.skipped += 1; continue; }
+      const result = latest.check;
       const content = eveningEmailContent(profile, result, {
         app: base + '/',
         unsubscribe: base + '/evening-email/off?t=' + eveningUnsubscribeToken(profile.id),

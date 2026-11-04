@@ -1,8 +1,9 @@
 // Brief 068, glitch 1: Tonight never spins forever for a family that has
 // just joined a hub. Joining lands on the hub page, so the first evening
 // check used to wait for a Tonight visit that found the page "loading" and
-// never started it. Now a family with no saved check gets one straight
-// away, and a failed or slow read shows an error with Try again.
+// never started it. Now a family with no saved check is told to tap "Run my
+// evening check" (since 2026-11-04 the check never runs on its own), and a
+// failed or slow read shows an error with Try again.
 // Part 1 drives the page's real loadEveningHome in a sandbox; part 2 has a
 // brand-new family join an invite and run its first check. Fictional data.
 const test = require('node:test');
@@ -64,30 +65,31 @@ function harness(latest, tonightHidden) {
 
 const json = (status, body) => Promise.resolve({ ok: status < 400, status, json: async () => body });
 
-test('page: a just-joined family looking at its hub is told the check runs on Tonight, never "Loading…"', async () => {
+test('page: a family with no saved check is told to tap the button, never "Loading…", and nothing runs', async () => {
   const joined = () => json(200, { ok: true, check: null, ran_at: '', stale: true });
-  const onHub = harness(joined, true);
-  await onHub.api.loadEveningHome();
-  assert.deepEqual(onHub.runs, [], 'nothing runs while Tonight is hidden');
-  assert.match(onHub.el('parentResults').innerHTML, /No evening check yet — it runs when you open Tonight/);
-  assert.equal(onHub.api.loading(), false, 'the next visit is not blocked');
-  // Opening Tonight (same page, now visible) runs the first check.
-  onHub.el('viewEvening').hidden = false;
-  await onHub.api.loadEveningHome();
-  assert.deepEqual(onHub.runs, [{ background: false }], 'opening Tonight runs the first check in the foreground');
+  for (const hidden of [true, false]) {
+    const h = harness(joined, hidden);
+    await h.api.loadEveningHome();
+    assert.deepEqual(h.runs, [], 'the check runs only from the button (owner request, 2026-11-04)');
+    assert.match(h.el('parentResults').innerHTML, /No evening check yet — tap “Run my evening check”/);
+    assert.equal(h.api.loading(), false, 'the next visit is not blocked');
+  }
 });
 
-test('page: a saved check shows at once; a stale one refreshes only while Tonight is open', async () => {
-  const open = harness(() => json(200, { ok: true, check: { nudges: [] }, ran_at: 'x', stale: true }), false);
-  await open.api.loadEveningHome();
-  assert.equal(open.el('parentResults').innerHTML, '<div>saved check</div>');
-  assert.deepEqual(open.runs, [{ background: true }]);
-  const hidden = harness(() => json(200, { ok: true, check: { nudges: [] }, ran_at: 'x', stale: true }), true);
-  await hidden.api.loadEveningHome();
-  assert.deepEqual(hidden.runs, []);
+test('page: a saved check shows at once; a stale one says so and is never re-run on its own', async () => {
+  const stale = harness(() => json(200, { ok: true, check: { nudges: [] }, ran_at: 'x', stale: true }), false);
+  await stale.api.loadEveningHome();
+  assert.equal(stale.el('parentResults').innerHTML, '<div>saved check</div>');
+  assert.deepEqual(stale.runs, [], 'an out-of-date check is not refreshed automatically');
+  assert.equal(stale.el('parentStatus').textContent, 'Updated 6:42 PM — there’s news since. Tap “Run my evening check” to refresh it.');
   const fresh = harness(() => json(200, { ok: true, check: { nudges: [] }, ran_at: 'x', stale: false }), false);
   await fresh.api.loadEveningHome();
   assert.deepEqual(fresh.runs, []);
+  assert.equal(fresh.el('parentStatus').textContent, 'Updated 6:42 PM');
+  // Only the button's click handler calls runEveningCheck anywhere on the page.
+  const callers = PAGE.match(/runEveningCheck\(/g) || [];
+  assert.equal(callers.length, 2, 'the definition and the Run button handler');
+  assert.ok(PAGE.includes("parentRunBtn.addEventListener('click', function () { runEveningCheck(); });"));
 });
 
 test('page: a failed or hung read says so instead of "Loading…"', async () => {
@@ -197,7 +199,7 @@ test('server: a brand-new member who just joined can load and run Tonight', asyn
   assert.equal(before.res.status, 200, before.text.slice(0, 300));
   assert.equal(before.data.ok, true);
   assert.equal(before.data.check, null, 'no history yet');
-  assert.equal(before.data.stale, true, 'so the page runs the first check');
+  assert.equal(before.data.stale, true, 'so Tonight says there is news since');
 
   const run = await call('POST', '/api/parent/run', {});
   assert.equal(run.res.status, 200, run.text.slice(0, 300));
