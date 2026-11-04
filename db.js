@@ -753,6 +753,7 @@ async function initDb() {
   purgeDemoMemberships();
   restampDemoFactScopes();
   backfillSeedGroups();
+  for (const target of DEMO_TEST_MATERIAL_REMOVALS) removeDemoTestMaterial(target);
   // A restored database that boot left unchanged (schema-only migrations
   // don't count: they re-run every boot) is not uploaded. Uploading it would
   // move the stored generation during a deploy, so the old instance's final
@@ -2070,6 +2071,43 @@ function removeHubMember(hubId, profileId) {
 // invite accept that joined the demo profile to a real hub). Runs on every
 // boot so a stale durable copy self-heals; returns the removed rows for
 // logging. Idempotent.
+// Brief 066: a fictional test newsletter added to the hosted demo hub for
+// extraction scoring. The page refuses to remove demo materials, so boot
+// removes exactly this one through deleteMaterial (its facts and rejections
+// go with it) and saves through the normal write-back. Exact hub id,
+// material id and title must all match, and the hub must be a demo hub;
+// once it is gone this is a no-op.
+const DEMO_TEST_MATERIAL_REMOVALS = [
+  {
+    hubId: '40a10522-ee08-4af2-a288-0343eaa8481c',
+    materialId: 'a174b415-56f9-4d19-9e9d-501e5f0bc14a',
+    title: 'Maple Grove Weekly — Nov 9 to 13, 2026',
+  },
+];
+
+function removeDemoTestMaterial({ hubId, materialId, title }) {
+  const hub = one('SELECT id, is_demo FROM hubs WHERE id = ?', [hubId]);
+  if (!hub || Number(hub.is_demo) !== 1) return null;
+  const material = one('SELECT id, title FROM materials WHERE id = ? AND hub_id = ?', [materialId, hubId]);
+  if (!material || material.title !== title) return null;
+  const factIds = all('SELECT id FROM facts WHERE material_id = ?', [materialId]).map((r) => String(r.id));
+  // A demo family's saved evening check that shows any of these facts (or
+  // names the material) is cleared, so the next check recomputes without it.
+  const stale = all(
+    `SELECT e.profile_id AS profile_id, e.result_json AS result_json
+     FROM evening_checks e JOIN profiles p ON p.id = e.profile_id AND p.is_demo = 1`
+  ).filter((c) => {
+    const json = String(c.result_json || '');
+    return json.includes(materialId) || json.includes(title) || factIds.some((id) => id && json.includes(id));
+  });
+  for (const c of stale) run('DELETE FROM evening_checks WHERE profile_id = ?', [c.profile_id]);
+  deleteMaterial(materialId);
+  console.log(
+    `demo cleanup: removed test material ${materialId} and ${factIds.length} fact(s); cleared ${stale.length} saved demo evening check(s)`
+  );
+  return { facts_removed: factIds.length, checks_cleared: stale.length };
+}
+
 function purgeDemoMemberships() {
   if (!tableColumns('hubs').includes('is_demo') || !tableColumns('profiles').includes('is_demo')) return [];
   const rows = all(
@@ -2859,6 +2897,7 @@ module.exports = {
   findHubMemberByKey,
   removeHubMember,
   purgeDemoMemberships,
+  removeDemoTestMaterial,
   getSessionOwnProfile,
   isMember,
   getMemberRole,
