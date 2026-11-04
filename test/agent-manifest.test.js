@@ -65,6 +65,11 @@ function assertRealRoute(endpoint) {
     assert.ok(SERVER_SOURCE.includes('hubPlacementsMatch') && SERVER_SOURCE.includes("req.method === 'POST' && hubPlacementsMatch"), 'placements route exists');
   } else if (/^\/api\/join\/\{[^}]+\}\/accept$/.test(p)) {
     assert.ok(SERVER_SOURCE.includes('joinAcceptMatch') && SERVER_SOURCE.includes("req.method === 'POST' && joinAcceptMatch"), 'invite accept route exists');
+  } else if (/^\/api\/join\/\{[^}]+\}\/connect$/.test(p)) {
+    assert.ok(SERVER_SOURCE.includes("req.method === 'POST' && joinConnectMatch"), 'invite connect route exists');
+  } else if (/^\/api\/agent-connect\/\{[^}]+\}\/token$/.test(p)) {
+    assert.ok(SERVER_SOURCE.includes("req.method === 'POST' && agentConnectActionMatch") && SERVER_SOURCE.includes("action === 'token'"),
+      'agent token collect route exists');
   } else if (/^\/api\/hubs\/\{[^}]+\}$/.test(p)) {
     assert.ok(SERVER_SOURCE.includes('hubMatch') && SERVER_SOURCE.includes("req.method === 'GET' && hubMatch"), 'hub read route exists');
   } else if (/^\/api\/hubs\/\{[^}]+\}\/materials$/.test(p)) {
@@ -85,6 +90,8 @@ const EXPECTED_ENDPOINTS = [
   ['POST', '/api/hubs'],
   ['POST', '/api/hubs/{hub_id}/placements'],
   ['POST', '/api/join/{token}/accept'],
+  ['POST', '/api/join/{token}/connect'],
+  ['POST', '/api/agent-connect/{request_id}/token'],
   ['GET', '/api/hubs/{hub_id}'],
   ['POST', '/api/hubs/{hub_id}/materials'],
   ['POST', '/api/parent/run'],

@@ -1866,7 +1866,7 @@ const AGENT_RECIPE = [
     method: 'POST',
     path: '/api/join/{token}/accept',
     alternate: { method: 'POST', path: '/api/hubs' },
-    description: 'If a parent gave you an invite link, redeem it with POST /api/join/{token}/accept to join that hub. If lookup returned none, create the hub with POST /api/hubs. If create returns 409, the school already has a hub — ask the parent for an invite instead of forcing a duplicate.',
+    description: 'If a parent gave you an invite link but no token, POST /api/join/{token}/connect, show the parent the approval_url AND the user_code, and poll /api/agent-connect/{request_id}/token with your poll_secret every `interval` seconds until it returns your token. The parent answers any join question on that approval page — never ask them to tell you the answer. If membership is pending_approval, tell the parent the hub admin must let them in, and watch GET /api/hubs → pending_hubs until the hub moves to hubs. With a token already, redeem the invite with POST /api/join/{token}/accept (202 means it waits for the admin; 409 needs_answer means ask the parent to open the invite link in their browser). If lookup returned none, create the hub with POST /api/hubs. If create returns 409, the school already has a hub — ask the parent for an invite instead of forcing a duplicate.',
   },
   {
     step: 3,
@@ -1895,7 +1895,7 @@ const AGENT_MANIFEST = {
     header: 'Authorization',
     format: 'Authorization: Bearer <token>',
     issued_by: 'A human parent issues a Bearer agent token from My family → Agent access in ParentLoop.',
-    how_to_get: 'Ask the parent to open My family → Agent access, create a named token, and give it to you. The token is shown only once, so store it like a password.',
+    how_to_get: 'Ask the parent to open My family → Agent access, create a named token, and give it to you. The token is shown only once, so store it like a password. If the parent gave you an invite link instead, you can get a token by asking to join: POST /api/join/{token}/connect, then the parent taps one approval link (see recipe step 2).',
     scope: 'Tokens are scoped to one family: the token acts only as that family and can only reach that family\'s hubs.',
     scoped_to: 'one family',
     revocable: true,
@@ -1949,7 +1949,23 @@ const AGENT_MANIFEST = {
       method: 'POST',
       path: '/api/join/{token}/accept',
       auth: 'Bearer agent token',
-      description: 'Redeem an invite token from a /join/{token} link: joins the token\'s family to that hub. Returns { ok, hub }.',
+      description: 'Redeem an invite token from a /join/{token} link for the token\'s family. Returns 200 { ok, hub } when joined, 202 { status: "pending_approval" } when the hub admin must let the family in, or 409 { needs_answer } when the hub has a join question (ask the parent to open the invite link in their browser and answer it there).',
+    },
+    {
+      name: 'join by invite with parent approval',
+      method: 'POST',
+      path: '/api/join/{token}/connect',
+      auth: 'none (the parent approves in their browser)',
+      body: { agent_name: 'what you call yourself, e.g. "Muse" (max 40 characters)' },
+      description: 'For an agent with an invite link but no token. Returns { approval_url, user_code, request_id, poll_secret, interval, expires_in }. Send the parent approval_url and user_code; keep poll_secret to yourself. The request expires in 10 minutes.',
+    },
+    {
+      name: 'collect your token after approval',
+      method: 'POST',
+      path: '/api/agent-connect/{request_id}/token',
+      auth: 'poll_secret in the body',
+      body: { poll_secret: 'from the connect response' },
+      description: 'Poll every `interval` seconds. 202 = still waiting; 403 = the parent said no; 410 = expired or already collected; 200 = { token, hub, membership: member|pending_approval } exactly once — store the token like a password and use it as Authorization: Bearer <token>.',
     },
     {
       name: 'hub read',
@@ -2011,6 +2027,130 @@ function bearerRaw(req) {
 
 function hasAuthorizationHeader(req) {
   return Boolean(req.headers) && Object.prototype.hasOwnProperty.call(req.headers, 'authorization');
+}
+
+// --- Brief 067: joining by invite link -------------------------------------
+// A hub with a join question admits a family that answers it; three wrong
+// answers in a day turn into a request for the admin instead. A hub with no
+// question asks the admin. A hub set to "let anyone with a link join" admits
+// straight away. Wrong-answer and rate counts live in memory only, so no IP
+// address or answer is ever written down.
+const INVITE_MISSING = 'That invite link is no longer available.';
+const INVITE_EXPIRED = 'This invite link has expired — ask for a new one.';
+const JOIN_WRONG_LIMIT = 3;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const joinWrongByFamily = new Map();
+const joinWrongByIp = new Map();
+const agentConnectByIp = new Map();
+
+function recentCount(map, key, windowMs) {
+  const now = Date.now();
+  const list = (map.get(key) || []).filter((t) => now - t < windowMs);
+  if (list.length) map.set(key, list);
+  else map.delete(key);
+  return list.length;
+}
+
+function bumpCount(map, key) {
+  map.set(key, (map.get(key) || []).concat(Date.now()));
+}
+
+// Cloud Run's front end appends the real client address to
+// X-Forwarded-For, so the LAST entry is trusted; earlier entries can be
+// sent by the client itself and would let it dodge the per-IP limits.
+function clientIp(req) {
+  const parts = String((req.headers && req.headers['x-forwarded-for']) || '').split(',')
+    .map((s) => s.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : ((req.socket && req.socket.remoteAddress) || '');
+}
+
+function hubAdminFirstName(hubId) {
+  const contact = store.listHubContacts(hubId)[0];
+  const name = contact ? String(contact.parent_name || contact.name || '').trim().split(' ')[0] : '';
+  return name || 'the hub admin';
+}
+
+// The shared demo hubs keep instant joins: every demo visitor is their
+// admin, so asking that admin first would protect nothing.
+function linkJoinsOpen(hubId, settings) {
+  const hub = store.getHub(hubId);
+  return Boolean((settings && settings.open) || (hub && hub.is_demo));
+}
+
+// Decides one family's join through an invite. Returns { status, body }.
+function joinByLink(info, profile, answer, via, ip) {
+  const hub = { id: info.hub_id, name: info.hub_name };
+  if (store.isMember(info.hub_id, profile.id)) {
+    return { status: 200, body: { ok: true, membership: 'member', hub: store.getHub(info.hub_id) } };
+  }
+  const admit = () => {
+    store.addMember(info.hub_id, profile.id, 'member', via);
+    return { status: 200, body: { ok: true, membership: 'member', hub: store.getHub(info.hub_id) } };
+  };
+  const askAdmin = (lead) => {
+    const asked = store.requestToJoin(info.hub_id, profile.id);
+    if (asked.error) return { status: asked.status, body: { error: asked.error } };
+    const admin = hubAdminFirstName(info.hub_id);
+    return {
+      status: 202,
+      body: {
+        ok: true,
+        status: 'pending_approval',
+        membership: 'pending_approval',
+        hub,
+        admin_first_name: admin,
+        message: (lead ? lead + ' ' : '') + `We’ve asked ${admin} to let you in.`,
+      },
+    };
+  };
+  const settings = store.getJoinSettings(info.hub_id);
+  if (linkJoinsOpen(info.hub_id, settings)) return admit();
+  if (!settings.has_question) return askAdmin('');
+  const familyKey = info.hub_id + ':' + profile.id;
+  if (recentCount(joinWrongByFamily, familyKey, DAY_MS) >= JOIN_WRONG_LIMIT) return askAdmin('');
+  const given = String(answer || '').trim();
+  if (!given) {
+    return { status: 409, body: { error: 'Answer the hub’s question to join.', needs_answer: true, question: settings.question } };
+  }
+  if (ip && recentCount(joinWrongByIp, ip, HOUR_MS) >= 10) {
+    return { status: 429, body: { error: 'Too many tries. Please wait a while and try again.' } };
+  }
+  if (store.checkJoinAnswer(info.hub_id, given)) return admit();
+  bumpCount(joinWrongByFamily, familyKey);
+  if (ip) bumpCount(joinWrongByIp, ip);
+  const triesLeft = JOIN_WRONG_LIMIT - recentCount(joinWrongByFamily, familyKey, DAY_MS);
+  if (triesLeft <= 0) return askAdmin('That’s not it.');
+  return {
+    status: 400,
+    body: { error: 'That’s not it — try again.', wrong_answer: true, needs_answer: true, question: settings.question, tries_left: triesLeft },
+  };
+}
+
+// What an agent may learn from an invite link: the public card the browser
+// join page already shows, plus how to join. Never answers or member data.
+function inviteAgentCard(token) {
+  const state = store.inviteState(token);
+  if (state === 'expired') return { status: 404, body: { error: INVITE_EXPIRED, expired: true } };
+  const info = state === 'ok' ? store.getInvite(token) : null;
+  if (!info) return { status: 404, body: { error: INVITE_MISSING } };
+  const settings = store.getJoinSettings(info.hub_id);
+  return {
+    status: 200,
+    body: {
+      hub: { name: info.hub_name },
+      invited_by_first_name: info.inviter_first_name,
+      has_question: settings.has_question,
+      needs_admin_ok: !linkJoinsOpen(info.hub_id, settings) && !settings.has_question,
+      how_to_join: `POST /api/join/${token}/connect`,
+      guide: '/api/agent',
+    },
+  };
+}
+
+function wantsJson(req) {
+  const accept = String((req.headers && req.headers.accept) || '').toLowerCase();
+  return accept.includes('application/json') && !accept.includes('text/html');
 }
 
 function agentCanIssue(profileId) {
@@ -3065,8 +3205,32 @@ const server = http.createServer(async (req, res) => {
     const hubRequestDecideMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/join-requests\/([^/]+)\/(approve|decline)$/);
     const joinInfoMatch = url.pathname.match(/^\/api\/join\/([^/]+)$/);
     const joinAcceptMatch = url.pathname.match(/^\/api\/join\/([^/]+)\/accept$/);
+    const joinAgentMatch = url.pathname.match(/^\/api\/join\/([^/]+)\/agent$/);
+    const joinConnectMatch = url.pathname.match(/^\/api\/join\/([^/]+)\/connect$/);
+    const hubInviteTurnOffMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/invites\/([^/]+)\/turn-off$/);
+    const hubJoinSettingsMatch = url.pathname.match(/^\/api\/hubs\/([^/]+)\/join-settings$/);
+    const agentConnectMatch = url.pathname.match(/^\/api\/agent-connect\/([^/]+)$/);
+    const agentConnectActionMatch = url.pathname.match(/^\/api\/agent-connect\/([^/]+)\/(approve|decline|token)$/);
 
     if (req.method === 'GET' && url.pathname.startsWith('/join/')) {
+      const token = decodeURIComponent(url.pathname.slice('/join/'.length));
+      // Brief 067: an agent asking for JSON gets the invite card and how to
+      // join; a browser gets the page, which also points agents at the card.
+      if (wantsJson(req)) {
+        const card = inviteAgentCard(token);
+        sendJson(res, card.status, card.body);
+        return;
+      }
+      let html = fs.readFileSync(INDEX_PATH, 'utf8');
+      if (/^[A-Za-z0-9]+$/.test(token)) {
+        html = html.replace('</head>',
+          `<link rel="alternate" type="application/json" href="/api/join/${token}/agent">\n</head>`);
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/approve/')) {
       const html = fs.readFileSync(INDEX_PATH, 'utf8');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(html);
@@ -3074,7 +3238,175 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/hubs') {
       const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
-      sendJson(res, 200, { hubs: actor ? store.listHubsForProfile(actor.id) : [] });
+      const hubs = actor ? store.listHubsForProfile(actor.id) : [];
+      sendJson(res, 200, {
+        // Brief 067: admins see how many families are waiting to join.
+        hubs: hubs.map((h) => (h.role === 'admin' ? { ...h, pending_requests: store.countPendingJoinRequests(h.id) } : h)),
+        pending_hubs: actor && !actor.is_demo ? store.listPendingHubsForProfile(actor.id) : [],
+      });
+      return;
+    }
+    if (req.method === 'GET' && joinAgentMatch) {
+      const card = inviteAgentCard(decodeURIComponent(joinAgentMatch[1]));
+      sendJson(res, card.status, card.body);
+      return;
+    }
+    if (req.method === 'POST' && joinConnectMatch) {
+      // Brief 067: an agent with an invite link but no token asks to join.
+      // Its parent approves at approval_url; it collects with poll_secret.
+      const token = decodeURIComponent(joinConnectMatch[1]);
+      const card = inviteAgentCard(token);
+      if (card.status !== 200) { sendJson(res, card.status, card.body); return; }
+      const info = store.getInvite(token);
+      const hubRow = store.getHub(info.hub_id);
+      if (hubRow && hubRow.is_demo) { sendJson(res, 403, { error: 'Demo hubs can’t be joined by an agent.' }); return; }
+      const ip = clientIp(req);
+      if (store.countOpenAgentConnects(token) >= 5) {
+        sendJson(res, 429, { error: 'Too many agents are waiting on this invite. Try again in a few minutes.' });
+        return;
+      }
+      if (ip && recentCount(agentConnectByIp, ip, HOUR_MS) >= 20) {
+        sendJson(res, 429, { error: 'Too many requests. Please wait a while and try again.' });
+        return;
+      }
+      if (ip) bumpCount(agentConnectByIp, ip);
+      const body = await readJsonBody(req).catch(() => ({}));
+      const made = store.createAgentConnect(token, info.hub_id, body.agent_name || body.name);
+      sendJson(res, 200, {
+        ok: true,
+        approval_url: `${publicBaseUrl(req)}/approve/${made.connect.id}`,
+        user_code: made.connect.user_code,
+        request_id: made.connect.id,
+        poll_secret: made.pollSecret,
+        poll_url: `/api/agent-connect/${made.connect.id}/token`,
+        expires_in: 600,
+        interval: 5,
+        hub: { name: info.hub_name },
+        has_question: card.body.has_question,
+      });
+      return;
+    }
+    if (req.method === 'GET' && agentConnectMatch) {
+      // What the approval page shows. Never the poll secret or a token.
+      const row = store.getAgentConnect(decodeURIComponent(agentConnectMatch[1]));
+      if (!row) { sendJson(res, 404, { error: 'That approval link isn’t valid.' }); return; }
+      const hubRow = store.getHub(row.hub_id);
+      const settings = store.getJoinSettings(row.hub_id) || {};
+      const own = store.getSessionOwnProfile(session);
+      sendJson(res, 200, {
+        status: row.status,
+        hub: { name: hubRow ? hubRow.name : '' },
+        agent_name: row.agent_name,
+        user_code: row.user_code,
+        expires_at: row.expires_at,
+        has_question: Boolean(settings.has_question),
+        question: settings.has_question ? settings.question : '',
+        needs_admin_ok: !linkJoinsOpen(row.hub_id, settings) && !settings.has_question,
+        admin_first_name: hubRow ? hubAdminFirstName(row.hub_id) : '',
+        membership: row.membership || '',
+        viewer: {
+          has_family: Boolean(own && !own.is_demo),
+          can_approve: Boolean(own && !own.is_demo && agentCanIssue(own.id)),
+          family_first_name: own && !own.is_demo ? String(own.parent && own.parent.name || '').trim().split(' ')[0] : '',
+        },
+      });
+      return;
+    }
+    if (req.method === 'POST' && agentConnectActionMatch) {
+      const id = decodeURIComponent(agentConnectActionMatch[1]);
+      const action = agentConnectActionMatch[2];
+      const body = await readJsonBody(req).catch(() => ({}));
+      if (action === 'token') {
+        const out = store.collectAgentConnect(id, String(body.poll_secret || ''));
+        if (out.status === 'unknown') { sendJson(res, 404, { error: 'not found' }); return; }
+        if (out.status === 'pending') { sendJson(res, 202, { status: 'pending' }); return; }
+        if (out.status === 'declined') { sendJson(res, 403, { status: 'declined', error: 'The parent said no.' }); return; }
+        if (out.status === 'expired') { sendJson(res, 410, { status: 'expired', error: 'This request has expired or was already collected.' }); return; }
+        sendJson(res, 200, out);
+        return;
+      }
+      // approve / decline: only the parent, in their own browser session.
+      if (bearerAuth) { sendJson(res, 403, { error: AGENT_TOKEN_MANAGE_403 }); return; }
+      const row = store.getAgentConnect(id);
+      if (!row) { sendJson(res, 404, { error: 'That approval link isn’t valid.' }); return; }
+      if (row.status === 'expired') { sendJson(res, 410, { error: 'This approval link has expired. Ask your agent to start again.' }); return; }
+      if (row.status !== 'pending') { sendJson(res, 409, { error: 'This request has already been answered.' }); return; }
+      const own = store.getSessionOwnProfile(session);
+      if (!own || own.is_demo || !agentCanIssue(own.id)) {
+        sendJson(res, 403, { error: 'Sign in with Google first, so this agent belongs to a family you can always get back.', needs_sign_in: true });
+        return;
+      }
+      if (action === 'decline') {
+        store.decideAgentConnect(id, { approve: false });
+        sendJson(res, 200, { ok: true, status: 'declined' });
+        return;
+      }
+      if (store.inviteState(row.invite_token) !== 'ok') {
+        sendJson(res, 410, { error: INVITE_EXPIRED });
+        return;
+      }
+      const info = store.getInvite(row.invite_token);
+      let outcome;
+      try {
+        outcome = joinByLink(info, own, body.answer, 'via agent: ' + row.agent_name, clientIp(req));
+      } catch (err) {
+        sendJson(res, 403, { error: err && err.message ? err.message : String(err) });
+        return;
+      }
+      if (outcome.status !== 200 && outcome.status !== 202) { sendJson(res, outcome.status, outcome.body); return; }
+      const membership = outcome.status === 200 ? 'member' : 'pending_approval';
+      store.decideAgentConnect(id, { approve: true, profileId: own.id, membership });
+      sendJson(res, 200, {
+        ok: true,
+        status: 'approved',
+        membership,
+        hub: { name: info.hub_name },
+        agent_name: row.agent_name,
+        message: outcome.body.message || '',
+      });
+      return;
+    }
+    if (hubJoinSettingsMatch) {
+      // Brief 067: the hub's join question and link settings (admins only).
+      const actor = store.getSessionViewer(session);
+      const hub = store.getHub(hubJoinSettingsMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (bearerAuth || !actor || store.getMemberRole(hub.id, actor.id) !== 'admin') {
+        sendJson(res, 403, { error: 'Only hub admins can change how families join.' });
+        return;
+      }
+      if (hub.is_demo) { sendJson(res, 403, { error: 'The demo stays as it is.' }); return; }
+      if (req.method === 'GET') {
+        sendJson(res, 200, { ok: true, settings: store.getJoinSettings(hub.id), invites: store.listActiveInvites(hub.id) });
+        return;
+      }
+      if (req.method === 'POST') {
+        const body = await readJsonBody(req);
+        try {
+          if (body.clear_question) store.clearJoinQuestion(hub.id);
+          else if (body.question !== undefined || body.answers !== undefined) store.setJoinQuestion(hub.id, body.question, body.answers);
+          if (body.open !== undefined) store.setJoinOpen(hub.id, Boolean(body.open));
+        } catch (err) {
+          sendJson(res, 400, { error: err && err.message ? err.message : String(err) });
+          return;
+        }
+        sendJson(res, 200, { ok: true, settings: store.getJoinSettings(hub.id), invites: store.listActiveInvites(hub.id) });
+        return;
+      }
+    }
+    if (req.method === 'POST' && hubInviteTurnOffMatch) {
+      const actor = store.getSessionViewer(session);
+      const hub = store.getHub(hubInviteTurnOffMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (bearerAuth || !actor || store.getMemberRole(hub.id, actor.id) !== 'admin') {
+        sendJson(res, 403, { error: 'Only hub admins can turn off invite links.' });
+        return;
+      }
+      if (!store.turnOffInvite(hub.id, decodeURIComponent(hubInviteTurnOffMatch[2]))) {
+        sendJson(res, 404, { error: 'That link is already off.' });
+        return;
+      }
+      sendJson(res, 200, { ok: true, invites: store.listActiveInvites(hub.id) });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/hubs/lookup') {
@@ -3628,18 +3960,31 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && joinInfoMatch) {
       const info = store.getInvite(joinInfoMatch[1]);
-      if (!info) { sendJson(res, 404, { error: 'That invite link is no longer available.' }); return; }
+      if (!info) {
+        const expired = store.inviteState(joinInfoMatch[1]) === 'expired';
+        sendJson(res, 404, { error: expired ? INVITE_EXPIRED : INVITE_MISSING, expired });
+        return;
+      }
+      const settings = store.getJoinSettings(info.hub_id);
       sendJson(res, 200, {
         hub_name: info.hub_name,
         kind: info.kind,
         inviter_first_name: info.inviter_first_name,
         member_count: info.member_count,
+        has_question: settings.has_question,
+        question: settings.has_question ? settings.question : '',
+        needs_admin_ok: !linkJoinsOpen(info.hub_id, settings) && !settings.has_question,
+        admin_first_name: hubAdminFirstName(info.hub_id),
       });
       return;
     }
     if (req.method === 'POST' && joinAcceptMatch) {
       const info = store.getInvite(joinAcceptMatch[1]);
-      if (!info) { sendJson(res, 404, { error: 'That invite link is no longer available.' }); return; }
+      if (!info) {
+        const expired = store.inviteState(joinAcceptMatch[1]) === 'expired';
+        sendJson(res, 404, { error: expired ? INVITE_EXPIRED : INVITE_MISSING, expired });
+        return;
+      }
       // A session that already holds a real (non-demo) family joins
       // immediately. A demo viewer (or a session with no family yet) is
       // NOT joined here — the client shows the account question instead,
@@ -3659,13 +4004,17 @@ const server = http.createServer(async (req, res) => {
         });
         return;
       }
+      // Brief 067: the hub's join question, or the admin's OK, decides.
+      const body = await readJsonBody(req).catch(() => ({}));
+      let outcome;
       try {
-        store.addMember(info.hub_id, own.id, 'member', bearerAuth ? 'via agent: ' + bearerAuth.token.name : 'invite');
+        outcome = joinByLink(info, own, body.answer,
+          bearerAuth ? 'via agent: ' + bearerAuth.token.name : 'invite', clientIp(req));
       } catch (err) {
         sendJson(res, 403, { error: err && err.message ? err.message : String(err) });
         return;
       }
-      sendJson(res, 200, { ok: true, hub: store.getHub(info.hub_id) });
+      sendJson(res, outcome.status, outcome.body);
       return;
     }
     if (req.method === 'POST' && hubRequestsMatch) {
@@ -3742,6 +4091,10 @@ if (require.main === module) {
     .then(() => {
       server.listen(PORT, '0.0.0.0', () => {
         clearInterval(bootHold);
+        // Brief 067: drop agent join requests that can no longer be used.
+        setInterval(() => {
+          try { store.sweepAgentConnects(); } catch (e) { /* next hour */ }
+        }, 60 * 60 * 1000).unref();
         console.log(`School Agent Network listening at http://0.0.0.0:${PORT}`);
         console.log(`Model: ${MODEL} via ${API_URL}`);
         console.log(

@@ -229,6 +229,8 @@ test('original PDF: retained on upload, served to hub members only', async (t) =
 
   await t.test('another hub member can view it; a non-member cannot', async () => {
     const invite = await founder.post(`/api/hubs/${hubId}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await founder.post(`/api/hubs/${hubId}/join-settings`, { open: true })).res.status, 200);
     assert.equal(invite.res.status, 200);
     const member = makeClient();
     await member.post('/api/profile', {
@@ -291,6 +293,8 @@ test('original PDF: retained on upload, served to hub members only', async (t) =
     assert.equal(mat.has_file, true, 'large PDF material reports its retained file');
 
     const invite = await founder.post(`/api/hubs/${hubId}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await founder.post(`/api/hubs/${hubId}/join-settings`, { open: true })).res.status, 200);
     assert.equal(invite.res.status, 200);
     const bigMember = makeClient();
     await bigMember.post('/api/profile', {

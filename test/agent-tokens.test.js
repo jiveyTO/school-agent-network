@@ -331,6 +331,8 @@ test('agent tokens over HTTP: lifecycle, scope, and guards', async (t) => {
 
   await t.test('invite redemption via token joins the token’s family', async () => {
     const invite = await ben.post(`/api/hubs/${benHubId}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await ben.post(`/api/hubs/${benHubId}/join-settings`, { open: true })).res.status, 200);
     assert.equal(invite.res.status, 200);
     const accepted = await agentPost(`/api/join/${invite.data.token}/accept`, raw, {});
     assert.equal(accepted.res.status, 200, accepted.text.slice(0, 300));

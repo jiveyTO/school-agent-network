@@ -288,6 +288,8 @@ test('onboarding and placements API', async (t) => {
     const joiner = makeClient();
     await joiner.post('/api/profile', { parent_name: 'Joiner Jo', parent_email: 'joiner.jo@example.com', children: [{ name: 'Jo Kid' }] });
     const invite = await me.post(`/api/hubs/${schoolHubId}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await me.post(`/api/hubs/${schoolHubId}/join-settings`, { open: true })).res.status, 200);
     assert.equal(invite.res.status, 200);
     const accepted = await joiner.post(`/api/join/${invite.data.token}/accept`, {});
     assert.equal(accepted.res.status, 200);
@@ -363,6 +365,8 @@ test('onboarding and placements API', async (t) => {
     const stranger = await intruder.del(`/api/hubs/${hubId}/placements/${ann.id}`);
     assert.equal(stranger.res.status, 403);
     const invite = await me.post(`/api/hubs/${hubId}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await me.post(`/api/hubs/${hubId}/join-settings`, { open: true })).res.status, 200);
     assert.equal(invite.res.status, 200);
     const accepted = await intruder.post(`/api/join/${invite.data.token}/accept`, {});
     assert.equal(accepted.res.status, 200);

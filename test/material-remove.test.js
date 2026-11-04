@@ -186,6 +186,8 @@ test('material removal API: permissions, demo protection, evening check', async 
       const p = await client.post('/api/profile', { parent_name: name, parent_email: email, children: [{ name: name + ' Kid' }] });
       assert.equal(p.res.status, 200);
       const invite = await founder.post(`/api/hubs/${hubId}/invites`, {});
+      // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+      assert.equal((await founder.post(`/api/hubs/${hubId}/join-settings`, { open: true })).res.status, 200);
       assert.equal(invite.res.status, 200);
       const joined = await client.post(`/api/join/${invite.data.token}/accept`, {});
       assert.equal(joined.res.status, 200);

@@ -152,6 +152,8 @@ test('invite joins never capture the demo family', async (t) => {
     assert.equal(created.res.status, 200);
     hubId = created.data.hub.id;
     const invite = await post(`/api/hubs/${hubId}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await post(`/api/hubs/${hubId}/join-settings`, { open: true })).res.status, 200);
     assert.equal(invite.res.status, 200);
     token = invite.data.token;
     const info = await jf(`/api/join/${token}`);

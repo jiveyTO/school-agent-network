@@ -779,6 +779,32 @@ async function initDb() {
   addColumnIfMissing('sessions', 'google_email', "google_email TEXT DEFAULT ''");
   // Rows from before expiry existed get 0, so they count as expired.
   addColumnIfMissing('login_states', 'expires_at', 'expires_at INTEGER NOT NULL DEFAULT 0');
+  // Brief 067: invite links expire 7 days after they're made. A hub can ask
+  // a question only its parents would know before a family joins by link
+  // (answers kept only as hashes); join_open = 1 lets anyone with a link in.
+  addColumnIfMissing('invites', 'expires_at', "expires_at TEXT DEFAULT ''");
+  addColumnIfMissing('hubs', 'join_question', "join_question TEXT DEFAULT ''");
+  addColumnIfMissing('hubs', 'join_answers', "join_answers TEXT DEFAULT ''");
+  addColumnIfMissing('hubs', 'join_open', 'join_open INTEGER DEFAULT 0');
+  addColumnIfMissing('agent_tokens', 'via', "via TEXT DEFAULT ''");
+  // Brief 067: an agent's request to join by invite, waiting for its
+  // parent's approval. Only a hash of the agent's poll secret is kept; the
+  // token is minted when the agent collects it, so none is ever stored.
+  run(`CREATE TABLE IF NOT EXISTS agent_connects (
+    id TEXT PRIMARY KEY,
+    invite_token TEXT NOT NULL,
+    hub_id TEXT NOT NULL,
+    agent_name TEXT,
+    user_code TEXT,
+    poll_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    profile_id TEXT,
+    membership TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    decided_at TEXT
+  )`);
+  backfillInviteExpiry();
   backfillSchoolKeys();
   persist();
   seedDemoHubs();
@@ -1517,10 +1543,11 @@ function agentTokenPublic(row) {
     revoked_at: row.revoked_at || null,
     active: !row.revoked_at,
     ...(row.display_hint ? { hint: row.display_hint } : {}),
+    ...(row.via ? { via: row.via } : {}),
   };
 }
 
-function createAgentToken(profileId, name) {
+function createAgentToken(profileId, name, via) {
   const cleanName = String(name || '').trim();
   if (!cleanName) throw new Error('Give this token a name — for example, "Homework helper".');
   if (cleanName.length > 80) throw new Error('Keep that token name a little shorter.');
@@ -1530,8 +1557,8 @@ function createAgentToken(profileId, name) {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   run(
-    'INSERT INTO agent_tokens (id, profile_id, name, token_hash, created_at, last_used_at, revoked_at, display_hint) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)',
-    [id, String(profileId), cleanName, hashAgentToken(raw), now, raw.slice(-4)]
+    'INSERT INTO agent_tokens (id, profile_id, name, token_hash, created_at, last_used_at, revoked_at, display_hint, via) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)',
+    [id, String(profileId), cleanName, hashAgentToken(raw), now, raw.slice(-4), String(via || '')]
   );
   persist();
   return { token: raw, record: agentTokenPublic(one('SELECT * FROM agent_tokens WHERE id = ?', [id])) };
@@ -2313,22 +2340,84 @@ function listHubsForProfile(profileId) {
   ).map((r) => ({ ...rowToHub(r), role: r.my_role }));
 }
 
+const INVITE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+
+function inviteExpiryFrom(createdAt) {
+  const t = Date.parse(createdAt || '');
+  return new Date((Number.isFinite(t) ? t : Date.now()) + INVITE_LIFETIME_MS).toISOString();
+}
+
+// Brief 067: links made before expiry existed expire 7 days after they were
+// made. Runs every boot; only rows still missing an expiry change.
+function backfillInviteExpiry() {
+  const rows = all("SELECT token, created_at FROM invites WHERE COALESCE(expires_at, '') = ''");
+  for (const r of rows) {
+    run('UPDATE invites SET expires_at = ? WHERE token = ?', [inviteExpiryFrom(r.created_at), r.token]);
+  }
+  if (rows.length) persist();
+}
+
+function inviteExpired(invite, now) {
+  const at = Date.parse((invite && invite.expires_at) || '');
+  return Number.isFinite(at) && at <= (now || Date.now());
+}
+
 function createInvite(hubId, profileId) {
   const token = crypto.randomBytes(24).toString('hex');
-  run('INSERT INTO invites (token, hub_id, created_by, created_at, revoked) VALUES (?, ?, ?, ?, 0)', [
+  const now = new Date().toISOString();
+  run('INSERT INTO invites (token, hub_id, created_by, created_at, revoked, expires_at) VALUES (?, ?, ?, ?, 0, ?)', [
     token,
     hubId,
     profileId,
-    new Date().toISOString(),
+    now,
+    inviteExpiryFrom(now),
   ]);
   persist();
   return token;
 }
 
+// 'ok' | 'expired' | 'missing' (unknown, turned off, or its hub is gone).
+function inviteState(token) {
+  if (!token) return 'missing';
+  const invite = one('SELECT * FROM invites WHERE token = ?', [token]);
+  if (!invite || Number(invite.revoked) || !getHubRow(invite.hub_id)) return 'missing';
+  return inviteExpired(invite) ? 'expired' : 'ok';
+}
+
+// A short handle for an invite that is not the token itself, so a list of
+// links can turn one off without ever showing the full link.
+function inviteRef(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 16);
+}
+
+function listActiveInvites(hubId) {
+  const now = Date.now();
+  return all('SELECT * FROM invites WHERE hub_id = ? AND revoked = 0 ORDER BY created_at DESC', [hubId])
+    .filter((r) => !inviteExpired(r, now))
+    .map((r) => {
+      const maker = getProfileRowById(r.created_by);
+      return {
+        ref: inviteRef(r.token),
+        last4: String(r.token).slice(-4),
+        created_at: r.created_at,
+        expires_at: r.expires_at,
+        made_by: maker ? String(maker.parent_name || '').trim().split(' ')[0] : '',
+      };
+    });
+}
+
+function turnOffInvite(hubId, ref) {
+  const row = all('SELECT token FROM invites WHERE hub_id = ? AND revoked = 0', [hubId])
+    .find((r) => inviteRef(r.token) === String(ref || ''));
+  if (!row) return false;
+  revokeInvite(hubId, row.token);
+  return true;
+}
+
 function getInvite(token) {
   if (!token) return null;
   const invite = one('SELECT * FROM invites WHERE token = ?', [token]);
-  if (!invite || Number(invite.revoked)) return null;
+  if (!invite || Number(invite.revoked) || inviteExpired(invite)) return null;
   const hub = getHubRow(invite.hub_id);
   if (!hub) return null;
   const inviter = getProfileRowById(invite.created_by);
@@ -2361,6 +2450,209 @@ function createJoinRequest(hubId, profileId) {
   );
   persist();
   return one('SELECT * FROM join_requests WHERE id = ?', [id]);
+}
+
+// Brief 067: a family asking to join through an invite link. Reuses its
+// pending request; a declined family may ask again after 24 hours; a hub
+// holds at most 20 pending requests. Returns { request } or { error, status }.
+const JOIN_REQUEST_CAP = 20;
+const JOIN_REASK_MS = 24 * 60 * 60 * 1000;
+
+function requestToJoin(hubId, profileId) {
+  const pending = one(
+    "SELECT * FROM join_requests WHERE hub_id = ? AND profile_id = ? AND status = 'pending'",
+    [hubId, profileId]
+  );
+  if (pending) return { request: pending };
+  const declined = one(
+    "SELECT decided_at FROM join_requests WHERE hub_id = ? AND profile_id = ? AND status = 'declined' ORDER BY decided_at DESC LIMIT 1",
+    [hubId, profileId]
+  );
+  if (declined && Date.now() - Date.parse(declined.decided_at || 0) < JOIN_REASK_MS) {
+    return { error: 'This hub said no to your request recently — you can ask again tomorrow.', status: 403 };
+  }
+  const open = one("SELECT COUNT(*) AS n FROM join_requests WHERE hub_id = ? AND status = 'pending'", [hubId]);
+  if (open && Number(open.n) >= JOIN_REQUEST_CAP) {
+    return { error: 'This hub has too many families waiting right now. Please try again later.', status: 429 };
+  }
+  return { request: createJoinRequest(hubId, profileId) };
+}
+
+function countPendingJoinRequests(hubId) {
+  const row = one("SELECT COUNT(*) AS n FROM join_requests WHERE hub_id = ? AND status = 'pending'", [hubId]);
+  return row ? Number(row.n) : 0;
+}
+
+function listPendingHubsForProfile(profileId) {
+  if (!profileId) return [];
+  return all(
+    `SELECT h.id AS id, h.name AS name, r.created_at AS asked_at FROM join_requests r
+     JOIN hubs h ON h.id = r.hub_id
+     WHERE r.profile_id = ? AND r.status = 'pending' ORDER BY r.created_at ASC`,
+    [profileId]
+  ).map((r) => ({ id: r.id, name: r.name, asked_at: r.asked_at }));
+}
+
+// Brief 067: the hub's join question. Answers are compared in a normalized
+// form (case, spacing, punctuation and accents ignored) and stored only as
+// salted hashes, so nobody can read them back.
+function normalizeJoinAnswer(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function hashJoinAnswer(hubId, answer) {
+  return crypto.createHash('sha256').update(String(hubId) + ':' + normalizeJoinAnswer(answer)).digest('hex');
+}
+
+function getJoinSettings(hubId) {
+  const row = getHubRow(hubId);
+  if (!row) return null;
+  let answers = [];
+  try { answers = JSON.parse(row.join_answers || '[]'); } catch { answers = []; }
+  const question = String(row.join_question || '').trim();
+  return {
+    question,
+    has_question: Boolean(question && answers.length),
+    answer_count: answers.length,
+    open: Number(row.join_open) === 1,
+  };
+}
+
+function setJoinQuestion(hubId, question, answers) {
+  const q = String(question || '').trim();
+  const list = (Array.isArray(answers) ? answers : [answers])
+    .map((a) => normalizeJoinAnswer(a))
+    .filter(Boolean);
+  if (!q) throw new Error('Write the question parents will see.');
+  if (q.length > 140) throw new Error('Keep the question under 140 characters.');
+  if (!list.length) throw new Error('Add at least one answer.');
+  if (list.length > 10) throw new Error('Keep it to 10 answers or fewer.');
+  const hashes = Array.from(new Set(list.map((a) => hashJoinAnswer(hubId, a))));
+  run('UPDATE hubs SET join_question = ?, join_answers = ? WHERE id = ?', [q, JSON.stringify(hashes), hubId]);
+  persist();
+  return getJoinSettings(hubId);
+}
+
+function clearJoinQuestion(hubId) {
+  run("UPDATE hubs SET join_question = '', join_answers = '' WHERE id = ?", [hubId]);
+  persist();
+  return getJoinSettings(hubId);
+}
+
+function setJoinOpen(hubId, open) {
+  run('UPDATE hubs SET join_open = ? WHERE id = ?', [open ? 1 : 0, hubId]);
+  persist();
+  return getJoinSettings(hubId);
+}
+
+function checkJoinAnswer(hubId, answer) {
+  if (!normalizeJoinAnswer(answer)) return false;
+  const row = getHubRow(hubId);
+  let answers = [];
+  try { answers = JSON.parse((row && row.join_answers) || '[]'); } catch { answers = []; }
+  return answers.includes(hashJoinAnswer(hubId, answer));
+}
+
+// Brief 067: an agent's request to join by invite. The parent approves at
+// /approve/<id>; the agent collects with its poll secret. Requests last 10
+// minutes; an approved one can be collected for 30 minutes after approval.
+const AGENT_CONNECT_TTL_MS = 10 * 60 * 1000;
+const AGENT_CONNECT_COLLECT_MS = 30 * 60 * 1000;
+const USER_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+function makeUserCode() {
+  const bytes = crypto.randomBytes(8);
+  let code = '';
+  for (let i = 0; i < 8; i++) code += USER_CODE_ALPHABET[bytes[i] % USER_CODE_ALPHABET.length];
+  return code.slice(0, 4) + '-' + code.slice(4);
+}
+
+function hashPollSecret(secret) {
+  return crypto.createHash('sha256').update(String(secret || '')).digest('hex');
+}
+
+function countOpenAgentConnects(inviteToken) {
+  const row = one(
+    "SELECT COUNT(*) AS n FROM agent_connects WHERE invite_token = ? AND status = 'pending' AND expires_at > ?",
+    [inviteToken, new Date().toISOString()]
+  );
+  return row ? Number(row.n) : 0;
+}
+
+function createAgentConnect(inviteToken, hubId, agentName) {
+  const id = crypto.randomBytes(16).toString('base64url');
+  const pollSecret = crypto.randomBytes(32).toString('base64url');
+  const now = new Date();
+  const name = String(agentName || '').replace(/\s+/g, ' ').trim().slice(0, 40) || 'AI agent';
+  run(
+    `INSERT INTO agent_connects (id, invite_token, hub_id, agent_name, user_code, poll_hash, status, profile_id, membership, created_at, expires_at, decided_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?, NULL)`,
+    [id, inviteToken, hubId, name, makeUserCode(), hashPollSecret(pollSecret), now.toISOString(),
+      new Date(now.getTime() + AGENT_CONNECT_TTL_MS).toISOString()]
+  );
+  persist();
+  return { connect: getAgentConnect(id), pollSecret };
+}
+
+function getAgentConnect(id) {
+  if (!id) return null;
+  const row = one('SELECT * FROM agent_connects WHERE id = ?', [String(id)]);
+  if (!row) return null;
+  const expired = row.status === 'pending' && Date.parse(row.expires_at) <= Date.now();
+  return { ...row, status: expired ? 'expired' : row.status };
+}
+
+function decideAgentConnect(id, decision) {
+  const row = getAgentConnect(id);
+  if (!row || row.status !== 'pending') return null;
+  if (decision.approve) {
+    run("UPDATE agent_connects SET status = 'approved', profile_id = ?, membership = ?, decided_at = ? WHERE id = ?",
+      [decision.profileId, decision.membership, new Date().toISOString(), row.id]);
+  } else {
+    run("UPDATE agent_connects SET status = 'declined', decided_at = ? WHERE id = ?", [new Date().toISOString(), row.id]);
+  }
+  persist();
+  return getAgentConnect(row.id);
+}
+
+// The one moment a token exists: minted for the approving family and handed
+// to whoever holds the poll secret, once. Returns { status, ... }.
+function collectAgentConnect(id, pollSecret) {
+  const row = getAgentConnect(id);
+  if (!row || !pollSecret || row.poll_hash !== hashPollSecret(pollSecret)) return { status: 'unknown' };
+  if (row.status === 'pending') return { status: 'pending' };
+  if (row.status === 'declined') return { status: 'declined' };
+  if (row.status !== 'approved') return { status: 'expired' };
+  if (Date.now() - Date.parse(row.decided_at || 0) > AGENT_CONNECT_COLLECT_MS) return { status: 'expired' };
+  const created = createAgentToken(row.profile_id, row.agent_name, 'invite approval');
+  if (!created) return { status: 'expired' };
+  run("UPDATE agent_connects SET status = 'consumed' WHERE id = ?", [row.id]);
+  persist();
+  const profile = getProfileRowById(row.profile_id);
+  const hub = getHubRow(row.hub_id);
+  return {
+    status: 'approved',
+    token: created.token,
+    hub: hub ? { id: hub.id, name: hub.name } : null,
+    membership: row.membership,
+    family_first_name: profile ? String(profile.parent_name || '').trim().split(' ')[0] : '',
+  };
+}
+
+// Drops agent requests that can no longer be approved or collected. Run by
+// the service on a timer, not at boot, so a deploy's boot stays write-free.
+function sweepAgentConnects() {
+  const cutoff = new Date(Date.now() - AGENT_CONNECT_COLLECT_MS).toISOString();
+  run("DELETE FROM agent_connects WHERE (status IN ('pending', 'consumed', 'declined') AND expires_at < ?) OR (status = 'approved' AND decided_at < ?)", [cutoff, cutoff]);
+  const removed = db.getRowsModified();
+  if (removed) persist();
+  return removed;
 }
 
 function listJoinRequests(hubId) {
@@ -2943,7 +3235,24 @@ module.exports = {
   createInvite,
   getInvite,
   revokeInvite,
+  inviteState,
+  listActiveInvites,
+  turnOffInvite,
   createJoinRequest,
+  requestToJoin,
+  countPendingJoinRequests,
+  listPendingHubsForProfile,
+  getJoinSettings,
+  setJoinQuestion,
+  clearJoinQuestion,
+  setJoinOpen,
+  checkJoinAnswer,
+  countOpenAgentConnects,
+  createAgentConnect,
+  getAgentConnect,
+  decideAgentConnect,
+  collectAgentConnect,
+  sweepAgentConnects,
   listJoinRequests,
   decideJoinRequest,
   createMaterial,

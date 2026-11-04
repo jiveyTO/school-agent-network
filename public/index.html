@@ -300,6 +300,10 @@
   .material-menu-item:hover, .material-menu-item:focus-visible { background: var(--wash); outline: none; }
   .material-menu-item.danger { color: var(--red); }
   .material-menu-item[hidden] { display: none; }
+  .approve-code { font-size: 26px; font-weight: 800; letter-spacing: 0.08em; margin: 0 0 12px; color: var(--pine-dark); }
+  .invite-link-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--line); padding: 8px 0; }
+  .invite-link-row:first-child { border-top: 0; }
+  .invite-link-row .text-btn { flex: none; min-height: 36px; }
   .material-panel { margin: 10px 0; }
   .strip-group { width: 100%; font: inherit; color: inherit; text-align: left; cursor: pointer; }
   .toggle-btn {
@@ -739,6 +743,13 @@
       <h2 id="join-h">You’re invited</h2>
       <div class="card">
         <p id="joinText" style="margin-top:0">Loading your invitation…</p>
+        <!-- Brief 067: a hub can ask a question only its parents would know. -->
+        <div id="joinQuestion" hidden>
+          <label class="field"><span id="joinQuestionText">Answer the hub’s question</span>
+            <input type="text" id="joinAnswerInput" autocomplete="off" maxlength="200">
+          </label>
+        </div>
+        <p class="hint" id="joinAdminNote" hidden></p>
         <button class="small-btn" id="joinAcceptBtn" type="button">Join this hub</button>
         <div id="joinChoice" hidden>
           <p id="joinChoiceText"></p>
@@ -754,6 +765,36 @@
           <p class="hint">Your invite is saved — after you sign in or finish setup, you’ll land in the hub automatically. No need to re-click the link.</p>
         </div>
         <p class="hint" id="joinStatus"></p>
+        <p class="hint join-agent-note">Using an AI agent? It can join for you — it should read /api/agent.</p>
+      </div>
+    </section>
+
+    <!-- Brief 067: a parent approves their AI agent joining a hub by invite. -->
+    <section id="approveView" aria-labelledby="approve-h" hidden>
+      <h2 id="approve-h">Let your agent join</h2>
+      <div class="card">
+        <p id="approveText" style="margin-top:0">Loading…</p>
+        <div id="approveDetail" hidden>
+          <p class="hint" style="margin-bottom:4px">Check that your agent shows the same code:</p>
+          <p class="approve-code" id="approveCode"></p>
+          <p class="hint">It will be able to act for your family in ParentLoop — add school notes and set your children’s grades. You can turn it off any time in My family → Agent access.</p>
+          <p class="hint" id="approveAdminNote" hidden></p>
+          <div id="approveQuestion" style="margin-top:14px" hidden>
+            <label class="field"><span id="approveQuestionText"></span>
+              <input type="text" id="approveAnswerInput" autocomplete="off" maxlength="200">
+            </label>
+          </div>
+          <p class="share-row">
+            <button class="small-btn" id="approveYesBtn" type="button">Approve</button>
+            <button class="small-btn secondary" id="approveNoBtn" type="button">Decline</button>
+          </p>
+        </div>
+        <div id="approveSignIn" hidden>
+          <p>To approve, sign in with Google — so this agent belongs to a family you can always get back.</p>
+          <a class="small-btn" id="approveSignInBtn" href="/api/auth/login">Sign in with Google</a>
+          <p class="hint">New to ParentLoop? After signing in you’ll set up your family, then come straight back here.</p>
+        </div>
+        <p class="hint" id="approveStatus"></p>
       </div>
     </section>
 
@@ -890,6 +931,8 @@
           <span class="material-menu hub-menu" id="hubDanger" hidden>
             <button class="material-menu-btn" id="hubMenuBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Manage this hub">⋯</button>
             <span class="material-menu-list" role="menu" hidden>
+              <button class="material-menu-item" id="hubMenuJoinQuestion" type="button" role="menuitem">Join question</button>
+              <button class="material-menu-item" id="hubMenuInviteLinks" type="button" role="menuitem">Invite links</button>
               <button class="material-menu-item" id="hubMenuRemoveFamily" type="button" role="menuitem" hidden>Remove a family</button>
               <button class="material-menu-item danger" id="deleteHubBtn" type="button" role="menuitem">Delete this hub</button>
             </span>
@@ -899,6 +942,31 @@
           <p class="hint hub-meta" id="hubMeta"></p>
         </div>
         <div class="hub-manage" id="hubManagePanel" hidden>
+          <div id="hubJoinPanel" hidden>
+            <p class="hub-label">Join question</p>
+            <p class="hint" style="margin-top:0">Families who open an invite link answer this to join. Pick something every parent at the school knows but that isn’t on the school website — e.g. what the kids call the lunch supervisor, or the class pet’s name.</p>
+            <p class="hint" id="hubJoinCurrent"></p>
+            <label class="field">Question
+              <input type="text" id="hubJoinQuestionInput" maxlength="140" autocomplete="off">
+            </label>
+            <label class="field">Accepted answers — one per line (capitals, spaces and punctuation don’t matter)
+              <textarea id="hubJoinAnswersInput" rows="3" autocomplete="off" placeholder="Saved answers stay hidden. Leave empty to keep them."></textarea>
+            </label>
+            <label class="evening-email-toggle"><input type="checkbox" id="hubJoinOpenInput"> Let anyone with a link join — no question, no OK from me</label>
+            <p style="margin:12px 0 0">
+              <button class="small-btn" id="hubJoinSaveBtn" type="button">Save</button>
+              <button class="small-btn secondary" id="hubJoinClearBtn" type="button" hidden>Remove question</button>
+              <button class="small-btn secondary" id="hubJoinDoneBtn" type="button">Done</button>
+            </p>
+            <p class="hint" id="hubJoinStatus"></p>
+          </div>
+          <div id="hubLinksPanel" hidden>
+            <p class="hub-label">Invite links</p>
+            <p class="hint" style="margin-top:0">Each link works for 7 days. Turn one off if it ended up somewhere it shouldn’t.</p>
+            <div id="hubLinksList"></div>
+            <p style="margin:12px 0 0"><button class="small-btn secondary" id="hubLinksDoneBtn" type="button">Done</button></p>
+            <p class="hint" id="hubLinksStatus"></p>
+          </div>
           <div id="hubManageMembers" hidden>
             <p class="hub-label">Remove a family</p>
             <div id="hubManageMembersList"></div>
@@ -981,6 +1049,7 @@
                 <button class="small-btn secondary" id="inviteCopyBtn" type="button">Copy link</button>
               </p>
               <p class="hint" id="inviteCopyStatus"></p>
+              <p class="hint">This link works for 7 days. Families answer your hub’s join question, or wait for your OK.</p>
             </div>
             <div id="hubRequests"></div>
             </div>
@@ -2033,6 +2102,7 @@
     joinFlowActive = false;
     onboardingView.hidden = true;
     document.getElementById('joinView').hidden = true;
+    document.getElementById('approveView').hidden = true;
     document.getElementById('recoveryView').hidden = true;
     tabBar.hidden = false;
     paintDemoBar();
@@ -2051,6 +2121,7 @@
     joinFlowActive = true;
     onboardingView.hidden = true;
     document.getElementById('recoveryView').hidden = true;
+    document.getElementById('approveView').hidden = true;
     tabBar.hidden = true;
     viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
     document.getElementById('joinView').hidden = false;
@@ -2356,6 +2427,7 @@
         // have none and render as before — never a derived stand-in.
         '<p style="margin:0"><b>' + esc(tk.name) + '</b> · ' + (tk.hint ? '····' + esc(tk.hint) + ' · ' : '') + esc(state) + '</p>' +
         '<p class="hint" style="margin:4px 0">Created ' + esc(agentWhen(tk.created_at)) + ' · Last used ' + esc(lastUsed) + '</p>' +
+        (tk.via === 'invite approval' ? '<p class="hint" style="margin:4px 0">Joined via invite approval</p>' : '') +
         (tk.active
           ? '<p style="margin:8px 0 0"><button class="small-btn secondary" type="button" data-revoke-agent="' + esc(tk.id) + '">Revoke</button></p>'
           // A revoked token can be deleted from the list for good, after
@@ -2490,7 +2562,13 @@
           ' aria-current="' + (h.id === currentHubId) + '"><p style="margin:0"><b>' + esc(h.name) + '</b></p>' +
           (team ? '<p class="hint" style="margin:4px 0">' + esc(team) + '</p>' : '') +
           '<p class="hint" style="margin:4px 0">' + esc(h.member_count) + ' families · you are ' +
-          (h.role === 'admin' ? 'an admin' : 'a member') + '</p></button>';
+          (h.role === 'admin' ? 'an admin' : 'a member') + '</p>' +
+          // Brief 067: admins see families waiting for their OK.
+          (h.pending_requests
+            ? '<p class="hint" style="margin:4px 0;color:var(--pine-dark);font-weight:700">' + esc(h.pending_requests) +
+              (h.pending_requests === 1 ? ' family' : ' families') + ' asking to join</p>'
+            : '') +
+          '</button>';
       }).join('');
       list.querySelectorAll('[data-hub-id]').forEach(function (b) {
         b.addEventListener('click', function () {
@@ -2653,9 +2731,15 @@
       document.getElementById('hubDanger').hidden = data.hub.role !== 'admin';
       // A reload after removing a family keeps that list open; opening a
       // different hub starts with the manage panel closed.
-      document.getElementById('deleteHubConfirm').hidden = true;
-      if (switching || data.hub.role !== 'admin') document.getElementById('hubManageMembers').hidden = true;
-      syncHubManagePanel();
+      if (switching || data.hub.role !== 'admin') {
+        closeHubManage();
+      } else {
+        document.getElementById('deleteHubConfirm').hidden = true;
+        syncHubManagePanel();
+      }
+      // Brief 067: the demo's join settings stay as they are.
+      document.getElementById('hubMenuJoinQuestion').hidden = Boolean(data.hub.is_demo);
+      document.getElementById('hubMenuInviteLinks').hidden = Boolean(data.hub.is_demo);
       document.getElementById('deleteHubStatus').textContent = '';
       document.getElementById('deleteHubName').textContent = data.hub.name;
       const facts = data.facts || [];
@@ -2706,16 +2790,125 @@
 
   // The hub's ⋯ menu (admins only): each action opens its own panel under
   // the hub title, and the panel closes once nothing in it is open.
+  const HUB_MANAGE_SECTIONS = ['hubJoinPanel', 'hubLinksPanel', 'hubManageMembers', 'deleteHubConfirm'];
+
   function syncHubManagePanel() {
-    document.getElementById('hubManagePanel').hidden =
-      document.getElementById('hubManageMembers').hidden && document.getElementById('deleteHubConfirm').hidden;
+    document.getElementById('hubManagePanel').hidden = HUB_MANAGE_SECTIONS.every(function (id) {
+      return document.getElementById(id).hidden;
+    });
+  }
+
+  function openHubManageSection(id) {
+    closeMaterialMenus();
+    HUB_MANAGE_SECTIONS.forEach(function (s) { document.getElementById(s).hidden = s !== id; });
+    syncHubManagePanel();
   }
 
   function closeHubManage() {
-    document.getElementById('hubManageMembers').hidden = true;
-    document.getElementById('deleteHubConfirm').hidden = true;
+    HUB_MANAGE_SECTIONS.forEach(function (s) { document.getElementById(s).hidden = true; });
     syncHubManagePanel();
   }
+
+  // Brief 067: the hub's join question and the "let anyone in" switch.
+  // Answers are never sent back by the server, so the box starts empty and
+  // saving without answers keeps the ones already saved.
+  async function loadHubJoinSettings() {
+    const status = document.getElementById('hubJoinStatus');
+    status.textContent = '';
+    try {
+      const res = await fetch('/api/hubs/' + encodeURIComponent(currentHubId) + '/join-settings');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Couldn’t load the join settings.');
+      const s = data.settings || {};
+      document.getElementById('hubJoinQuestionInput').value = s.question || '';
+      document.getElementById('hubJoinAnswersInput').value = '';
+      document.getElementById('hubJoinOpenInput').checked = Boolean(s.open);
+      document.getElementById('hubJoinClearBtn').hidden = !s.has_question;
+      document.getElementById('hubJoinCurrent').textContent = s.open
+        ? 'Right now anyone with a link joins straight away.'
+        : s.has_question
+          ? 'Families answer “' + s.question + '” to join (' + s.answer_count + (s.answer_count === 1 ? ' answer' : ' answers') + ' saved). Three wrong tries and they ask you instead.'
+          : 'No question yet — families who open a link wait for your OK.';
+      renderHubInviteLinks(data.invites || []);
+    } catch (e) {
+      status.textContent = e.message;
+    }
+  }
+
+  async function saveHubJoinSettings(body) {
+    const status = document.getElementById('hubJoinStatus');
+    status.textContent = 'Saving…';
+    try {
+      await postJson('/api/hubs/' + encodeURIComponent(currentHubId) + '/join-settings', body);
+      await loadHubJoinSettings();
+      status.textContent = 'Saved.';
+    } catch (e) {
+      status.textContent = e.message;
+    }
+  }
+
+  function renderHubInviteLinks(invites) {
+    const list = document.getElementById('hubLinksList');
+    if (!invites.length) {
+      list.innerHTML = '<p class="hint">No active links. Tap Invite a parent to make one.</p>';
+      return;
+    }
+    list.innerHTML = invites.map(function (inv) {
+      const days = Math.max(0, Math.ceil((Date.parse(inv.expires_at) - Date.now()) / 86400000));
+      return '<div class="invite-link-row"><p class="hint" style="margin:0">Link ····' + esc(inv.last4) +
+        (inv.made_by ? ' · made by ' + esc(inv.made_by) : '') + ' · ' + esc(humanDate(inv.created_at)) +
+        ' · ' + (days <= 1 ? 'expires within a day' : 'expires in ' + days + ' days') + '</p>' +
+        '<button class="text-btn danger" type="button" data-invite-off="' + esc(inv.ref) + '">Turn off</button></div>';
+    }).join('');
+    list.querySelectorAll('[data-invite-off]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        const status = document.getElementById('hubLinksStatus');
+        btn.disabled = true;
+        try {
+          const data = await postJson('/api/hubs/' + encodeURIComponent(currentHubId) + '/invites/' +
+            encodeURIComponent(btn.getAttribute('data-invite-off')) + '/turn-off', {});
+          renderHubInviteLinks(data.invites || []);
+          status.textContent = 'Turned off — that link no longer works.';
+        } catch (e) {
+          status.textContent = e.message;
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  document.getElementById('hubMenuJoinQuestion').addEventListener('click', function () {
+    openHubManageSection('hubJoinPanel');
+    loadHubJoinSettings();
+  });
+
+  document.getElementById('hubMenuInviteLinks').addEventListener('click', function () {
+    openHubManageSection('hubLinksPanel');
+    document.getElementById('hubLinksStatus').textContent = '';
+    loadHubJoinSettings();
+  });
+
+  document.getElementById('hubJoinSaveBtn').addEventListener('click', function () {
+    const question = document.getElementById('hubJoinQuestionInput').value.trim();
+    const answers = document.getElementById('hubJoinAnswersInput').value.split('\n')
+      .map(function (a) { return a.trim(); }).filter(Boolean);
+    const body = { open: document.getElementById('hubJoinOpenInput').checked };
+    if (answers.length) {
+      body.question = question;
+      body.answers = answers;
+    } else if (question && document.getElementById('hubJoinClearBtn').hidden) {
+      document.getElementById('hubJoinStatus').textContent = 'Add at least one answer.';
+      return;
+    }
+    saveHubJoinSettings(body);
+  });
+
+  document.getElementById('hubJoinClearBtn').addEventListener('click', function () {
+    saveHubJoinSettings({ clear_question: true });
+  });
+
+  document.getElementById('hubJoinDoneBtn').addEventListener('click', closeHubManage);
+  document.getElementById('hubLinksDoneBtn').addEventListener('click', closeHubManage);
 
   document.getElementById('hubMenuBtn').addEventListener('click', function (e) {
     e.stopPropagation();
@@ -2732,20 +2925,14 @@
   });
 
   document.getElementById('hubMenuRemoveFamily').addEventListener('click', function () {
-    closeMaterialMenus();
-    document.getElementById('deleteHubConfirm').hidden = true;
-    document.getElementById('hubManageMembers').hidden = false;
-    syncHubManagePanel();
+    openHubManageSection('hubManageMembers');
   });
 
   document.getElementById('hubManageDoneBtn').addEventListener('click', closeHubManage);
 
   document.getElementById('deleteHubBtn').addEventListener('click', function () {
-    closeMaterialMenus();
-    document.getElementById('hubManageMembers').hidden = true;
-    document.getElementById('deleteHubConfirm').hidden = false;
+    openHubManageSection('deleteHubConfirm');
     document.getElementById('deleteHubStatus').textContent = '';
-    syncHubManagePanel();
   });
 
   document.getElementById('deleteHubNoBtn').addEventListener('click', closeHubManage);
@@ -2783,13 +2970,42 @@
   // Completes a saved invite for the session's real family and lands on
   // the hub. Used right after Join, and after the sign-in / family-setup
   // detour finishes — the parent never taps Join a second time.
-  async function acceptPendingJoin(token) {
-    const accepted = await postJson('/api/join/' + encodeURIComponent(token) + '/accept', {});
+  async function acceptPendingJoin(token, answer) {
+    joinToken = token;
+    const accepted = await postJson('/api/join/' + encodeURIComponent(token) + '/accept', answer ? { answer: answer } : {});
     try { sessionStorage.removeItem('pendingJoinToken'); } catch (e) {}
+    // Brief 067: the hub admin lets this family in later.
+    if (accepted.status === 'pending_approval') {
+      showJoinPending(accepted.message || 'Asked to join — the hub admin will let you in.');
+      return accepted;
+    }
     await loadHubs(accepted.hub && accepted.hub.id);
     showMain();
     await openHub(accepted.hub && accepted.hub.id);
     return accepted;
+  }
+
+  // Brief 067: the hub's join question on the join card, wherever the saved
+  // invite was picked back up (the link itself, or after sign-in/setup).
+  function showJoinQuestion(question, message) {
+    showJoin();
+    document.getElementById('joinChoice').hidden = true;
+    document.getElementById('joinQuestion').hidden = false;
+    document.getElementById('joinQuestionText').textContent = question || 'Answer the hub’s question';
+    document.getElementById('joinAcceptBtn').hidden = false;
+    document.getElementById('joinStatus').textContent = message || '';
+    const input = document.getElementById('joinAnswerInput');
+    input.value = '';
+    input.focus();
+  }
+
+  function showJoinPending(message) {
+    showJoin();
+    document.getElementById('joinChoice').hidden = true;
+    document.getElementById('joinQuestion').hidden = true;
+    document.getElementById('joinAdminNote').hidden = true;
+    document.getElementById('joinAcceptBtn').hidden = true;
+    document.getElementById('joinStatus').textContent = message;
   }
 
   // The account question: the demo profile (or a session with no family
@@ -2798,6 +3014,7 @@
   function showJoinChoice(info) {
     showJoin();
     document.getElementById('joinAcceptBtn').hidden = true;
+    document.getElementById('joinQuestion').hidden = true;
     document.getElementById('joinChoice').hidden = false;
     const hubName = (info && (info.hub_name || info.hubName)) || 'this hub';
     document.getElementById('joinChoiceText').textContent =
@@ -2805,6 +3022,111 @@
     document.getElementById('joinStatus').textContent = '';
     window.scrollTo(0, 0);
   }
+
+  // Brief 067: a parent approves their AI agent joining a hub by invite.
+  // The request id is saved across Google sign-in and family setup, so the
+  // parent lands back here with no second tap on the agent's link.
+  let approveId = '';
+
+  function showApprove() {
+    joinFlowActive = true;
+    onboardingView.hidden = true;
+    document.getElementById('recoveryView').hidden = true;
+    document.getElementById('joinView').hidden = true;
+    tabBar.hidden = true;
+    viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
+    document.getElementById('approveView').hidden = false;
+    paintDemoBar();
+    window.scrollTo(0, 0);
+  }
+
+  function forgetPendingApprove() {
+    try { sessionStorage.removeItem('pendingApproveId'); } catch (e) {}
+  }
+
+  function showApproveDone(text) {
+    forgetPendingApprove();
+    document.getElementById('approveDetail').hidden = true;
+    document.getElementById('approveSignIn').hidden = true;
+    document.getElementById('approveText').textContent = text;
+    document.getElementById('approveStatus').textContent = '';
+  }
+
+  async function loadApproveView() {
+    const m = window.location.pathname.match(/^\/approve\/([^/]+)$/);
+    if (!m) return false;
+    approveId = decodeURIComponent(m[1]);
+    showApprove();
+    const text = document.getElementById('approveText');
+    try {
+      const res = await fetch('/api/agent-connect/' + encodeURIComponent(approveId));
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'That approval link isn’t valid.');
+      const agent = data.agent_name || 'Your agent';
+      const hubName = (data.hub && data.hub.name) || 'this hub';
+      if (data.status === 'expired') { showApproveDone('This approval link has expired. Ask your agent to start again.'); return true; }
+      if (data.status === 'declined') { showApproveDone('You declined this request — ' + agent + ' won’t get access.'); return true; }
+      if (data.status !== 'pending') { showApproveDone('Already approved — ' + agent + ' can take it from here.'); return true; }
+      text.textContent = 'An agent calling itself “' + agent + '” wants to join ' + hubName + ' for your family.';
+      if (!data.viewer || !data.viewer.can_approve) {
+        try { sessionStorage.setItem('pendingApproveId', approveId); } catch (e) {}
+        document.getElementById('approveDetail').hidden = true;
+        document.getElementById('approveSignIn').hidden = false;
+        return true;
+      }
+      document.getElementById('approveSignIn').hidden = true;
+      document.getElementById('approveDetail').hidden = false;
+      document.getElementById('approveCode').textContent = data.user_code || '';
+      const adminNote = document.getElementById('approveAdminNote');
+      adminNote.hidden = !data.needs_admin_ok;
+      adminNote.textContent = (data.admin_first_name || 'The hub admin') + ' will be asked to let your family in.';
+      document.getElementById('approveQuestion').hidden = !data.has_question;
+      document.getElementById('approveQuestionText').textContent = data.question || '';
+    } catch (e) {
+      showApproveDone(e.message);
+    }
+    return true;
+  }
+
+  document.getElementById('approveYesBtn').addEventListener('click', async function () {
+    const btn = this;
+    const status = document.getElementById('approveStatus');
+    btn.disabled = true;
+    status.textContent = 'Approving…';
+    try {
+      const questionShown = !document.getElementById('approveQuestion').hidden;
+      const data = await postJson('/api/agent-connect/' + encodeURIComponent(approveId) + '/approve',
+        questionShown ? { answer: document.getElementById('approveAnswerInput').value } : {});
+      const agent = data.agent_name || 'Your agent';
+      showApproveDone(data.membership === 'member'
+        ? 'Done — your family is in ' + data.hub.name + '. ' + agent + ' can take it from here.'
+        : 'Done — ' + agent + ' is connected. ' + (data.message || 'The hub admin will let your family in.'));
+    } catch (e) {
+      if (e && e.data && e.data.needs_sign_in) {
+        document.getElementById('approveDetail').hidden = true;
+        document.getElementById('approveSignIn').hidden = false;
+        try { sessionStorage.setItem('pendingApproveId', approveId); } catch (err) {}
+      }
+      status.textContent = e.message;
+      if (e && e.data && e.data.wrong_answer) {
+        const input = document.getElementById('approveAnswerInput');
+        input.value = '';
+        input.focus();
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('approveNoBtn').addEventListener('click', async function () {
+    const status = document.getElementById('approveStatus');
+    try {
+      await postJson('/api/agent-connect/' + encodeURIComponent(approveId) + '/decline', {});
+      showApproveDone('Declined — your agent won’t get access.');
+    } catch (e) {
+      status.textContent = e.message;
+    }
+  });
 
   async function loadJoinView() {
     const m = window.location.pathname.match(/^\/join\/(.+)$/);
@@ -2818,6 +3140,12 @@
         data.inviter_first_name + ' invited you to ' + data.hub_name + ' · ' + data.member_count + ' families';
       document.getElementById('joinAcceptBtn').hidden = false;
       document.getElementById('joinChoice').hidden = true;
+      // Brief 067: the hub's question, or a note that the admin decides.
+      document.getElementById('joinQuestion').hidden = !data.has_question;
+      document.getElementById('joinQuestionText').textContent = data.question || '';
+      const adminNote = document.getElementById('joinAdminNote');
+      adminNote.hidden = !data.needs_admin_ok;
+      adminNote.textContent = 'Joining sends a request — ' + (data.admin_first_name || 'the hub admin') + ' will let you in.';
       showJoin();
       try {
         const pending = sessionStorage.getItem('pendingJoinToken');
@@ -2919,6 +3247,17 @@
       renderFamily(null);
     }
     await loadHubs();
+    // Brief 067: back from Google sign-in mid-approval → the approval page.
+    try {
+      const pendingApprove = sessionStorage.getItem('pendingApproveId');
+      if (pendingApprove && !/^\/approve\//.test(window.location.pathname) &&
+          status.hasActiveProfile && !status.isDemo) {
+        window.location.href = '/approve/' + encodeURIComponent(pendingApprove);
+        return;
+      }
+    } catch (e) {}
+    const isApprove = await loadApproveView();
+    if (isApprove) return;
     const isJoin = await loadJoinView();
     if (isJoin) return;
     if (status.hasActiveProfile && !wantsOnboarding) showMain();
@@ -3136,17 +3475,24 @@
       demoViewing = false;
       renderFamily(data.profile);
       await loadFamilyPlacements();
+      // Brief 067: an agent approval that sent this parent through setup
+      // goes straight back to its approval page.
+      const pendingApprove = (function () { try { return sessionStorage.getItem('pendingApproveId'); } catch (e) { return ''; } })();
+      if (pendingApprove) {
+        window.location.href = '/approve/' + encodeURIComponent(pendingApprove);
+        return;
+      }
       const pendingJoin = sessionStorage.getItem('pendingJoinToken');
       if (pendingJoin) {
         try {
-          const accepted = await postJson('/api/join/' + encodeURIComponent(pendingJoin) + '/accept', {});
-          sessionStorage.removeItem('pendingJoinToken');
-          statusEl.textContent = 'You’re in! Here’s your hub.';
-          await loadHubs(accepted.hub && accepted.hub.id);
-          showMain();
-          await openHub(accepted.hub && accepted.hub.id);
+          statusEl.textContent = 'Saved. Joining your hub…';
+          await acceptPendingJoin(pendingJoin);
           return;
         } catch (e) {
+          if (e && e.data && e.data.needs_answer) {
+            showJoinQuestion(e.data.question, '');
+            return;
+          }
           // Fall through to the normal next steps.
         }
       }
@@ -3773,13 +4119,16 @@
     const statusEl = document.getElementById('joinStatus');
     btn.disabled = true;
     try {
-      await acceptPendingJoin(joinToken);
+      const questionShown = !document.getElementById('joinQuestion').hidden;
+      await acceptPendingJoin(joinToken, questionShown ? document.getElementById('joinAnswerInput').value : '');
     } catch (e) {
       if (e && e.data && e.data.needsAccountChoice) {
         // Demo viewer (or no family yet): ask the account question next.
         // The invite carries through whichever path they pick.
         stashPendingJoin(joinToken);
         showJoinChoice(e.data);
+      } else if (e && e.data && e.data.needs_answer) {
+        showJoinQuestion(e.data.question, e.data.wrong_answer ? e.message : '');
       } else {
         statusEl.textContent = (e && e.message) || 'Something went wrong. Please try again.';
       }
@@ -3811,7 +4160,9 @@
         await acceptPendingJoin(pending);
       }
     } catch (e) {
-      // The parent can tap Join again.
+      // Brief 067: the hub asks its question first. Otherwise the parent
+      // can tap Join again.
+      if (e && e.data && e.data.needs_answer) showJoinQuestion(e.data.question, '');
     }
   });
 </script>
