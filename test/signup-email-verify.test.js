@@ -89,6 +89,14 @@ test('page: the code step, its ways forward, and the pending pick-up on load', (
   }
 });
 
+test('account state stays out of the evening-check prompt', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const fn = src.slice(src.indexOf('function buildParentPrompt('), src.indexOf('function normalizeParentResult('));
+  assert.match(fn, /delete promptProfile\.email_pending;/);
+  assert.match(fn, /JSON\.stringify\(promptProfile, null, 2\)/);
+  assert.ok(!/JSON\.stringify\(profile, null, 2\)/.test(fn), 'the raw profile is not sent');
+});
+
 test('signup email verification', { timeout: 120000 }, async (t) => {
   // A family that existed before Brief 073 (made straight in the store, the
   // way every older row looks), to prove it is grandfathered.
