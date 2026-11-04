@@ -157,9 +157,9 @@ test('the evening check is saved, served instantly, and goes stale on change', a
 
   await t.test('the page opens on the evening check for a family with a hub', () => {
     assert.ok(PAGE.includes('if (currentHubs.length) {\n      showView(\'evening\');\n      loadEveningHome();'), 'home is the evening check');
-    assert.ok(PAGE.includes("const res = await fetch('/api/parent/latest');"), 'saved check loads first');
+    assert.ok(PAGE.includes("withTimeout(fetch('/api/parent/latest')"), 'saved check loads first');
     assert.ok(PAGE.includes('if ((data.stale || !data.check) && visible) await runEveningCheck({ background: Boolean(data.check) });'),
-      'stale or missing checks refresh in the background');
+      'stale or missing checks refresh while Tonight is open');
     assert.ok(PAGE.indexOf('id="tabEvening"') < PAGE.indexOf('id="tabHubs"'), 'Tonight tab first');
   });
 });

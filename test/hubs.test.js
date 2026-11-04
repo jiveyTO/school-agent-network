@@ -181,8 +181,10 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     const info = await jf(`/api/join/${token}`);
     // Brief 067 adds the join question (never its answers), whether the
     // admin decides, and the admin's first name — public card fields only.
+    // Brief 068 adds every question's prompt and the belonging-check note.
     assert.deepEqual(Object.keys(info.data).sort(), [
       'admin_first_name',
+      'challenge_note',
       'has_question',
       'hub_name',
       'inviter_first_name',
@@ -190,6 +192,7 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
       'member_count',
       'needs_admin_ok',
       'question',
+      'questions',
     ]);
     assert.equal(info.data.hub_name, 'Test Hub Alpha — Maple Grove');
     assert.equal(info.data.inviter_first_name, 'Founder');

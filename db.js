@@ -786,6 +786,13 @@ async function initDb() {
   addColumnIfMissing('hubs', 'join_question', "join_question TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'join_answers', "join_answers TEXT DEFAULT ''");
   addColumnIfMissing('hubs', 'join_open', 'join_open INTEGER DEFAULT 0');
+  // Brief 068: up to three challenge questions, JSON [{ q, a: [hashes] }].
+  // A hub saved before this keeps its one question in join_question /
+  // join_answers, read as a list of one.
+  addColumnIfMissing('hubs', 'join_questions', "join_questions TEXT DEFAULT ''");
+  // Brief 068: why a family is asking (e.g. it couldn't answer the hub's
+  // questions), shown to the admin next to the request.
+  addColumnIfMissing('join_requests', 'note', "note TEXT DEFAULT ''");
   addColumnIfMissing('agent_tokens', 'via', "via TEXT DEFAULT ''");
   // Brief 067: an agent's request to join by invite, waiting for its
   // parent's approval. Only a hash of the agent's poll secret is kept; the
@@ -2437,16 +2444,24 @@ function revokeInvite(hubId, token) {
   persist();
 }
 
-function createJoinRequest(hubId, profileId) {
+function createJoinRequest(hubId, profileId, note) {
   const pending = one(
     "SELECT * FROM join_requests WHERE hub_id = ? AND profile_id = ? AND status = 'pending'",
     [hubId, profileId]
   );
-  if (pending) return pending;
+  const cleanNote = String(note || '').trim().slice(0, 200);
+  if (pending) {
+    if (cleanNote && !pending.note) {
+      run('UPDATE join_requests SET note = ? WHERE id = ?', [cleanNote, pending.id]);
+      persist();
+      return one('SELECT * FROM join_requests WHERE id = ?', [pending.id]);
+    }
+    return pending;
+  }
   const id = crypto.randomUUID();
   run(
-    'INSERT INTO join_requests (id, hub_id, profile_id, status, created_at, decided_by, decided_at) VALUES (?, ?, ?, ?, ?, NULL, NULL)',
-    [id, hubId, profileId, 'pending', new Date().toISOString()]
+    'INSERT INTO join_requests (id, hub_id, profile_id, status, created_at, decided_by, decided_at, note) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)',
+    [id, hubId, profileId, 'pending', new Date().toISOString(), cleanNote]
   );
   persist();
   return one('SELECT * FROM join_requests WHERE id = ?', [id]);
@@ -2458,12 +2473,12 @@ function createJoinRequest(hubId, profileId) {
 const JOIN_REQUEST_CAP = 20;
 const JOIN_REASK_MS = 24 * 60 * 60 * 1000;
 
-function requestToJoin(hubId, profileId) {
+function requestToJoin(hubId, profileId, note) {
   const pending = one(
     "SELECT * FROM join_requests WHERE hub_id = ? AND profile_id = ? AND status = 'pending'",
     [hubId, profileId]
   );
-  if (pending) return { request: pending };
+  if (pending) return { request: createJoinRequest(hubId, profileId, note) };
   const declined = one(
     "SELECT decided_at FROM join_requests WHERE hub_id = ? AND profile_id = ? AND status = 'declined' ORDER BY decided_at DESC LIMIT 1",
     [hubId, profileId]
@@ -2475,7 +2490,7 @@ function requestToJoin(hubId, profileId) {
   if (open && Number(open.n) >= JOIN_REQUEST_CAP) {
     return { error: 'This hub has too many families waiting right now. Please try again later.', status: 429 };
   }
-  return { request: createJoinRequest(hubId, profileId) };
+  return { request: createJoinRequest(hubId, profileId, note) };
 }
 
 function countPendingJoinRequests(hubId) {
@@ -2510,37 +2525,106 @@ function hashJoinAnswer(hubId, answer) {
   return crypto.createHash('sha256').update(String(hubId) + ':' + normalizeJoinAnswer(answer)).digest('hex');
 }
 
+// Brief 068: more forgiving matching on top of the 067 form — "&" reads as
+// "and", "St"/"Ste" as "Saint"/"Sainte", and a leading "the", "a" or "an"
+// is dropped ("The Riverside Tigers" = "riverside tigers"). Hashes
+// made this way carry a "v2:" prefix; 067 hashes keep matching as before.
+const JOIN_WORD_VARIANTS = { st: 'saint', ste: 'sainte' };
+function normalizeJoinAnswerV2(value) {
+  const words = normalizeJoinAnswer(String(value || '').replace(/&/g, ' and '))
+    .replace(/(\w)\s+s\b/g, '$1s')
+    .split(' ')
+    .filter(Boolean)
+    .map((w) => JOIN_WORD_VARIANTS[w] || w);
+  if (words.length > 1 && ['the', 'a', 'an'].includes(words[0])) words.shift();
+  return words.join(' ');
+}
+
+function hashJoinAnswerV2(hubId, answer) {
+  return 'v2:' + crypto.createHash('sha256').update(String(hubId) + ':v2:' + normalizeJoinAnswerV2(answer)).digest('hex');
+}
+
+function answerMatchesHashes(hubId, answer, hashes) {
+  if (!normalizeJoinAnswer(answer) || !Array.isArray(hashes)) return false;
+  return hashes.includes(hashJoinAnswerV2(hubId, answer)) || hashes.includes(hashJoinAnswer(hubId, answer));
+}
+
+const JOIN_QUESTION_MAX = 3;
+
+// The hub's questions as stored: [{ q, a: [hashes] }]. A hub saved by 067
+// has one question in the older columns.
+function storedJoinQuestions(row) {
+  if (!row) return [];
+  let list = [];
+  try { list = JSON.parse(row.join_questions || '[]'); } catch { list = []; }
+  if (Array.isArray(list) && list.length) {
+    return list
+      .filter((x) => x && String(x.q || '').trim() && Array.isArray(x.a) && x.a.length)
+      .slice(0, JOIN_QUESTION_MAX);
+  }
+  const q = String(row.join_question || '').trim();
+  let a = [];
+  try { a = JSON.parse(row.join_answers || '[]'); } catch { a = []; }
+  return q && Array.isArray(a) && a.length ? [{ q, a }] : [];
+}
+
+// What callers may see: prompts and counts, never the hashes. `question`
+// (the first prompt) stays for 067 clients.
 function getJoinSettings(hubId) {
   const row = getHubRow(hubId);
   if (!row) return null;
-  let answers = [];
-  try { answers = JSON.parse(row.join_answers || '[]'); } catch { answers = []; }
-  const question = String(row.join_question || '').trim();
+  const stored = storedJoinQuestions(row);
   return {
-    question,
-    has_question: Boolean(question && answers.length),
-    answer_count: answers.length,
+    question: stored.length ? stored[0].q : '',
+    questions: stored.map((x) => x.q),
+    question_count: stored.length,
+    has_question: stored.length > 0,
+    answer_count: stored.reduce((n, x) => n + x.a.length, 0),
+    answer_counts: stored.map((x) => x.a.length),
     open: Number(row.join_open) === 1,
   };
 }
 
-function setJoinQuestion(hubId, question, answers) {
-  const q = String(question || '').trim();
-  const list = (Array.isArray(answers) ? answers : [answers])
-    .map((a) => normalizeJoinAnswer(a))
-    .filter(Boolean);
-  if (!q) throw new Error('Write the question parents will see.');
-  if (q.length > 140) throw new Error('Keep the question under 140 characters.');
-  if (!list.length) throw new Error('Add at least one answer.');
-  if (list.length > 10) throw new Error('Keep it to 10 answers or fewer.');
-  const hashes = Array.from(new Set(list.map((a) => hashJoinAnswer(hubId, a))));
-  run('UPDATE hubs SET join_question = ?, join_answers = ? WHERE id = ?', [q, JSON.stringify(hashes), hubId]);
+function answerList(answers) {
+  const raw = Array.isArray(answers) ? answers : String(answers == null ? '' : answers).split('\n');
+  return raw.map((a) => String(a == null ? '' : a).trim()).filter((a) => normalizeJoinAnswer(a));
+}
+
+// Brief 068: save one to three questions. Each item is { question, answers,
+// from }. Answers are never sent back, so the editor can't resend them: an
+// item with no answers and `from` = the index of a saved question keeps
+// that question's saved answers (wording edits, reordering, removing one).
+function setJoinQuestions(hubId, items) {
+  const row = getHubRow(hubId);
+  const before = storedJoinQuestions(row);
+  const list = (Array.isArray(items) ? items : []).filter((it) => it && (String(it.question || '').trim() || answerList(it.answers).length));
+  if (!list.length) throw new Error('Write the question parents will see.');
+  if (list.length > JOIN_QUESTION_MAX) throw new Error('Keep it to ' + JOIN_QUESTION_MAX + ' questions or fewer.');
+  const saved = list.map((it) => {
+    const q = String(it.question || '').trim();
+    if (!q) throw new Error('Write the question parents will see.');
+    if (q.length > 140) throw new Error('Keep each question under 140 characters.');
+    const given = answerList(it.answers);
+    if (given.length > 10) throw new Error('Keep it to 10 answers or fewer for each question.');
+    let hashes;
+    const kept = Number.isInteger(it.from) ? before[it.from] : null;
+    if (given.length) hashes = Array.from(new Set(given.map((a) => hashJoinAnswerV2(hubId, a))));
+    else if (kept) hashes = kept.a;
+    else throw new Error(list.length > 1 ? 'Add at least one answer for each question.' : 'Add at least one answer.');
+    return { q, a: hashes };
+  });
+  run('UPDATE hubs SET join_questions = ?, join_question = ?, join_answers = ? WHERE id = ?',
+    [JSON.stringify(saved), saved[0].q, JSON.stringify(saved[0].a), hubId]);
   persist();
   return getJoinSettings(hubId);
 }
 
+function setJoinQuestion(hubId, question, answers) {
+  return setJoinQuestions(hubId, [{ question, answers }]);
+}
+
 function clearJoinQuestion(hubId) {
-  run("UPDATE hubs SET join_question = '', join_answers = '' WHERE id = ?", [hubId]);
+  run("UPDATE hubs SET join_question = '', join_answers = '', join_questions = '' WHERE id = ?", [hubId]);
   persist();
   return getJoinSettings(hubId);
 }
@@ -2551,12 +2635,16 @@ function setJoinOpen(hubId, open) {
   return getJoinSettings(hubId);
 }
 
+// Brief 068: every question must be answered, each against its own list.
+function checkJoinAnswers(hubId, answers) {
+  const stored = storedJoinQuestions(getHubRow(hubId));
+  if (!stored.length) return false;
+  const given = Array.isArray(answers) ? answers : [answers];
+  return stored.every((x, i) => answerMatchesHashes(hubId, given[i], x.a));
+}
+
 function checkJoinAnswer(hubId, answer) {
-  if (!normalizeJoinAnswer(answer)) return false;
-  const row = getHubRow(hubId);
-  let answers = [];
-  try { answers = JSON.parse((row && row.join_answers) || '[]'); } catch { answers = []; }
-  return answers.includes(hashJoinAnswer(hubId, answer));
+  return checkJoinAnswers(hubId, [answer]);
 }
 
 // Brief 067: an agent's request to join by invite. The parent approves at
@@ -2669,6 +2757,7 @@ function listJoinRequests(hubId) {
     created_at: r.created_at,
     decided_by: r.decided_by || '',
     decided_at: r.decided_at || '',
+    note: r.note || '',
     parent_name: r.parent_name || '',
     child_name: r.child_name || '',
   }));
@@ -2857,6 +2946,17 @@ function listEveningEmailProfiles() {
 function listFactRejections(materialId) {
   if (!materialId) return [];
   return all('SELECT fact_title, fact_detail, quote, reason, created_at FROM fact_rejections WHERE material_id = ? ORDER BY created_at ASC', [materialId]);
+}
+
+// Brief 068: how many notes each material in a hub produced, before any
+// family's grade/class filter — so a card can tell "nothing pulled out
+// yet" apart from "nothing for your family".
+function countFactsByMaterial(hubId) {
+  const out = {};
+  for (const r of all('SELECT material_id, COUNT(*) AS n FROM facts WHERE hub_id = ? GROUP BY material_id', [hubId])) {
+    if (r.material_id) out[r.material_id] = Number(r.n);
+  }
+  return out;
 }
 
 function listMaterials(hubId, profileId) {
@@ -3254,6 +3354,10 @@ module.exports = {
   collectAgentConnect,
   sweepAgentConnects,
   listJoinRequests,
+  countFactsByMaterial,
+  setJoinQuestions,
+  checkJoinAnswers,
+  normalizeJoinAnswerV2,
   decideJoinRequest,
   createMaterial,
   deleteMaterial,

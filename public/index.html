@@ -750,9 +750,11 @@
         <p id="joinText" style="margin-top:0">Loading your invitation…</p>
         <!-- Brief 067: a hub can ask a question only its parents would know. -->
         <div id="joinQuestion" hidden>
+          <p class="hint" id="joinChallengeNote" hidden></p>
           <label class="field"><span id="joinQuestionText">Answer the hub’s question</span>
             <input type="text" id="joinAnswerInput" autocomplete="off" maxlength="200">
           </label>
+          <div id="joinQuestionMore"></div>
         </div>
         <p class="hint" id="joinAdminNote" hidden></p>
         <button class="small-btn" id="joinAcceptBtn" type="button">Join this hub</button>
@@ -785,9 +787,11 @@
           <p class="hint">It will be able to act for your family in ParentLoop — add school notes and set your children’s grades. You can turn it off any time in My family → Agent access.</p>
           <p class="hint" id="approveAdminNote" hidden></p>
           <div id="approveQuestion" style="margin-top:14px" hidden>
+            <p class="hint" id="approveChallengeNote" hidden></p>
             <label class="field"><span id="approveQuestionText"></span>
               <input type="text" id="approveAnswerInput" autocomplete="off" maxlength="200">
             </label>
+            <div id="approveQuestionMore"></div>
           </div>
           <p class="share-row">
             <button class="small-btn" id="approveYesBtn" type="button">Approve</button>
@@ -948,15 +952,34 @@
         </div>
         <div class="hub-manage" id="hubManagePanel" hidden>
           <div id="hubJoinPanel" hidden>
-            <p class="hub-label">Join question</p>
-            <p class="hint" style="margin-top:0">Families who open an invite link answer this to join. Pick something every parent at the school knows but that isn’t on the school website — e.g. what the kids call the lunch supervisor, or the class pet’s name.</p>
+            <p class="hub-label">Join questions</p>
+            <p class="hint" style="margin-top:0">Families who open an invite link answer these to join — a belonging check, not a password. Ask one to three things every parent at the school knows but that isn’t on the school website — e.g. what the kids call the lunch supervisor, or the class pet’s name.</p>
             <p class="hint" id="hubJoinCurrent"></p>
-            <label class="field">Question
-              <input type="text" id="hubJoinQuestionInput" maxlength="140" autocomplete="off">
-            </label>
-            <label class="field">Accepted answers — one per line (capitals, spaces and punctuation don’t matter)
-              <textarea id="hubJoinAnswersInput" rows="3" autocomplete="off" placeholder="Saved answers stay hidden. Leave empty to keep them."></textarea>
-            </label>
+            <div class="join-q-row" data-join-q-row="0">
+              <label class="field">Question 1
+                <input type="text" id="hubJoinQuestionInput" class="join-q-input" maxlength="140" autocomplete="off">
+              </label>
+              <label class="field">Accepted answers — one per line (capitals, punctuation, “St.”/“Saint”, “&amp;”/“and” and a leading “the” don’t matter)
+                <textarea id="hubJoinAnswersInput" class="join-a-input" rows="3" autocomplete="off" placeholder="Saved answers stay hidden. Leave empty to keep them."></textarea>
+              </label>
+            </div>
+            <div class="join-q-row" data-join-q-row="1" hidden>
+              <label class="field">Question 2
+                <input type="text" class="join-q-input" maxlength="140" autocomplete="off">
+              </label>
+              <label class="field">Accepted answers — one per line
+                <textarea class="join-a-input" rows="3" autocomplete="off" placeholder="Saved answers stay hidden. Leave empty to keep them."></textarea>
+              </label>
+            </div>
+            <div class="join-q-row" data-join-q-row="2" hidden>
+              <label class="field">Question 3
+                <input type="text" class="join-q-input" maxlength="140" autocomplete="off">
+              </label>
+              <label class="field">Accepted answers — one per line
+                <textarea class="join-a-input" rows="3" autocomplete="off" placeholder="Saved answers stay hidden. Leave empty to keep them."></textarea>
+              </label>
+            </div>
+            <p style="margin:4px 0 8px"><button class="text-btn" id="hubJoinAddQuestionBtn" type="button">+ Add another question</button></p>
             <label class="evening-email-toggle"><input type="checkbox" id="hubJoinOpenInput"> Let anyone with a link join — no question, no OK from me</label>
             <p style="margin:12px 0 0">
               <button class="small-btn" id="hubJoinSaveBtn" type="button">Save</button>
@@ -1055,6 +1078,10 @@
               </p>
               <p class="hint" id="inviteCopyStatus"></p>
               <p class="hint">This link works for 7 days. Families answer your hub’s join question, or wait for your OK.</p>
+              <div class="invite-nudge" id="inviteNudge" hidden>
+                <p class="hint" style="margin:0">Add a challenge question so a forwarded link alone can’t join this hub.</p>
+                <p style="margin:6px 0 0"><button class="small-btn secondary" id="inviteNudgeBtn" type="button">Add a question</button></p>
+              </div>
             </div>
             <div id="hubRequests"></div>
             </div>
@@ -1423,9 +1450,38 @@
       '<span class="material-menu-list" role="menu" hidden>' + items.join('') + '</span></span>';
   }
 
+  // Brief 068: a material with no notes on this family's card is one of
+  // four things, and the card says which: still being read, read but every
+  // note is for other grades/classes, couldn't be read, or not broken into
+  // notes (yet). Only the last uses "not broken into notes".
+  const MATERIAL_READING_MS = 5 * 60 * 1000;
+  function materialEmptyKind(m) {
+    if (m.status === 'failed') return 'failed';
+    if (Number(m.fact_count) > 0) return 'scoped';
+    const age = Date.now() - Date.parse(m.created_at || '');
+    if (m.status === 'stored' && age >= 0 && age < MATERIAL_READING_MS) return 'reading';
+    return 'none';
+  }
+
+  function materialEmptyHtml(m, fileUrl) {
+    const kind = materialEmptyKind(m);
+    if (kind === 'failed') return '<p class="facts-empty">We couldn\'t pull any notes out of that one — try pasting it again.</p>';
+    if (kind === 'scoped') return '<p class="facts-empty">Everything in this one is for other grades or classes, so none of it is on your family’s list.</p>';
+    if (kind === 'reading') return '<p class="facts-empty">Still reading this one — its notes will show here in a moment.</p>';
+    // The original (file or full text) opens from the card's ⋯ menu, which
+    // sits in the title row (Brief 058: no loose buttons in the card body).
+    const what = m.has_file ? (m.kind === 'image' ? 'image' : 'PDF') : 'full text';
+    return '<p class="facts-empty">This one hasn’t been broken into notes yet. The original ' + what +
+      ' is in the ⋯ menu above.</p>';
+  }
+
   function materialStatusText(m, items) {
     if (!items.length) {
-      return m.status === 'failed' ? 'couldn’t be read' : 'nothing for your family in this one';
+      const kind = materialEmptyKind(m);
+      if (kind === 'failed') return 'couldn’t be read';
+      if (kind === 'reading') return 'reading…';
+      if (kind === 'scoped') return 'nothing for your family in this one';
+      return 'no notes yet';
     }
     let dates = 0;
     let todos = 0;
@@ -1506,9 +1562,7 @@
         body += '<p class="hint" style="margin:6px 0">Some items couldn\'t be verified against the original and were left out (' + esc(String(m.unverified_count)) + ').</p>';
       }
       if (!items.length) {
-        body += m.status === 'failed'
-          ? '<p class="facts-empty">We couldn\'t pull any notes out of that one — try pasting it again.</p>'
-          : '<p class="facts-empty">Nothing shared from this one yet.</p>';
+        body += materialEmptyHtml(m, fileUrl);
       } else {
         if (direct.length) {
           body += groupBulletList(direct, 'd' + (uid.count++));
@@ -1702,6 +1756,21 @@
       });
     });
     paintGroupsToggle();
+    scheduleReadingRefresh(materials);
+  }
+
+  // Brief 068: while a material is still being read (another parent just
+  // added it), look again shortly so its notes appear without a reload.
+  let readingRefreshTimer = null;
+  function scheduleReadingRefresh(materials) {
+    if (readingRefreshTimer) clearTimeout(readingRefreshTimer);
+    readingRefreshTimer = null;
+    const reading = (materials || []).some(function (m) { return materialEmptyKind(m) === 'reading'; });
+    if (!reading) return;
+    const hubId = currentHubId;
+    readingRefreshTimer = setTimeout(function () {
+      if (currentHubId === hubId && !document.getElementById('viewHub').hidden) loadHubDetail(hubId);
+    }, 6000);
   }
 
   function friendlyTime(at) {
@@ -2814,7 +2883,8 @@
         document.getElementById('hubRequests').innerHTML = pending.length
           ? '<p><b>Parents asking to join</b></p>' + pending.map(function (r) {
               return '<div class="card" style="margin-bottom:10px"><p style="margin:0">' + esc(r.parent_name) +
-                ' would like to join.</p><p style="margin-top:8px">' +
+                ' would like to join.</p>' + (r.note ? '<p class="hint" style="margin:4px 0 0">' + esc(r.note) + '</p>' : '') +
+                '<p style="margin-top:8px">' +
                 '<button class="small-btn" type="button" data-approve="' + esc(r.id) + '">Approve</button> ' +
                 '<button class="small-btn secondary" type="button" data-decline="' + esc(r.id) + '">Decline</button></p></div>';
             }).join('')
@@ -2880,14 +2950,23 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Couldn’t load the join settings.');
       const s = data.settings || {};
-      document.getElementById('hubJoinQuestionInput').value = s.question || '';
-      document.getElementById('hubJoinAnswersInput').value = '';
+      // Brief 068: up to three questions. Each row remembers which saved
+      // question it shows, so saving without answers keeps that question's.
+      const saved = challengePrompts(s);
+      hubJoinSavedCount = saved.length;
+      document.querySelectorAll('[data-join-q-row]').forEach(function (row, i) {
+        row.querySelector('.join-q-input').value = saved[i] || '';
+        row.querySelector('.join-a-input').value = '';
+        row.hidden = i > 0 && i >= saved.length;
+      });
+      syncAddQuestionBtn();
       document.getElementById('hubJoinOpenInput').checked = Boolean(s.open);
       document.getElementById('hubJoinClearBtn').hidden = !s.has_question;
       document.getElementById('hubJoinCurrent').textContent = s.open
         ? 'Right now anyone with a link joins straight away.'
         : s.has_question
-          ? 'Families answer “' + s.question + '” to join (' + s.answer_count + (s.answer_count === 1 ? ' answer' : ' answers') + ' saved). Three wrong tries and they ask you instead.'
+          ? 'Families answer ' + (saved.length === 1 ? 'this question' : 'these ' + saved.length + ' questions') +
+            ' to join (' + s.answer_count + (s.answer_count === 1 ? ' answer' : ' answers') + ' saved). Three wrong tries and they ask you instead.'
           : 'No question yet — families who open a link wait for your OK.';
       renderHubInviteLinks(data.invites || []);
     } catch (e) {
@@ -2948,18 +3027,42 @@
     loadHubJoinSettings();
   });
 
+  let hubJoinSavedCount = 0;
+
+  function syncAddQuestionBtn() {
+    const rows = document.querySelectorAll('[data-join-q-row]');
+    const hiddenRows = Array.prototype.filter.call(rows, function (r) { return r.hidden; });
+    document.getElementById('hubJoinAddQuestionBtn').hidden = !hiddenRows.length;
+  }
+
+  document.getElementById('hubJoinAddQuestionBtn').addEventListener('click', function () {
+    const next = Array.prototype.filter.call(document.querySelectorAll('[data-join-q-row]'), function (r) { return r.hidden; })[0];
+    if (!next) return;
+    next.hidden = false;
+    next.querySelector('.join-q-input').focus();
+    syncAddQuestionBtn();
+  });
+
   document.getElementById('hubJoinSaveBtn').addEventListener('click', function () {
-    const question = document.getElementById('hubJoinQuestionInput').value.trim();
-    const answers = document.getElementById('hubJoinAnswersInput').value.split('\n')
-      .map(function (a) { return a.trim(); }).filter(Boolean);
     const body = { open: document.getElementById('hubJoinOpenInput').checked };
-    if (answers.length) {
-      body.question = question;
-      body.answers = answers;
-    } else if (question && document.getElementById('hubJoinClearBtn').hidden) {
-      document.getElementById('hubJoinStatus').textContent = 'Add at least one answer.';
+    const questions = [];
+    let missing = false;
+    document.querySelectorAll('[data-join-q-row]').forEach(function (row, i) {
+      const question = row.querySelector('.join-q-input').value.trim();
+      const answers = row.querySelector('.join-a-input').value.split('\n')
+        .map(function (a) { return a.trim(); }).filter(Boolean);
+      if (!question) return;
+      const item = { question: question, answers: answers };
+      if (i < hubJoinSavedCount) item.from = i;
+      else if (!answers.length) missing = true;
+      questions.push(item);
+    });
+    if (missing) {
+      document.getElementById('hubJoinStatus').textContent = 'Add at least one answer for each new question.';
       return;
     }
+    if (questions.length) body.questions = questions;
+    else if (hubJoinSavedCount) body.clear_question = true;
     saveHubJoinSettings(body);
   });
 
@@ -2968,6 +3071,13 @@
   });
 
   document.getElementById('hubJoinDoneBtn').addEventListener('click', closeHubManage);
+
+  document.getElementById('inviteNudgeBtn').addEventListener('click', function () {
+    document.getElementById('inviteNudge').hidden = true;
+    openHubManageSection('hubJoinPanel');
+    loadHubJoinSettings();
+    document.getElementById('hubManagePanel').scrollIntoView({ block: 'start' });
+  });
   document.getElementById('hubLinksDoneBtn').addEventListener('click', closeHubManage);
 
   document.getElementById('hubMenuBtn').addEventListener('click', function (e) {
@@ -3032,7 +3142,8 @@
   // detour finishes — the parent never taps Join a second time.
   async function acceptPendingJoin(token, answer) {
     joinToken = token;
-    const accepted = await postJson('/api/join/' + encodeURIComponent(token) + '/accept', answer ? { answer: answer } : {});
+    const body = Array.isArray(answer) ? { answers: answer } : (answer ? { answer: answer } : {});
+    const accepted = await postJson('/api/join/' + encodeURIComponent(token) + '/accept', body);
     try { sessionStorage.removeItem('pendingJoinToken'); } catch (e) {}
     // Brief 067: the hub admin lets this family in later.
     if (accepted.status === 'pending_approval') {
@@ -3045,18 +3156,46 @@
     return accepted;
   }
 
+  // Brief 068: a hub asks one to three questions. The server sends only the
+  // prompts (`questions`; 067 sent one `question`), never an answer.
+  function challengePrompts(data) {
+    if (data && Array.isArray(data.questions) && data.questions.length) return data.questions;
+    return data && data.question ? [data.question] : [];
+  }
+
+  // One input per question: the first keeps its 067 id, the rest are drawn
+  // into the "...QuestionMore" box. Inputs start empty every time.
+  function renderChallengeFields(prefix, data) {
+    const prompts = challengePrompts(data);
+    document.getElementById(prefix + 'QuestionText').textContent = prompts[0] || 'Answer the hub’s question';
+    document.getElementById(prefix + 'AnswerInput').value = '';
+    document.getElementById(prefix + 'QuestionMore').innerHTML = prompts.slice(1).map(function (q) {
+      return '<label class="field"><span>' + esc(q) + '</span>' +
+        '<input type="text" class="challenge-answer" autocomplete="off" maxlength="200"></label>';
+    }).join('');
+    const note = document.getElementById(prefix + 'ChallengeNote');
+    note.textContent = (data && data.challenge_note) || '';
+    note.hidden = !note.textContent;
+  }
+
+  function collectChallengeAnswers(prefix) {
+    const out = [document.getElementById(prefix + 'AnswerInput').value];
+    document.getElementById(prefix + 'QuestionMore').querySelectorAll('.challenge-answer').forEach(function (el) {
+      out.push(el.value);
+    });
+    return out;
+  }
+
   // Brief 067: the hub's join question on the join card, wherever the saved
   // invite was picked back up (the link itself, or after sign-in/setup).
-  function showJoinQuestion(question, message) {
+  function showJoinQuestion(data, message) {
     showJoin();
     document.getElementById('joinChoice').hidden = true;
     document.getElementById('joinQuestion').hidden = false;
-    document.getElementById('joinQuestionText').textContent = question || 'Answer the hub’s question';
+    renderChallengeFields('join', data);
     document.getElementById('joinAcceptBtn').hidden = false;
     document.getElementById('joinStatus').textContent = message || '';
-    const input = document.getElementById('joinAnswerInput');
-    input.value = '';
-    input.focus();
+    document.getElementById('joinAnswerInput').focus();
   }
 
   function showJoinPending(message) {
@@ -3141,7 +3280,7 @@
       adminNote.hidden = !data.needs_admin_ok;
       adminNote.textContent = (data.admin_first_name || 'The hub admin') + ' will be asked to let your family in.';
       document.getElementById('approveQuestion').hidden = !data.has_question;
-      document.getElementById('approveQuestionText').textContent = data.question || '';
+      renderChallengeFields('approve', data);
     } catch (e) {
       showApproveDone(e.message);
     }
@@ -3156,7 +3295,7 @@
     try {
       const questionShown = !document.getElementById('approveQuestion').hidden;
       const data = await postJson('/api/agent-connect/' + encodeURIComponent(approveId) + '/approve',
-        questionShown ? { answer: document.getElementById('approveAnswerInput').value } : {});
+        questionShown ? { answers: collectChallengeAnswers('approve') } : {});
       const agent = data.agent_name || 'Your agent';
       showApproveDone(data.membership === 'member'
         ? 'Done — your family is in ' + data.hub.name + '. ' + agent + ' can take it from here.'
@@ -3169,9 +3308,8 @@
       }
       status.textContent = e.message;
       if (e && e.data && e.data.wrong_answer) {
-        const input = document.getElementById('approveAnswerInput');
-        input.value = '';
-        input.focus();
+        renderChallengeFields('approve', e.data);
+        document.getElementById('approveAnswerInput').focus();
       }
     } finally {
       btn.disabled = false;
@@ -3202,7 +3340,7 @@
       document.getElementById('joinChoice').hidden = true;
       // Brief 067: the hub's question, or a note that the admin decides.
       document.getElementById('joinQuestion').hidden = !data.has_question;
-      document.getElementById('joinQuestionText').textContent = data.question || '';
+      renderChallengeFields('join', data);
       const adminNote = document.getElementById('joinAdminNote');
       adminNote.hidden = !data.needs_admin_ok;
       adminNote.textContent = 'Joining sends a request — ' + (data.admin_first_name || 'the hub admin') + ' will let you in.';
@@ -3335,6 +3473,22 @@
   // retry. Other POSTs (Add material, placements, invites) stay
   // single-attempt: a dropped response can mean the server already saved,
   // and retrying could double-add.
+  // Brief 068: Tonight never waits forever. The saved-check read gives up
+  // after 15s and a run after 150s; either way the page says so and offers
+  // Try again (a run that finishes later still saves on the server).
+  const EVENING_LATEST_TIMEOUT_MS = 15000;
+  const EVENING_RUN_TIMEOUT_MS = 150000;
+
+  function withTimeout(promise, ms, message) {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise(function (resolve, reject) {
+        timer = setTimeout(function () { reject(new Error(message)); }, ms);
+      }),
+    ]).finally(function () { clearTimeout(timer); });
+  }
+
   async function fetchWithEveningRetry(url, options, delayMs) {
     try {
       return await fetch(url, options);
@@ -3371,7 +3525,8 @@
       // silent retry: no error card, no flicker, no new copy. A retry
       // success renders exactly like a first-try success; a second
       // network failure falls into the existing failure card below.
-      const res = await fetchWithEveningRetry('/api/parent/run', { method: 'POST' });
+      const res = await withTimeout(fetchWithEveningRetry('/api/parent/run', { method: 'POST' }),
+        EVENING_RUN_TIMEOUT_MS, 'Tonight’s check is taking too long.');
       const data = await res.json();
       renderParentLogs(data.logs || []);
       if (!data.ok) {
@@ -3483,12 +3638,19 @@
   // Home screen: show the saved check at once, then refresh it in the
   // background when it is stale (new notes, placements, or a new day) or
   // when there is none yet — no button press, no blank screen.
+  //
+  // Brief 068: a just-joined family lands on its hub, so its first check
+  // used to wait on a Tonight that already said "Loading…" and never ran.
+  // Now a hidden Tonight says the check runs when it is opened, an open one
+  // runs it, and a read that fails or takes over 15s says so (the Run
+  // button retries) — never "Loading…" forever.
   let eveningLoading = false;
   async function loadEveningHome() {
     if (eveningLoading || parentRunBtn.disabled) return;
     eveningLoading = true;
     try {
-      const res = await fetch('/api/parent/latest');
+      const res = await withTimeout(fetch('/api/parent/latest'), EVENING_LATEST_TIMEOUT_MS,
+        'Tonight’s check is taking too long to load.');
       const data = await res.json();
       if (!res.ok || !data.ok) {
         showEveningPlaceholder('We couldn’t load tonight’s check. Tap “Run my evening check” to try again.');
@@ -3570,7 +3732,7 @@
           return;
         } catch (e) {
           if (e && e.data && e.data.needs_answer) {
-            showJoinQuestion(e.data.question, '');
+            showJoinQuestion(e.data, '');
             return;
           }
           // Fall through to the normal next steps.
@@ -4176,6 +4338,9 @@
       document.getElementById('inviteWhatsApp').href =
         'https://wa.me/?text=' + encodeURIComponent(message);
       document.getElementById('inviteCopyStatus').textContent = '';
+      // Brief 068: no challenge question yet — say so once, here, and offer
+      // the editor. Sharing still works.
+      document.getElementById('inviteNudge').hidden = !(data.can_set_question && !data.has_question);
       document.getElementById('inviteShare').hidden = false;
     } catch (e) {
       out.textContent = e.message;
@@ -4200,7 +4365,7 @@
     btn.disabled = true;
     try {
       const questionShown = !document.getElementById('joinQuestion').hidden;
-      await acceptPendingJoin(joinToken, questionShown ? document.getElementById('joinAnswerInput').value : '');
+      await acceptPendingJoin(joinToken, questionShown ? collectChallengeAnswers('join') : '');
     } catch (e) {
       if (e && e.data && e.data.needsAccountChoice) {
         // Demo viewer (or no family yet): ask the account question next.
@@ -4208,7 +4373,7 @@
         stashPendingJoin(joinToken);
         showJoinChoice(e.data);
       } else if (e && e.data && e.data.needs_answer) {
-        showJoinQuestion(e.data.question, e.data.wrong_answer ? e.message : '');
+        showJoinQuestion(e.data, e.data.wrong_answer ? e.message : '');
       } else {
         statusEl.textContent = (e && e.message) || 'Something went wrong. Please try again.';
       }
@@ -4242,7 +4407,7 @@
     } catch (e) {
       // Brief 067: the hub asks its question first. Otherwise the parent
       // can tap Join again.
-      if (e && e.data && e.data.needs_answer) showJoinQuestion(e.data.question, '');
+      if (e && e.data && e.data.needs_answer) showJoinQuestion(e.data, '');
     }
   });
 </script>

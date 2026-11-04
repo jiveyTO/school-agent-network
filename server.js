@@ -2368,7 +2368,26 @@ function linkJoinsOpen(hubId, settings) {
   return Boolean((settings && settings.open) || (hub && hub.is_demo));
 }
 
+// Brief 068: the answers a join request carries, one per question. A 067
+// client sends a single `answer`; a newer one sends `answers`.
+function joinAnswersFrom(body) {
+  if (!body) return [];
+  if (Array.isArray(body.answers)) return body.answers.map((a) => String(a == null ? '' : a));
+  return body.answer === undefined ? [] : [String(body.answer == null ? '' : body.answer)];
+}
+
+// Brief 068: a belonging check, not a password. Shown on the join card.
+const JOIN_CHALLENGE_NOTE_SCHOOL = 'A couple of quick questions only parents from this school would know, so a forwarded link alone can’t join.';
+const JOIN_CHALLENGE_NOTE_OTHER = 'A couple of quick questions only families in this group would know, so a forwarded link alone can’t join.';
+const JOIN_WRONG_NOTE = 'Couldn’t answer the hub’s questions.';
+
+function joinChallengeNote(hubId) {
+  const hub = store.getHub(hubId);
+  return hub && hub.kind === 'school' ? JOIN_CHALLENGE_NOTE_SCHOOL : JOIN_CHALLENGE_NOTE_OTHER;
+}
+
 // Decides one family's join through an invite. Returns { status, body }.
+// `answer` is one answer (067) or a list, one per question (068).
 function joinByLink(info, profile, answer, via, ip) {
   const hub = { id: info.hub_id, name: info.hub_name };
   if (store.isMember(info.hub_id, profile.id)) {
@@ -2378,8 +2397,8 @@ function joinByLink(info, profile, answer, via, ip) {
     store.addMember(info.hub_id, profile.id, 'member', via);
     return { status: 200, body: { ok: true, membership: 'member', hub: store.getHub(info.hub_id) } };
   };
-  const askAdmin = (lead) => {
-    const asked = store.requestToJoin(info.hub_id, profile.id);
+  const askAdmin = (lead, note) => {
+    const asked = store.requestToJoin(info.hub_id, profile.id, note || '');
     if (asked.error) return { status: asked.status, body: { error: asked.error } };
     const admin = hubAdminFirstName(info.hub_id);
     return {
@@ -2398,22 +2417,42 @@ function joinByLink(info, profile, answer, via, ip) {
   if (linkJoinsOpen(info.hub_id, settings)) return admit();
   if (!settings.has_question) return askAdmin('');
   const familyKey = info.hub_id + ':' + profile.id;
-  if (recentCount(joinWrongByFamily, familyKey, DAY_MS) >= JOIN_WRONG_LIMIT) return askAdmin('');
-  const given = String(answer || '').trim();
-  if (!given) {
-    return { status: 409, body: { error: 'Answer the hub’s question to join.', needs_answer: true, question: settings.question } };
+  if (recentCount(joinWrongByFamily, familyKey, DAY_MS) >= JOIN_WRONG_LIMIT) return askAdmin('', JOIN_WRONG_NOTE);
+  // Only the prompts ever leave the server — never an accepted answer.
+  const prompts = {
+    question: settings.question,
+    questions: settings.questions,
+    challenge_note: joinChallengeNote(info.hub_id),
+  };
+  const given = (Array.isArray(answer) ? answer : [answer]).map((a) => String(a == null ? '' : a).trim());
+  if (settings.questions.some((q, i) => !given[i])) {
+    return {
+      status: 409,
+      body: {
+        error: settings.questions.length > 1 ? 'Answer the hub’s questions to join.' : 'Answer the hub’s question to join.',
+        needs_answer: true,
+        ...prompts,
+      },
+    };
   }
   if (ip && recentCount(joinWrongByIp, ip, HOUR_MS) >= 10) {
     return { status: 429, body: { error: 'Too many tries. Please wait a while and try again.' } };
   }
-  if (store.checkJoinAnswer(info.hub_id, given)) return admit();
+  if (store.checkJoinAnswers(info.hub_id, given)) return admit();
   bumpCount(joinWrongByFamily, familyKey);
   if (ip) bumpCount(joinWrongByIp, ip);
   const triesLeft = JOIN_WRONG_LIMIT - recentCount(joinWrongByFamily, familyKey, DAY_MS);
-  if (triesLeft <= 0) return askAdmin('That’s not it.');
+  if (triesLeft <= 0) return askAdmin('That doesn’t match.', JOIN_WRONG_NOTE);
+  // Generic on purpose: which answer missed is never said.
   return {
     status: 400,
-    body: { error: 'That’s not it — try again.', wrong_answer: true, needs_answer: true, question: settings.question, tries_left: triesLeft },
+    body: {
+      error: 'That doesn’t match — ' + triesLeft + (triesLeft === 1 ? ' try' : ' tries') + ' left.',
+      wrong_answer: true,
+      needs_answer: true,
+      ...prompts,
+      tries_left: triesLeft,
+    },
   };
 }
 
@@ -3631,6 +3670,8 @@ const server = http.createServer(async (req, res) => {
         expires_at: row.expires_at,
         has_question: Boolean(settings.has_question),
         question: settings.has_question ? settings.question : '',
+        questions: settings.has_question ? settings.questions : [],
+        challenge_note: settings.has_question ? joinChallengeNote(row.hub_id) : '',
         needs_admin_ok: !linkJoinsOpen(row.hub_id, settings) && !settings.has_question,
         admin_first_name: hubRow ? hubAdminFirstName(row.hub_id) : '',
         membership: row.membership || '',
@@ -3678,7 +3719,7 @@ const server = http.createServer(async (req, res) => {
       const info = store.getInvite(row.invite_token);
       let outcome;
       try {
-        outcome = joinByLink(info, own, body.answer, 'via agent: ' + row.agent_name, clientIp(req));
+        outcome = joinByLink(info, own, joinAnswersFrom(body), 'via agent: ' + row.agent_name, clientIp(req));
       } catch (err) {
         sendJson(res, 403, { error: err && err.message ? err.message : String(err) });
         return;
@@ -3714,6 +3755,7 @@ const server = http.createServer(async (req, res) => {
         const body = await readJsonBody(req);
         try {
           if (body.clear_question) store.clearJoinQuestion(hub.id);
+          else if (Array.isArray(body.questions)) store.setJoinQuestions(hub.id, body.questions);
           else if (body.question !== undefined || body.answers !== undefined) store.setJoinQuestion(hub.id, body.question, body.answers);
           if (body.open !== undefined) store.setJoinOpen(hub.id, Boolean(body.open));
         } catch (err) {
@@ -3929,6 +3971,7 @@ const server = http.createServer(async (req, res) => {
       const contacts = store.listHubContacts(hub.id);
       const contactNames = contacts.map((c) => c.parent_name);
       const contactLine = contactNames.join(', ');
+      const factCounts = store.countFactsByMaterial(hub.id);
       sendJson(res, 200, {
         hub: { ...hub, role: store.getMemberRole(hub.id, actor.id), member_count: members.length },
         facts: store.listFacts(hub.id, actor.id),
@@ -3936,6 +3979,7 @@ const server = http.createServer(async (req, res) => {
           const { uploaded_by, ...rest } = m;
           return {
             ...rest,
+            fact_count: factCounts[m.id] || 0,
             can_remove: Boolean(
               !hub.is_demo && (uploaded_by === actor.id || store.getMemberRole(hub.id, actor.id) === 'admin')
             ),
@@ -4275,7 +4319,14 @@ const server = http.createServer(async (req, res) => {
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can invite parents.' }); return; }
       const token = store.createInvite(hub.id, actor.id);
-      sendJson(res, 200, { ok: true, token, path: `/join/${token}`, url: `/join/${token}` });
+      // Brief 068: a hub with no challenge question gets a nudge in the
+      // share box, for whoever can add one (the hub's admins).
+      const joinSettings = store.getJoinSettings(hub.id) || {};
+      sendJson(res, 200, {
+        ok: true, token, path: `/join/${token}`, url: `/join/${token}`,
+        has_question: Boolean(joinSettings.has_question),
+        can_set_question: !hub.is_demo && store.getMemberRole(hub.id, actor.id) === 'admin',
+      });
       return;
     }
     if (req.method === 'POST' && hubInviteRevokeMatch) {
@@ -4303,6 +4354,8 @@ const server = http.createServer(async (req, res) => {
         member_count: info.member_count,
         has_question: settings.has_question,
         question: settings.has_question ? settings.question : '',
+        questions: settings.has_question ? settings.questions : [],
+        challenge_note: settings.has_question ? joinChallengeNote(info.hub_id) : '',
         needs_admin_ok: !linkJoinsOpen(info.hub_id, settings) && !settings.has_question,
         admin_first_name: hubAdminFirstName(info.hub_id),
       });
@@ -4338,7 +4391,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req).catch(() => ({}));
       let outcome;
       try {
-        outcome = joinByLink(info, own, body.answer,
+        outcome = joinByLink(info, own, joinAnswersFrom(body),
           bearerAuth ? 'via agent: ' + bearerAuth.token.name : 'invite', clientIp(req));
       } catch (err) {
         sendJson(res, 403, { error: err && err.message ? err.message : String(err) });

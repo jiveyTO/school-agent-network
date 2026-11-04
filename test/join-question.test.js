@@ -178,7 +178,7 @@ test('joining by invite: question, admin OK, open links, expiry messages, limits
     assert.equal((await wes.post(`/api/join/${token}/accept`, { answer: 'nope' })).data.tries_left, 1);
     const w3 = await wes.post(`/api/join/${token}/accept`, { answer: 'still no' });
     assert.equal(w3.res.status, 202, 'the third miss becomes a request, not a lockout');
-    assert.match(w3.data.message, /That’s not it\. We’ve asked Founder to let you in\./);
+    assert.match(w3.data.message, /That doesn’t match\. We’ve asked Founder to let you in\./);
     const w4 = await wes.post(`/api/join/${token}/accept`, { answer: 'marigold' });
     assert.equal(w4.res.status, 202, 'after three misses the admin decides, even with the right answer');
   });
