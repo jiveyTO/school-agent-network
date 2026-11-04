@@ -100,7 +100,9 @@ test('hub detail renders one source card per material with flat facts inside', (
   }
   assert.ok(PAGE.includes('Added ') && PAGE.includes('materialStatusText(m, items)'),
     'card header shows when it was added and what it gave the family');
-  assert.ok(PAGE.includes('Nothing shared from this one yet.'));
+  // Brief 068: an empty card says which case it is; "nothing shared" is gone.
+  assert.ok(PAGE.includes('This one hasn’t been broken into notes yet.'));
+  assert.ok(!PAGE.includes('Nothing shared from this one yet.'));
 });
 
 test('single-group material renders facts flat: no nested card, no repeated title', () => {
