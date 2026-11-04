@@ -46,6 +46,8 @@ function makeClient(bearer) {
   }
   return {
     post: (p, body) => req(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }),
+    patch: (p, body) => req(p, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }),
+    del: (p) => req(p, { method: 'DELETE' }),
     get: (p) => req(p),
   };
 }
@@ -222,14 +224,51 @@ test('agents feed the hub: email kind, idempotent adds', async (t) => {
   await t.test('the manifest tells agents how to keep the hub fed', async () => {
     const manifest = (await makeClient().get('/api/agent')).data;
     const feed = manifest.keep_hub_fed;
-    assert.ok(Array.isArray(feed) && feed.length === 4, 'four-point section');
+    assert.ok(Array.isArray(feed) && feed.length === 5, 'five-point section');
     const text = feed.join(' ');
     assert.match(text, /mailbox/);
     assert.match(text, /own child specifically stays out/);
     assert.match(text, /duplicate: true/);
     assert.match(text, /materials first/);
+    assert.match(text, /Keep it tidy/);
     const add = manifest.endpoints.find((e) => e.name === 'add material');
     assert.equal(add.email_body.kind, 'email');
     assert.match(add.description, /idempotent/);
+    const rename = manifest.endpoints.find((e) => e.name === 'rename material');
+    assert.equal(rename.method, 'PATCH');
+    assert.equal(rename.path, '/api/hubs/{hub_id}/materials/{material_id}');
+    assert.equal(rename.auth, 'Bearer agent token');
+    const remove = manifest.endpoints.find((e) => e.name === 'remove material');
+    assert.equal(remove.method, 'DELETE');
+    assert.equal(remove.path, '/api/hubs/{hub_id}/materials/{material_id}');
+    assert.equal(remove.auth, 'Bearer agent token');
+  });
+
+  await t.test('an agent renames and removes material its family added; another family\'s token cannot', async () => {
+    const other = makeClient();
+    await other.post('/api/profile', { parent_name: 'Other Parent', parent_email: 'other.parent@example.com', children: [{ name: 'Other Kid' }] });
+    await other.post('/api/auth/test-complete', { sub: 'other-parent-sub', email: 'other.parent@example.com' });
+    const otherToken = (await other.post('/api/agent-tokens', { name: 'Other helper' })).data.token;
+    const stranger = makeClient(otherToken);
+    const target = (await materialsInHub()).find((m) => m.title === 'Family Skate Night');
+    assert.ok(target, 'the skate email is in the hub');
+
+    const refused = await stranger.patch(`/api/hubs/${hubId}/materials/${target.id}`, { title: 'Nope' });
+    assert.equal(refused.res.status, 403, 'not a member of this hub');
+    assert.equal((await stranger.del(`/api/hubs/${hubId}/materials/${target.id}`)).res.status, 403);
+
+    const renamed = await agent.patch(`/api/hubs/${hubId}/materials/${target.id}`, { title: 'Skate Night — Nov 21' });
+    assert.equal(renamed.res.status, 200, renamed.text.slice(0, 300));
+    assert.equal(renamed.data.material.title, 'Skate Night — Nov 21');
+    assert.ok((await materialsInHub()).some((m) => m.id === target.id && m.title === 'Skate Night — Nov 21'));
+
+    const before = (await materialsInHub()).length;
+    const removed = await agent.del(`/api/hubs/${hubId}/materials/${target.id}`);
+    assert.equal(removed.res.status, 200, removed.text.slice(0, 300));
+    const after = await materialsInHub();
+    assert.equal(after.length, before - 1);
+    assert.ok(!after.some((m) => m.id === target.id), 'gone from the hub');
+    const facts = (await parent.get(`/api/hubs/${hubId}`)).data.facts;
+    assert.ok(!facts.some((f) => f.material_id === target.id), 'its notes went with it');
   });
 });
