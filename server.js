@@ -2502,6 +2502,7 @@ const server = http.createServer(async (req, res) => {
     // parent can get back; revoking stays available to the owning
     // session either way, so access can always be cut off.
     const agentRevokeMatch = url.pathname.match(/^\/api\/agent-tokens\/([^/]+)\/revoke$/);
+    const agentDeleteMatch = url.pathname.match(/^\/api\/agent-tokens\/([^/]+)$/);
     if (req.method === 'GET' && url.pathname === '/api/agent-tokens') {
       if (bearerAuth) { sendJson(res, 403, { error: AGENT_TOKEN_MANAGE_403 }); return; }
       const own = store.getSessionOwnProfile(session);
@@ -2544,6 +2545,18 @@ const server = http.createServer(async (req, res) => {
       const updated = store.revokeAgentToken(own.id, decodeURIComponent(agentRevokeMatch[1]));
       if (!updated) { sendJson(res, 404, { error: 'That token could not be found.' }); return; }
       sendJson(res, 200, { ok: true, agent_token: updated, tokens: store.listAgentTokens(own.id) });
+      return;
+    }
+    // A revoked token can be deleted from the list for good; an active one
+    // must be revoked first.
+    if (req.method === 'DELETE' && agentDeleteMatch) {
+      if (bearerAuth) { sendJson(res, 403, { error: AGENT_TOKEN_MANAGE_403 }); return; }
+      const own = store.getSessionOwnProfile(session);
+      if (!own || own.is_demo) { sendJson(res, 403, { error: 'Switch to your own family first, then manage agent access.' }); return; }
+      const outcome = store.deleteAgentToken(own.id, decodeURIComponent(agentDeleteMatch[1]));
+      if (!outcome) { sendJson(res, 404, { error: 'That token could not be found.' }); return; }
+      if (outcome === 'active') { sendJson(res, 409, { error: 'Revoke this token first, then you can delete it.' }); return; }
+      sendJson(res, 200, { ok: true, tokens: store.listAgentTokens(own.id) });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/sources') {
