@@ -54,6 +54,20 @@ const DURABLE_RETRY_MAX_MS = 5 * 60 * 1000;
 const DURABLE_RETRY_MAX_ATTEMPTS = 8;
 let durableDirty = false;
 let durableUploadTimer = null;
+// Bumped by every persist. An upload clears durableDirty only when no write
+// landed while it was in flight, so a mid-upload write is never forgotten.
+let durableWriteSeq = 0;
+// The upload in flight, if any. Uploads never overlap: two in flight on the
+// same generation would make the second fail with HTTP 412 and disable
+// write-back for the rest of the boot.
+let durableInFlight = null;
+// Transfer budget grows with the file: 30 s plus 10 s per MB, capped at
+// 5 min. A fixed 30 s upload limit timed out on the 18.8 MB database
+// (revision 00084, 2026-11-04).
+function durableTransferTimeoutMs(bytes) {
+  const mb = Math.ceil(Math.max(0, Number(bytes) || 0) / (1024 * 1024));
+  return Math.min(30000 + mb * 10000, 5 * 60 * 1000);
+}
 let durableRetryAttempt = 0;
 // MD5s (base64, as GCS reports them) of the bytes sent by uploads that threw
 // since the last confirmed one. A timed-out upload may still have landed; the
@@ -188,7 +202,7 @@ async function restoreDurableStore() {
     }
     const res = await fetch(cfg.endpoint + objectPath + '?alt=media', {
       headers,
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(Math.max(15000, durableTransferTimeoutMs(durableRemoteSize))),
     });
     if (res.status === 404) {
       durableRestoreOutcome = 'absent';
@@ -259,7 +273,7 @@ async function durableUploadFromFile() {
       method: 'POST',
       headers,
       body,
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(durableTransferTimeoutMs(body.length)),
     });
   } catch (err) {
     durableUnconfirmedMd5s.add(crypto.createHash('md5').update(body).digest('base64'));
@@ -335,8 +349,13 @@ function scheduleDurableRetry() {
 
 function scheduleDurableUpload() {
   if (!durableConfig()) return;
+  durableWriteSeq += 1;
   durableDirty = true;
   if (durableUploadTimer) return;
+  scheduleDurableUploadTimer();
+}
+
+function scheduleDurableUploadTimer() {
   durableUploadTimer = setTimeout(() => {
     durableUploadTimer = null;
     flushDurableStore();
@@ -351,18 +370,31 @@ async function flushDurableStore() {
     durableUploadTimer = null;
   }
   if (!durableConfig() || !durableDirty) return false;
-  try {
-    const uploaded = await durableUploadFromFile();
-    if (uploaded) {
-      durableDirty = false;
-      durableRetryAttempt = 0;
-    }
-    return uploaded;
-  } catch (err) {
-    console.warn('durable store upload failed:', err && err.message ? err.message : err);
-    scheduleDurableRetry();
-    return false;
+  if (durableInFlight) {
+    // One upload at a time: wait for it, then upload whatever is still
+    // unsaved (a write that landed during it).
+    await durableInFlight;
+    return flushDurableStore();
   }
+  const seqAtStart = durableWriteSeq;
+  durableInFlight = (async () => {
+    try {
+      const uploaded = await durableUploadFromFile();
+      if (uploaded) {
+        durableRetryAttempt = 0;
+        if (durableWriteSeq === seqAtStart) durableDirty = false;
+        else if (!durableUploadTimer) scheduleDurableUploadTimer();
+      }
+      return uploaded;
+    } catch (err) {
+      console.warn('durable store upload failed:', err && err.message ? err.message : err);
+      scheduleDurableRetry();
+      return false;
+    } finally {
+      durableInFlight = null;
+    }
+  })();
+  return durableInFlight;
 }
 
 function persist() {
@@ -2826,6 +2858,7 @@ module.exports = {
   isDurableStoreEnabled,
   durableStatusLine,
   flushDurableStore,
+  durableTransferTimeoutMs,
   getActiveProfile,
   getDemoProfile,
   getProfileForRun,
