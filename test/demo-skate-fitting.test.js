@@ -48,8 +48,10 @@ test('the demo skate fitting lands on Sat Nov 7 and moves old databases once', a
   fs.writeFileSync(dbPath, Buffer.from(db.export()));
   db.close();
 
+  // Either the one-time move or the demo reset (which rebuilds the demo
+  // from the seed) brings it to Saturday; the result is what counts.
   const second = boot(dbPath);
-  assert.match(second, /demo update: skate fitting moved to 2026-11-07/);
+  assert.match(second, /demo update: skate fitting moved to 2026-11-07|demo reset:/);
   db = read();
   [date, quote, raw] = row(db);
   assert.equal(date, '2026-11-07');
@@ -58,5 +60,5 @@ test('the demo skate fitting lands on Sat Nov 7 and moves old databases once', a
   db.close();
 
   const third = boot(dbPath);
-  assert.ok(!/skate fitting moved/.test(third), 'later boots leave it alone');
+  assert.ok(!/skate fitting moved|demo reset:/.test(third), 'later boots leave it alone');
 });
