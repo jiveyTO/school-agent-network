@@ -23,7 +23,7 @@ function boot(dbPath) {
     });`;
   const out = execFileSync(process.execPath, ['-e', script], {
     cwd: ROOT,
-    env: { ...process.env, APP_DB_PATH: dbPath, APP_DB_GCS_BUCKET: '', APP_DB_GCS_OBJECT: '' },
+    env: { ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', APP_DB_PATH: dbPath, APP_DB_GCS_BUCKET: '', APP_DB_GCS_OBJECT: '' },
     encoding: 'utf8',
   });
   const line = out.split('\n').find((l) => l.startsWith('RESULT '));

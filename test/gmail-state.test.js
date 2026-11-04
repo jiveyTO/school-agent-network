@@ -102,7 +102,7 @@ test('Gmail connect refuses forged OAuth state', async (t) => {
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1',
       PORT: String(PORT),
       APP_DB_PATH: path.join(tmpDir, 'app.db'),
       APP_DB_GCS_BUCKET: '',

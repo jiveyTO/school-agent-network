@@ -86,7 +86,7 @@ test('account login: attach, return, sign-out, demo guard, header', async (t) =>
   child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1',
       PORT: String(PORT),
       APP_DB_PATH: dbPath,
       PARENTLOOP_TEST_AUTH: '1',

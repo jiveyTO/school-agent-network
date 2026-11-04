@@ -203,7 +203,7 @@ test('agent tokens over HTTP: lifecycle, scope, and guards', async (t) => {
   const dbPath = path.join(tmpDir, 'app.db');
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), APP_DB_PATH: dbPath, PARENTLOOP_TEST_AUTH: '1' },
+    env: { ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: dbPath, PARENTLOOP_TEST_AUTH: '1' },
     stdio: 'ignore',
   });
   t.after(() => {

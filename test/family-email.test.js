@@ -46,7 +46,7 @@ test('family email: mandatory at setup, editable, legacy families unblocked', as
 
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), APP_DB_PATH: dbPath },
+    env: { ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: dbPath },
     stdio: 'ignore',
   });
   t.after(() => {

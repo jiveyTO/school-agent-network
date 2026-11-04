@@ -75,7 +75,7 @@ test('founder/admin removes a member family from a hub', async (t) => {
 
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), APP_DB_PATH: dbPath, SCHOOL_AGENT_API_KEY: 'test-key', SCHOOL_AGENT_API_URL: 'http://127.0.0.1:9/chat' },
+    env: { ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: dbPath, SCHOOL_AGENT_API_KEY: 'test-key', SCHOOL_AGENT_API_URL: 'http://127.0.0.1:9/chat' },
     stdio: 'ignore',
   });
   t.after(() => {

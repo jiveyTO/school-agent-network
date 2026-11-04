@@ -78,7 +78,7 @@ test('onboarding, sources, Gmail safety, and demo flow', async (t) => {
   child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1',
       PORT: String(PORT),
       APP_DB_PATH: dbPath,
       PUBLIC_BASE_URL: 'http://example.test',

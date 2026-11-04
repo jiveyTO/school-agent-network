@@ -106,7 +106,7 @@ test('hub lookup exposes the school duplicate guard as a public read', async (t)
 
   child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), APP_DB_PATH: dbPath },
+    env: { ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: dbPath },
     stdio: 'ignore',
   });
   t.after(() => {

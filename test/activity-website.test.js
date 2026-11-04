@@ -76,7 +76,7 @@ test('activity hubs: website autofill and saved website', async (t) => {
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env, PORT: String(PORT), APP_DB_PATH: path.join(tmpDir, 'app.db'),
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: path.join(tmpDir, 'app.db'),
       APP_DB_GCS_BUCKET: '', APP_DB_GCS_OBJECT: '',
       SCHOOL_AGENT_API_KEY: 'test-key', SCHOOL_AGENT_API_URL: `${AUX}/chat`,
     },
