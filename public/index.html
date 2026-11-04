@@ -90,9 +90,12 @@
   .hub-steps li.done .hub-step-mark { background: var(--pine); }
   .hub-steps li.done .hub-step-mark::after { content: "✓"; display: block; color: #fff; font-size: 13px; font-weight: 800; line-height: 18px; text-align: center; }
   .hub-steps li.done .text-btn { color: var(--muted); text-decoration: line-through; }
-  .hub-manage { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; }
-  .hub-manage > summary { cursor: pointer; font-weight: 700; color: var(--muted); padding: 8px 0; }
-  .hub-manage[open] > summary { color: var(--pine-dark); margin-bottom: 8px; }
+  /* Admins manage the hub from a ⋯ menu in the hub card's top-right corner;
+     each action opens its panel just under the title. */
+  .hub-intro { position: relative; }
+  .hub-intro .hub-title { padding-right: 44px; }
+  .hub-menu { position: absolute; top: -6px; right: -6px; }
+  .hub-manage { border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; margin-bottom: 18px; }
   main > * { min-width: 0; }
   pre, p, h1, h2, h3 { overflow-wrap: break-word; }
   /* Long unbroken strings (URLs, source lines) must wrap inside the
@@ -296,6 +299,7 @@
   }
   .material-menu-item:hover, .material-menu-item:focus-visible { background: var(--wash); outline: none; }
   .material-menu-item.danger { color: var(--red); }
+  .material-menu-item[hidden] { display: none; }
   .material-panel { margin: 10px 0; }
   .strip-group { width: 100%; font: inherit; color: inherit; text-align: left; cursor: pointer; }
   .toggle-btn {
@@ -883,9 +887,29 @@
              from 900px the parents and sources sit in a side column. -->
         <div class="hub-intro">
           <h3 id="hubTitle" class="hub-title">Choose a hub</h3>
+          <span class="material-menu hub-menu" id="hubDanger" hidden>
+            <button class="material-menu-btn" id="hubMenuBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Manage this hub">⋯</button>
+            <span class="material-menu-list" role="menu" hidden>
+              <button class="material-menu-item" id="hubMenuRemoveFamily" type="button" role="menuitem" hidden>Remove a family</button>
+              <button class="material-menu-item danger" id="deleteHubBtn" type="button" role="menuitem">Delete this hub</button>
+            </span>
+          </span>
           <p id="hubChooserText">Hubs hold shared context — newsletters and notices. Your family’s private details never enter a hub.</p>
           <p class="hub-purpose" id="hubPurpose" hidden></p>
           <p class="hint hub-meta" id="hubMeta"></p>
+        </div>
+        <div class="hub-manage" id="hubManagePanel" hidden>
+          <div id="hubManageMembers" hidden>
+            <p class="hub-label">Remove a family</p>
+            <div id="hubManageMembersList"></div>
+            <p style="margin:12px 0 0"><button class="small-btn secondary" id="hubManageDoneBtn" type="button">Done</button></p>
+          </div>
+          <div id="deleteHubConfirm" hidden>
+            <p class="hint" style="margin-top:0">Delete <b id="deleteHubName"></b> for everyone? Its newsletters, notes, and memberships go with it. This can’t be undone.</p>
+            <p style="margin:8px 0"><button class="small-btn" id="deleteHubYesBtn" type="button">Yes, delete it</button>
+            <button class="small-btn secondary" id="deleteHubNoBtn" type="button">Keep it</button></p>
+            <p class="hint" id="deleteHubStatus"></p>
+          </div>
         </div>
         <div class="hub-start" id="hubStartHere" hidden>
           <p class="hub-label">Start here</p>
@@ -973,20 +997,6 @@
             </div>
           </div>
         </div>
-        <details class="hub-manage" id="hubDanger" hidden>
-          <summary>Manage this hub</summary>
-          <div id="hubManageMembers" hidden>
-            <p class="hub-label">Remove a family</p>
-            <div id="hubManageMembersList"></div>
-          </div>
-          <p style="margin:12px 0 0"><button class="text-btn danger" id="deleteHubBtn" type="button">Delete this hub</button></p>
-          <div id="deleteHubConfirm" hidden>
-            <p class="hint">Delete <b id="deleteHubName"></b> for everyone? Its newsletters, notes, and memberships go with it. This can’t be undone.</p>
-            <p style="margin:8px 0"><button class="small-btn" id="deleteHubYesBtn" type="button">Yes, delete it</button>
-            <button class="small-btn secondary" id="deleteHubNoBtn" type="button">Keep it</button></p>
-            <p class="hint" id="deleteHubStatus"></p>
-          </div>
-        </details>
       </div>
     </section>
     </div>
@@ -2539,12 +2549,14 @@
       roster.innerHTML = '';
       manageBox.hidden = true;
       list.innerHTML = '';
+      document.getElementById('hubMenuRemoveFamily').hidden = true;
+      syncHubManagePanel();
       return;
     }
     box.hidden = false;
     // Brief 058: the roster reads as people — "(you)" on the viewer's row,
-    // "Hub contact" on whoever runs it. Remove controls live under
-    // Manage this hub, out of the way of the everyday view.
+    // "Hub contact" on whoever runs it. Remove controls open from the hub's
+    // ⋯ menu, out of the way of the everyday view.
     roster.innerHTML = members.map(function (m) {
       const name = m.parent_name || m.display_name || m.family_name || m.name || '';
       const role = contactNames.indexOf(name) !== -1 ? 'Hub contact'
@@ -2555,7 +2567,9 @@
     // Brief 055: only a founder/admin's roster carries member_key, and
     // only on families they may remove.
     const removable = members.filter(function (m) { return m.can_remove && m.member_key; });
-    manageBox.hidden = !removable.length;
+    document.getElementById('hubMenuRemoveFamily').hidden = !removable.length;
+    if (!removable.length) manageBox.hidden = true;
+    syncHubManagePanel();
     list.innerHTML = removable.map(function (m) {
       const name = m.parent_name || m.display_name || m.family_name || m.name || '';
       const key = esc(m.member_key);
@@ -2610,6 +2624,7 @@
   }
 
   async function loadHubDetail(hubId) {
+    const switching = currentHubId !== hubId;
     currentHubId = hubId;
     markSelectedHub();
     try {
@@ -2634,7 +2649,11 @@
         isTeam ? 'Got something from the team or league?' : 'Got something from the school?';
       renderHubMembers(data);
       document.getElementById('hubDanger').hidden = data.hub.role !== 'admin';
+      // A reload after removing a family keeps that list open; opening a
+      // different hub starts with the manage panel closed.
       document.getElementById('deleteHubConfirm').hidden = true;
+      if (switching || data.hub.role !== 'admin') document.getElementById('hubManageMembers').hidden = true;
+      syncHubManagePanel();
       document.getElementById('deleteHubStatus').textContent = '';
       document.getElementById('deleteHubName').textContent = data.hub.name;
       const facts = data.facts || [];
@@ -2679,17 +2698,55 @@
       document.getElementById('hubMeta').textContent = e.message;
       renderHubMembers({ members: [], contact_names: [] });
       document.getElementById('hubDanger').hidden = true;
+      closeHubManage();
     }
   }
 
-  document.getElementById('deleteHubBtn').addEventListener('click', function () {
-    document.getElementById('deleteHubConfirm').hidden = false;
-    document.getElementById('deleteHubStatus').textContent = '';
+  // The hub's ⋯ menu (admins only): each action opens its own panel under
+  // the hub title, and the panel closes once nothing in it is open.
+  function syncHubManagePanel() {
+    document.getElementById('hubManagePanel').hidden =
+      document.getElementById('hubManageMembers').hidden && document.getElementById('deleteHubConfirm').hidden;
+  }
+
+  function closeHubManage() {
+    document.getElementById('hubManageMembers').hidden = true;
+    document.getElementById('deleteHubConfirm').hidden = true;
+    syncHubManagePanel();
+  }
+
+  document.getElementById('hubMenuBtn').addEventListener('click', function (e) {
+    e.stopPropagation();
+    const btn = e.currentTarget;
+    const list = btn.nextElementSibling;
+    const opening = list.hidden;
+    closeMaterialMenus();
+    list.hidden = !opening;
+    btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+    if (opening) {
+      const first = list.querySelector('.material-menu-item:not([hidden])');
+      if (first) first.focus();
+    }
   });
 
-  document.getElementById('deleteHubNoBtn').addEventListener('click', function () {
+  document.getElementById('hubMenuRemoveFamily').addEventListener('click', function () {
+    closeMaterialMenus();
     document.getElementById('deleteHubConfirm').hidden = true;
+    document.getElementById('hubManageMembers').hidden = false;
+    syncHubManagePanel();
   });
+
+  document.getElementById('hubManageDoneBtn').addEventListener('click', closeHubManage);
+
+  document.getElementById('deleteHubBtn').addEventListener('click', function () {
+    closeMaterialMenus();
+    document.getElementById('hubManageMembers').hidden = true;
+    document.getElementById('deleteHubConfirm').hidden = false;
+    document.getElementById('deleteHubStatus').textContent = '';
+    syncHubManagePanel();
+  });
+
+  document.getElementById('deleteHubNoBtn').addEventListener('click', closeHubManage);
 
   document.getElementById('deleteHubYesBtn').addEventListener('click', async function () {
     const btn = document.getElementById('deleteHubYesBtn');
