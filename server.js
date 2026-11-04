@@ -2654,7 +2654,8 @@ async function googleUserinfo(accessToken) {
   if (!res.ok || !data.sub) {
     throw new Error('Google sign-in failed (identity check). Please try signing in again.');
   }
-  return { sub: String(data.sub), email: String(data.email || '') };
+  // Brief 074: Google's own word on whether the email is verified.
+  return { sub: String(data.sub), email: String(data.email || ''), emailVerified: data.email_verified === true || data.email_verified === 'true' };
 }
 
 async function gmailFetch(accessToken, urlPath) {
@@ -2835,7 +2836,24 @@ const server = http.createServer(async (req, res) => {
         needs_email: Boolean(active && !active.is_demo && !(active.parent && active.parent.email)),
         profile: active,
         auth: store.getSessionIdentity(session),
+        // Brief 074: "is this your family?" for a signed-in session with
+        // no family of its own (null when there is nothing to offer).
+        link_offer: bearerAuth ? null : store.getLinkOffer(session),
       });
+      return;
+    }
+    // Brief 074: the parent's answer to the offer. Browser session only.
+    if (req.method === 'POST' && (url.pathname === '/api/auth/link-offer/accept' || url.pathname === '/api/auth/link-offer/decline')) {
+      if (bearerAuth) { sendJson(res, 403, { error: 'Only the parent, in their own browser, can answer this.' }); return; }
+      if (url.pathname.endsWith('/decline')) {
+        store.declineLinkOffer(session.id);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const linked = store.acceptLinkOffer(session.id, body.key);
+      if (!linked) { sendJson(res, 409, { error: 'That family can’t be linked from here any more. Try signing in again.' }); return; }
+      sendJson(res, 200, { ok: true, profile: linked });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/auth/login') {
@@ -2868,7 +2886,7 @@ const server = http.createServer(async (req, res) => {
           grant_type: 'authorization_code',
         });
         const identity = await googleUserinfo(tokens.access_token);
-        store.completeGoogleSignIn(session.id, identity.sub, identity.email);
+        store.completeGoogleSignIn(session.id, identity.sub, identity.email, identity.emailVerified);
         res.writeHead(302, { Location: '/' });
         res.end();
       } catch (err) {
@@ -2964,7 +2982,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: 'sub is required' });
         return;
       }
-      const result = store.completeGoogleSignIn(session.id, sub, email);
+      const result = store.completeGoogleSignIn(session.id, sub, email, body.email_verified === true);
       const fresh = store.getSession(session.id);
       sendJson(res, 200, { ok: true, ...store.getSessionIdentity(fresh), profile: result && result.profile });
       return;
