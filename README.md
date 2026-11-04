@@ -6,8 +6,9 @@ Meta Global AI Developer Hackathon · Oct 26 – Nov 4, 2026
 Track: Indie · Theme: Build for Your World
 
 **Live demo:** https://parentloop-964717527488.northamerica-northeast2.run.app
-**Demo video:** https://youtu.be/3D4GJYGv-7E
 *(Public demo copy — use "Use the demo family instead" on the welcome screen. The hosted copy is an anonymous shared sandbox; see "Known limits.")*
+
+**Demo video:** https://youtu.be/3D4GJYGv-7E
 
 ## The problem
 
