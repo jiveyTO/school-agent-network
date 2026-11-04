@@ -18,6 +18,7 @@ const NEWSLETTER_PATH = path.join(ROOT, 'data', 'mock-newsletter.txt');
 const FACTS_PATH = path.join(ROOT, 'data', 'facts.json');
 const FAMILY_PROFILE_PATH = path.join(ROOT, 'data', 'family-profile.json');
 const INDEX_PATH = path.join(ROOT, 'public', 'index.html');
+const PRIVACY_PATH = path.join(ROOT, 'public', 'privacy.html');
 
 // Simulated scheduler moment for the Phase 2 evening check (demo only).
 const SIMULATED_NOW_LABEL = 'Thursday, November 5, 2026, 7:30 PM';
@@ -2895,6 +2896,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/') {
       const html = fs.readFileSync(INDEX_PATH, 'utf8');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    }
+    // Brief 076: public privacy policy page for the OAuth branding review.
+    // No sign-in required.
+    if (req.method === 'GET' && url.pathname === '/privacy') {
+      const html = fs.readFileSync(PRIVACY_PATH, 'utf8');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(html);
       return;
