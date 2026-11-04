@@ -1541,6 +1541,23 @@ function revokeAgentToken(profileId, tokenId) {
   return agentTokenPublic(one('SELECT * FROM agent_tokens WHERE id = ?', [row.id]));
 }
 
+// Deleting removes a revoked token from the family's list for good. An
+// active token must be revoked first, so deleting can never be the step
+// that cuts access off. Returns 'deleted', 'active', or null (not found or
+// not this family's).
+function deleteAgentToken(profileId, tokenId) {
+  if (!profileId || !tokenId) return null;
+  const row = one('SELECT * FROM agent_tokens WHERE id = ? AND profile_id = ?', [
+    String(tokenId),
+    String(profileId),
+  ]);
+  if (!row) return null;
+  if (!row.revoked_at) return 'active';
+  run('DELETE FROM agent_tokens WHERE id = ?', [row.id]);
+  persist();
+  return 'deleted';
+}
+
 // Test-only: the stored row (hash included) so tests can prove the raw
 // token is never kept. Never exposed over HTTP.
 function agentTokenMeta(tokenId) {
@@ -2802,6 +2819,7 @@ module.exports = {
   listAgentTokens,
   resolveAgentToken,
   revokeAgentToken,
+  deleteAgentToken,
   agentTokenMeta,
   createProfile,
   createProfileForSession,

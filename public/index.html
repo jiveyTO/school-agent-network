@@ -2339,16 +2339,52 @@
     list.innerHTML = tokens.map(function (tk) {
       const state = tk.active ? 'Active' : 'Revoked';
       const lastUsed = tk.last_used_at ? agentWhen(tk.last_used_at) : 'Not used yet';
-      return '<div class="card" style="margin-bottom:10px">' +
+      return '<div class="card agent-token-card" style="margin-bottom:10px">' +
         // Brief 060: the token's last 4, captured at creation. Older tokens
         // have none and render as before — never a derived stand-in.
         '<p style="margin:0"><b>' + esc(tk.name) + '</b> · ' + (tk.hint ? '····' + esc(tk.hint) + ' · ' : '') + esc(state) + '</p>' +
         '<p class="hint" style="margin:4px 0">Created ' + esc(agentWhen(tk.created_at)) + ' · Last used ' + esc(lastUsed) + '</p>' +
         (tk.active
           ? '<p style="margin:8px 0 0"><button class="small-btn secondary" type="button" data-revoke-agent="' + esc(tk.id) + '">Revoke</button></p>'
-          : '') +
+          // A revoked token can be deleted from the list for good, after
+          // the same inline confirm as removing a hub member.
+          : '<p style="margin:8px 0 0"><button class="text-btn danger" type="button" data-delete-agent="' + esc(tk.id) + '">Delete</button></p>' +
+            '<div data-agent-delete-confirm hidden>' +
+            '<p class="hint">Delete this token for good? It is already revoked; this only removes it from your list.</p>' +
+            '<p style="margin:8px 0"><button class="small-btn" type="button" data-agent-delete-yes="' + esc(tk.id) + '">Yes, delete</button> ' +
+            '<button class="small-btn secondary" type="button" data-agent-delete-no>Keep it</button></p>' +
+            '<p class="hint" data-agent-delete-status></p></div>') +
         '</div>';
     }).join('');
+    list.querySelectorAll('[data-delete-agent]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        btn.hidden = true;
+        btn.closest('.agent-token-card').querySelector('[data-agent-delete-confirm]').hidden = false;
+      });
+    });
+    list.querySelectorAll('[data-agent-delete-no]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const card = btn.closest('.agent-token-card');
+        card.querySelector('[data-agent-delete-confirm]').hidden = true;
+        card.querySelector('[data-delete-agent]').hidden = false;
+      });
+    });
+    list.querySelectorAll('[data-agent-delete-yes]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        const statusEl = btn.closest('.agent-token-card').querySelector('[data-agent-delete-status]');
+        btn.disabled = true;
+        statusEl.textContent = 'Deleting…';
+        try {
+          const res = await fetch('/api/agent-tokens/' + encodeURIComponent(btn.getAttribute('data-agent-delete-yes')), { method: 'DELETE' });
+          const data = await res.json().catch(function () { return {}; });
+          if (!res.ok) throw new Error(data.error || 'That token couldn’t be deleted.');
+          await loadAgentTokens();
+        } catch (e) {
+          statusEl.textContent = e.message;
+          btn.disabled = false;
+        }
+      });
+    });
     list.querySelectorAll('[data-revoke-agent]').forEach(function (btn) {
       btn.addEventListener('click', async function () {
         btn.disabled = true;
