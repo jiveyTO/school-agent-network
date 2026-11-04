@@ -1872,6 +1872,22 @@ function getMaterialText(materialId, profileId) {
 // Remove one material from its hub: the material row (which also holds
 // the retained file bytes), and every fact extracted from it. Sibling
 // materials and their facts are untouched.
+// Renames a material. Notes stamped with its old title (their group
+// heading and source label) follow the new one; other labels stay.
+function renameMaterial(materialId, title) {
+  const row = one('SELECT id, title FROM materials WHERE id = ?', [materialId]);
+  if (!row) return null;
+  const next = String(title || '');
+  const prev = String(row.title || '');
+  run('UPDATE materials SET title = ? WHERE id = ?', [next, materialId]);
+  if (prev) {
+    run('UPDATE facts SET group_label = ? WHERE material_id = ? AND group_label = ?', [next, materialId, prev]);
+    run('UPDATE facts SET source_document = ? WHERE material_id = ? AND source_document = ?', [next, materialId, prev]);
+  }
+  persist();
+  return getMaterial(materialId);
+}
+
 function deleteMaterial(materialId) {
   if (!materialId) return false;
   if (!one('SELECT id FROM materials WHERE id = ?', [materialId])) return false;
@@ -2842,6 +2858,7 @@ module.exports = {
   decideJoinRequest,
   createMaterial,
   deleteMaterial,
+  renameMaterial,
   getMaterial,
   findMaterialByFingerprint,
   getMaterialText,

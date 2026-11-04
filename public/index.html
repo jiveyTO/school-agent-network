@@ -277,6 +277,26 @@
   details.source-card { margin-bottom: 10px; }
   details.source-card summary { cursor: pointer; }
   details.source-card summary .added { font-weight: 400; color: var(--muted); }
+  /* A material card's ⋯ menu sits in the title row's top-right corner. */
+  details.source-card > summary { position: relative; padding-right: 40px; }
+  .material-menu { position: absolute; top: -6px; right: -6px; }
+  .material-menu-btn {
+    width: 36px; height: 36px; border: 0; border-radius: 999px; background: transparent;
+    color: var(--pine-dark); font: inherit; font-size: 20px; font-weight: 800; line-height: 1; cursor: pointer;
+  }
+  .material-menu-btn:hover, .material-menu-btn[aria-expanded="true"] { background: var(--wash); }
+  .material-menu-list {
+    position: absolute; top: 40px; right: 0; z-index: 5; min-width: 190px; display: grid; padding: 6px;
+    background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  }
+  .material-menu-list[hidden] { display: none; }
+  .material-menu-item {
+    display: block; width: 100%; text-align: left; border: 0; border-radius: 8px; background: none;
+    color: var(--ink); font: inherit; font-size: 15px; font-weight: 600; padding: 9px 12px; text-decoration: none; cursor: pointer;
+  }
+  .material-menu-item:hover, .material-menu-item:focus-visible { background: var(--wash); outline: none; }
+  .material-menu-item.danger { color: var(--red); }
+  .material-panel { margin: 10px 0; }
   .strip-group { width: 100%; font: inherit; color: inherit; text-align: left; cursor: pointer; }
   .toggle-btn {
     margin-top: 12px;
@@ -1218,6 +1238,43 @@
 
   var fullTextCache = {};
 
+  async function loadMaterialText(mid) {
+    if (mid in fullTextCache) return fullTextCache[mid];
+    const res = await fetch('/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(mid) + '/text');
+    const data = await res.json().catch(function () { return {}; });
+    if (!res.ok) throw new Error(data.error || 'That text couldn’t be loaded.');
+    fullTextCache[mid] = String(data.text || '');
+    return fullTextCache[mid];
+  }
+
+  // The ⋯ menu's View full text: the whole material at the top of its card,
+  // with a Hide link.
+  async function showMaterialText(box, mid) {
+    if (!box) return;
+    box.hidden = false;
+    box.innerHTML = '<p class="hint">Loading…</p>';
+    let text = '';
+    try {
+      text = await loadMaterialText(mid);
+    } catch (e) {
+      box.innerHTML = '<p class="hint">' + esc(e.message) + '</p>';
+      return;
+    }
+    box.innerHTML = (text ? '<div class="material-fulltext">' + esc(text) + '</div>' : '<p class="hint">No text was kept for this one.</p>') +
+      '<p style="margin:6px 0 0"><button class="text-btn" type="button" data-hide-text>Hide full text</button></p>';
+    box.querySelector('[data-hide-text]').addEventListener('click', function () { box.hidden = true; });
+  }
+
+  function closeMaterialMenus() {
+    document.querySelectorAll('.material-menu-list').forEach(function (list) {
+      if (list.hidden) return;
+      list.hidden = true;
+      const btn = list.previousElementSibling;
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+
   function renderHubSourcesSection(hub) {
     const box = document.getElementById('hubSources');
     const addWrap = document.getElementById('hubWebsiteAdd');
@@ -1255,6 +1312,29 @@
       return 'Email from ' + name + (m.email_date ? ', ' + humanDate(m.email_date) : '');
     }
     return 'Added ' + humanDate(m.created_at);
+  }
+
+  // A material card's ⋯ menu, top right of its title row: the original
+  // file, its full text, and (for the parent who added it or a hub admin)
+  // Rename and Remove. Lives in the summary so it shows on a closed card.
+  function materialMenuHtml(m, fileUrl) {
+    const id = esc(m.id);
+    const items = [];
+    if (m.has_file) {
+      items.push('<a class="material-menu-item" role="menuitem" href="' + fileUrl + '" target="_blank" rel="noopener">' +
+        (m.kind === 'image' ? 'View original image' : 'View original PDF') + '</a>');
+    }
+    items.push('<button class="material-menu-item" type="button" role="menuitem" data-material-action="text" data-material="' + id + '">View full text</button>');
+    if (m.can_rename) {
+      items.push('<button class="material-menu-item" type="button" role="menuitem" data-material-action="rename" data-material="' + id + '">Rename</button>');
+    }
+    if (m.can_remove) {
+      items.push('<button class="material-menu-item danger" type="button" role="menuitem" data-material-action="remove" data-remove-material="' + id + '" data-material="' + id + '">Remove</button>');
+    }
+    return '<span class="material-menu">' +
+      '<button class="material-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" ' +
+      'aria-label="More for ' + esc(m.title || 'this material') + '" data-material-menu="' + id + '">⋯</button>' +
+      '<span class="material-menu-list" role="menu" hidden>' + items.join('') + '</span></span>';
   }
 
   function materialStatusText(m, items) {
@@ -1304,20 +1384,32 @@
         byName[name].items.push(f);
       });
       const open = items.some(factMatters);
+      const fileUrl = m.has_file
+        ? '/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(m.id) + '/file'
+        : '';
       let body = '<summary><b>' + esc(m.title) + '</b> ' +
-        '<span class="added">' + esc(materialSourceText(m)) + ' · ' + esc(materialStatusText(m, items)) + '</span></summary>';
-      if (m.has_file) {
-        var fileUrl = '/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(m.id) + '/file';
-        if (m.kind === 'image') {
-          body += '<img class="material-source-image" src="' + fileUrl + '" alt="' + esc(m.title || 'Attached image') + '">' +
-            '<div class="group-actions" style="margin:6px 0">' +
-            '<a class="toggle-btn" href="' + fileUrl + '" target="_blank" rel="noopener">View original image</a>' +
-            '</div>';
-        } else {
-          body += '<div class="group-actions" style="margin:6px 0">' +
-            '<a class="toggle-btn" href="' + fileUrl + '" target="_blank" rel="noopener">View original PDF</a>' +
-            '</div>';
-        }
+        '<span class="added">' + esc(materialSourceText(m)) + ' · ' + esc(materialStatusText(m, items)) + '</span>' +
+        materialMenuHtml(m, fileUrl) + '</summary>';
+      // The menu's Rename, Remove and View full text open here, at the top
+      // of the card.
+      if (m.can_rename) {
+        body += '<div class="material-panel" data-rename-box="' + esc(m.id) + '" hidden>' +
+          '<label class="field">Name' +
+          '<input type="text" maxlength="120" data-rename-input="' + esc(m.id) + '" value="' + esc(m.title) + '"></label>' +
+          '<p style="margin:8px 0"><button class="small-btn" type="button" data-rename-save="' + esc(m.id) + '">Save name</button> ' +
+          '<button class="small-btn secondary" type="button" data-rename-cancel="' + esc(m.id) + '">Cancel</button></p>' +
+          '<p class="hint" data-rename-status="' + esc(m.id) + '"></p></div>';
+      }
+      if (m.can_remove) {
+        body += '<div class="material-panel material-remove" data-remove-confirm="' + esc(m.id) + '" hidden>' +
+          '<p class="hint">Remove this material? This cannot be undone.</p>' +
+          '<p style="margin:8px 0"><button class="small-btn" type="button" data-remove-yes="' + esc(m.id) + '">Yes, remove it</button> ' +
+          '<button class="small-btn secondary" type="button" data-remove-no="' + esc(m.id) + '">Keep it</button></p>' +
+          '<p class="hint" data-remove-status="' + esc(m.id) + '"></p></div>';
+      }
+      body += '<div class="material-panel" data-material-text="' + esc(m.id) + '" hidden></div>';
+      if (m.has_file && m.kind === 'image') {
+        body += '<img class="material-source-image" src="' + fileUrl + '" alt="' + esc(m.title || 'Attached image') + '">';
       }
       if (m.pictures_read_with_ocr) {
         body += '<p class="hint" style="margin:6px 0">Some pages were pictures — read with OCR.</p>';
@@ -1326,15 +1418,6 @@
       }
       if (m.unverified_count > 0) {
         body += '<p class="hint" style="margin:6px 0">Some items couldn\'t be verified against the original and were left out (' + esc(String(m.unverified_count)) + ').</p>';
-      }
-      if (m.can_remove) {
-        body += '<div class="material-remove">' +
-          '<p style="margin:6px 0"><button class="text-btn danger" type="button" data-remove-material="' + esc(m.id) + '">Remove</button></p>' +
-          '<div data-remove-confirm="' + esc(m.id) + '" hidden>' +
-          '<p class="hint">Remove this material? This cannot be undone.</p>' +
-          '<p style="margin:8px 0"><button class="small-btn" type="button" data-remove-yes="' + esc(m.id) + '">Yes, remove it</button> ' +
-          '<button class="small-btn secondary" type="button" data-remove-no="' + esc(m.id) + '">Keep it</button></p>' +
-          '<p class="hint" data-remove-status="' + esc(m.id) + '"></p></div></div>';
       }
       if (!items.length) {
         body += m.status === 'failed'
@@ -1401,29 +1484,88 @@
         btn.textContent = hidden ? 'Hide sources' : 'Show sources';
       });
     });
-    listEl.querySelectorAll('[data-remove-material]').forEach(function (btn) {
+    listEl.querySelectorAll('[data-material-menu]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        // Inside the summary: never let the menu button fold the card.
+        e.preventDefault();
+        e.stopPropagation();
+        const list = btn.nextElementSibling;
+        const opening = list.hidden;
+        closeMaterialMenus();
+        list.hidden = !opening;
+        btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        if (opening) {
+          const first = list.querySelector('.material-menu-item');
+          if (first) first.focus();
+        }
+      });
+    });
+    listEl.querySelectorAll('[data-material-action]').forEach(function (item) {
+      item.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMaterialMenus();
+        const mid = item.getAttribute('data-material');
+        const card = item.closest('details');
+        const action = item.getAttribute('data-material-action');
+        if (card) card.open = true;
+        const panel = (attr) => card.querySelector('[' + attr + '="' + mid + '"]');
+        if (action === 'text') showMaterialText(panel('data-material-text'), mid);
+        if (action === 'rename') {
+          const box = panel('data-rename-box');
+          box.hidden = false;
+          const input = box.querySelector('[data-rename-input]');
+          input.focus();
+          input.select();
+        }
+        if (action === 'remove') panel('data-remove-confirm').hidden = false;
+      });
+    });
+    listEl.querySelectorAll('[data-rename-cancel]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        const wrap = btn.closest('.material-remove');
-        if (!wrap) return;
-        btn.hidden = true;
-        const confirm = wrap.querySelector('[data-remove-confirm]');
-        if (confirm) confirm.hidden = false;
+        const box = btn.closest('[data-rename-box]');
+        box.hidden = true;
+        box.querySelector('[data-rename-status]').textContent = '';
+      });
+    });
+    listEl.querySelectorAll('[data-rename-input]').forEach(function (input) {
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); input.closest('[data-rename-box]').querySelector('[data-rename-save]').click(); }
+        if (e.key === 'Escape') input.closest('[data-rename-box]').querySelector('[data-rename-cancel]').click();
+      });
+    });
+    listEl.querySelectorAll('[data-rename-save]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        const mid = btn.getAttribute('data-rename-save');
+        const box = btn.closest('[data-rename-box]');
+        const statusEl = box.querySelector('[data-rename-status]');
+        const title = box.querySelector('[data-rename-input]').value.trim();
+        if (!title) { statusEl.textContent = 'Give it a name first.'; return; }
+        btn.disabled = true;
+        statusEl.textContent = 'Saving…';
+        try {
+          const res = await fetch('/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(mid), {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: title }),
+          });
+          const data = await res.json().catch(function () { return {}; });
+          if (!res.ok) throw new Error(data.error || 'That name couldn’t be saved.');
+          await loadHubDetail(currentHubId);
+        } catch (e) {
+          statusEl.textContent = e.message;
+          btn.disabled = false;
+        }
       });
     });
     listEl.querySelectorAll('[data-remove-no]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        const wrap = btn.closest('.material-remove');
-        if (!wrap) return;
-        const confirm = wrap.querySelector('[data-remove-confirm]');
+        const confirm = btn.closest('[data-remove-confirm]');
         if (confirm) confirm.hidden = true;
-        const open = wrap.querySelector('[data-remove-material]');
-        if (open) open.hidden = false;
       });
     });
     listEl.querySelectorAll('[data-remove-yes]').forEach(function (btn) {
       btn.addEventListener('click', async function () {
         const mid = btn.getAttribute('data-remove-yes');
-        const wrap = btn.closest('.material-remove');
+        const wrap = btn.closest('[data-remove-confirm]');
         const statusEl = wrap ? wrap.querySelector('[data-remove-status]') : null;
         btn.disabled = true;
         if (statusEl) statusEl.textContent = 'Removing…';
@@ -1454,10 +1596,7 @@
           btn.disabled = true;
           btn.textContent = 'Loading…';
           try {
-            const res = await fetch('/api/hubs/' + encodeURIComponent(currentHubId) + '/materials/' + encodeURIComponent(mid) + '/text');
-            const data = await res.json().catch(function () { return {}; });
-            if (!res.ok) throw new Error(data.error || 'That text couldn’t be loaded.');
-            fullTextCache[mid] = String(data.text || '');
+            await loadMaterialText(mid);
           } catch (e) {
             body.innerHTML = '<p class="hint">' + esc(e.message) + '</p>';
             body.hidden = false;
@@ -2989,6 +3128,18 @@
     refreshAuthChrome();
     openOnboarding('new');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  // A material card's ⋯ menu closes on any click outside it, and on Escape.
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest || !e.target.closest('.material-menu')) closeMaterialMenus();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    const open = document.querySelector('.material-menu-list:not([hidden])');
+    if (!open) return;
+    closeMaterialMenus();
+    if (open.previousElementSibling) open.previousElementSibling.focus();
   });
 
   document.getElementById('hubGroupsToggle').addEventListener('click', function () {

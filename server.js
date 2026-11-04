@@ -3239,6 +3239,10 @@ const server = http.createServer(async (req, res) => {
             can_remove: Boolean(
               !hub.is_demo && (uploaded_by === actor.id || store.getMemberRole(hub.id, actor.id) === 'admin')
             ),
+            // Rename follows the same rule as remove.
+            can_rename: Boolean(
+              !hub.is_demo && (uploaded_by === actor.id || store.getMemberRole(hub.id, actor.id) === 'admin')
+            ),
           };
         }),
         member_count: members.length,
@@ -3298,6 +3302,27 @@ const server = http.createServer(async (req, res) => {
       if (!isUploader && !isAdmin) { sendJson(res, 403, { error: 'Only the parent who added this, or a hub admin, can remove it.' }); return; }
       store.deleteMaterial(material.id);
       sendJson(res, 200, { ok: true });
+      return;
+    }
+    // A material's name: the parent who added it or a hub admin may change
+    // it (the same rule as remove). The demo stays as it is.
+    if (req.method === 'PATCH' && hubMaterialMatch) {
+      const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
+      const hub = store.getHub(hubMaterialMatch[1]);
+      if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
+      if (!actor || !store.isMember(hub.id, actor.id)) { sendJson(res, 403, { error: 'Only members can read this hub.' }); return; }
+      const material = store.getMaterial(hubMaterialMatch[2]);
+      if (!material || material.hub_id !== hub.id) { sendJson(res, 404, { error: 'That material is not available.' }); return; }
+      if (hub.is_demo) { sendJson(res, 403, { error: 'Demo materials can’t be renamed — the demo stays as it is.' }); return; }
+      const isUploader = material.uploaded_by === actor.id;
+      const isAdmin = store.getMemberRole(hub.id, actor.id) === 'admin';
+      if (!isUploader && !isAdmin) { sendJson(res, 403, { error: 'Only the parent who added this, or a hub admin, can rename it.' }); return; }
+      const body = await readJsonBody(req);
+      const title = String(body.title || '').replace(/\s+/g, ' ').trim();
+      if (!title) { sendJson(res, 400, { error: 'Give it a name first.' }); return; }
+      if (title.length > 120) { sendJson(res, 400, { error: 'Keep the name under 120 characters.' }); return; }
+      const renamed = store.renameMaterial(material.id, title);
+      sendJson(res, 200, { ok: true, material: materialPayload(renamed) });
       return;
     }
     // Brief 055: a hub's founder or admin removes a member family. Session

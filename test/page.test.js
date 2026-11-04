@@ -155,6 +155,7 @@ function renderMaterialsHtml(materials, facts) {
     document: { getElementById(id) { return els[id] || (els[id] = fakeEl()); } },
     __facts: facts,
     __materials: materials,
+    currentHubId: 'hub-1',
   };
   const src = PAGE.slice(PAGE.indexOf('function esc(s)'), PAGE.indexOf('function friendlyTime('));
   vm.runInNewContext(src + ';renderHubSources(__facts, __materials);', sandbox);
@@ -1200,4 +1201,29 @@ test('an email material shows its sender and sent date; a duplicate add says so'
   assert.ok(!html.includes('office@maplegrove.example'), 'the address itself is not shown');
   assert.ok(html.includes('Added Tue, Nov 3'), 'other materials still show when they were added');
   assert.ok(PAGE.includes('That’s already in this hub — nothing new was added.'), 'a duplicate add tells the parent');
+});
+
+test('each material card has a ⋯ menu in its title row: original, full text, rename, remove', () => {
+  const html = renderMaterialsHtml([
+    { id: 'm-pdf', title: 'Week Ahead', kind: 'pdf', status: 'extracted', created_at: '2026-11-03T12:00:00Z',
+      has_file: true, can_rename: true, can_remove: true },
+    { id: 'm-other', title: 'Someone else’s notice', kind: 'paste', status: 'extracted', created_at: '2026-11-03T12:00:00Z',
+      can_rename: false, can_remove: false },
+  ], []);
+  const cards = html.split('<details').slice(1);
+  const summaryOf = (card) => card.slice(card.indexOf('<summary>'), card.indexOf('</summary>'));
+  const own = summaryOf(cards[0]);
+  assert.ok(own.includes('data-material-menu="m-pdf"') && own.includes('aria-haspopup="menu"'), 'the ⋯ button sits in the summary');
+  for (const label of ['View original PDF', 'View full text', 'Rename', 'Remove']) {
+    assert.ok(own.includes('>' + label + '</'), label + ' is in the menu');
+  }
+  assert.ok(own.indexOf('View original PDF') < own.indexOf('Rename') && own.indexOf('Rename') < own.indexOf('Remove'),
+    'viewing first, Remove last');
+  const body = cards[0].slice(cards[0].indexOf('</summary>'));
+  assert.ok(!body.includes('>View original PDF<') && !body.includes('>Remove</button>'), 'no loose View/Remove buttons in the card body');
+  assert.ok(body.includes('data-rename-box="m-pdf"') && body.includes('data-remove-confirm="m-pdf"'), 'rename and remove open at the top of the card');
+  const other = summaryOf(cards[1]);
+  assert.ok(other.includes('>View full text<'), 'everyone can read the full text');
+  assert.ok(!other.includes('>Rename<') && !other.includes('>Remove<'), 'no Rename/Remove for someone else’s material');
+  assert.ok(PAGE.includes("method: 'PATCH'"), 'rename saves through PATCH');
 });
