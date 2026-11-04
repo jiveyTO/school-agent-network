@@ -92,7 +92,7 @@ test('agents feed the hub: email kind, idempotent adds', async (t) => {
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env, PORT: String(PORT), APP_DB_PATH: path.join(tmpDir, 'app.db'), PARENTLOOP_TEST_AUTH: '1',
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: path.join(tmpDir, 'app.db'), PARENTLOOP_TEST_AUTH: '1',
       SCHOOL_AGENT_API_KEY: 'test-key',
       SCHOOL_AGENT_API_URL: `http://127.0.0.1:${fakeModel.address().port}/chat`,
       APP_DB_GCS_BUCKET: '', APP_DB_GCS_OBJECT: '',

@@ -110,7 +110,7 @@ function spawnServer(dbPath) {
   const proc = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1',
       PORT: String(PORT),
       APP_DB_PATH: dbPath,
       APP_DB_GCS_BUCKET: 'durable-test-bucket',

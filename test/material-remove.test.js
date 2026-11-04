@@ -146,7 +146,7 @@ test('material removal API: permissions, demo protection, evening check', async 
   child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env, PORT: String(PORT), APP_DB_PATH: dbPath,
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: dbPath,
       SCHOOL_AGENT_API_KEY: 'test-key',
       SCHOOL_AGENT_API_URL: `http://127.0.0.1:${fakeModel.address().port}/chat`,
     },

@@ -95,7 +95,7 @@ test('agent joins by invite with one parent approval', async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parentloop-agent-connect-'));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), APP_DB_PATH: path.join(tmpDir, 'app.db'), PARENTLOOP_TEST_AUTH: '1', APP_DB_GCS_BUCKET: '' },
+    env: { ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: path.join(tmpDir, 'app.db'), PARENTLOOP_TEST_AUTH: '1', APP_DB_GCS_BUCKET: '' },
     stdio: 'ignore',
   });
   t.after(() => {

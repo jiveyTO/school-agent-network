@@ -98,7 +98,7 @@ test('pasted materials are titled from their content, never the pasted text', as
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1',
       PORT: String(PORT),
       APP_DB_PATH: path.join(tmpDir, 'app.db'),
       APP_DB_GCS_BUCKET: '',

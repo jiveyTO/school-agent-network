@@ -86,6 +86,10 @@ const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
 const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 const LOGIN_SCOPES = 'openid email profile';
 const TEST_AUTH_ENABLED = process.env.PARENTLOOP_TEST_AUTH === '1';
+// Brief 073: tests that only need a working family (not the email check
+// itself) set this; never set in production (deploys take .env keys only,
+// and the post-deploy gate checks /api/auth/status signup_verification).
+const SIGNUP_VERIFY_SKIPPED_FOR_TESTS = process.env.PARENTLOOP_TEST_SIGNUP_VERIFIED === '1';
 // Largest PDF whose original bytes are retained with its material. The cap
 // also bounds how much one material can grow the durable database file,
 // which is written back whole on each save. Brief 051: raised 5 MB -> 10 MB
@@ -2139,7 +2143,7 @@ const AGENT_RECIPE = [
     method: 'POST',
     path: '/api/join/{token}/accept',
     alternate: { method: 'POST', path: '/api/hubs' },
-    description: 'If a parent gave you an invite link but no token, POST /api/join/{token}/connect, show the parent the approval_url AND the user_code, and poll /api/agent-connect/{request_id}/token with your poll_secret every `interval` seconds until it returns your token. The parent answers any join question on that approval page — never ask them to tell you the answer. If membership is pending_approval, tell the parent the hub admin must let them in, and watch GET /api/hubs → pending_hubs until the hub moves to hubs. With a token already, redeem the invite with POST /api/join/{token}/accept (202 means it waits for the admin; 409 needs_answer means ask the parent to open the invite link in their browser). If lookup returned none, create the hub with POST /api/hubs. If create returns 409, the school already has a hub — ask the parent for an invite instead of forcing a duplicate.',
+    description: 'If a parent gave you an invite link but no token, POST /api/join/{token}/connect, show the parent the approval_url AND the user_code, and poll /api/agent-connect/{request_id}/token with your poll_secret every `interval` seconds until it returns your token. The parent answers any join question on that approval page — never ask them to tell you the answer. If the parent has no family yet, the approval page sets one up first and ParentLoop emails them a 6-digit code to confirm their address (needs_email_code) — that is an expected step, not an error: tell your parent to check their inbox and enter the code on the page, and keep polling. If membership is pending_approval, tell the parent the hub admin must let them in, and watch GET /api/hubs → pending_hubs until the hub moves to hubs. With a token already, redeem the invite with POST /api/join/{token}/accept (202 means it waits for the admin; 409 needs_answer means ask the parent to open the invite link in their browser). If lookup returned none, create the hub with POST /api/hubs. If create returns 409, the school already has a hub — ask the parent for an invite instead of forcing a duplicate.',
   },
   {
     step: 3,
@@ -2356,6 +2360,100 @@ function hasAuthorizationHeader(req) {
   return Boolean(req.headers) && Object.prototype.hasOwnProperty.call(req.headers, 'authorization');
 }
 
+// --- Brief 073: verify the email when a family is created ------------------
+// A family made by typing an email is pending until the 6-digit code sent
+// to that address is entered. A pending family can't create or join a hub
+// or mint an agent token. Google sign-in already proves its own address,
+// so a family whose typed email is the signed-in Google email (one Google
+// marks verified) skips it.
+// With no way to send email at all (no mail transport), nothing could ever
+// be verified, so the check is off — production always has mail (the
+// post-deploy gate requires recovery_configured).
+// PARENTLOOP_TEST_SIGNUP_RESEND_COOLDOWN_MS: tests only.
+const SIGNUP_RESEND_COOLDOWN_MS = process.env.PARENTLOOP_TEST_SIGNUP_RESEND_COOLDOWN_MS !== undefined
+  ? Number(process.env.PARENTLOOP_TEST_SIGNUP_RESEND_COOLDOWN_MS) : 60 * 1000;
+
+function signupVerifyOn() {
+  return !SIGNUP_VERIFY_SKIPPED_FOR_TESTS && isRecoveryMailConfigured();
+}
+
+function pendingFamilyRefusal(profile) {
+  if (!profile || profile.is_demo || !profile.email_pending) return null;
+  const to = profile.parent_email || 'your email';
+  return {
+    status: 403,
+    body: {
+      error: `Confirm your email first — enter the 6-digit code we sent to ${to}. Then you can create or join hubs.`,
+      needs_email_code: true,
+      email_pending: true,
+      sent_to: profile.parent_email || '',
+    },
+  };
+}
+
+function signupCodeEmail(code) {
+  return {
+    subject: 'Your ParentLoop code: ' + code,
+    text: [
+      'Hello,',
+      '',
+      'Here is your code to finish setting up your ParentLoop family:',
+      '',
+      '    ' + code,
+      '',
+      'Enter it on the page within 15 minutes, so we know this email is really yours.',
+      '',
+      'If you didn’t try to set up a family, you can ignore this email — nothing happens without the code.',
+      '',
+      '— ParentLoop',
+    ].join('\n'),
+  };
+}
+
+// Sends a fresh code to a pending family. The code is never logged.
+async function sendSignupCode(profileId, email) {
+  const code = store.issueSignupCode(profileId, email);
+  try {
+    const result = await sendEmail({ to: email, ...signupCodeEmail(code) });
+    if (!result.sent) {
+      console.warn('signup code not sent: sender not configured');
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('signup code send failed: ' + (err && err.message ? err.message : String(err)));
+    return false;
+  }
+}
+
+// Sends per email address and per client address, counted before any
+// lookup (the brief 041 recovery pattern).
+function signupSendAllowed(email, ip) {
+  const emailOk = store.hitRecoveryRateLimit('signup-email:' + String(email).trim().toLowerCase(), 5, HOUR_MS);
+  const ipOk = store.hitRecoveryRateLimit('signup-ip:' + (ip || 'unknown'), 10, HOUR_MS);
+  return emailOk && ipOk;
+}
+
+const SIGNUP_RATE_ERROR = 'Too many codes asked for just now. Please wait a while and try again.';
+
+function emailHasFamilyBody() {
+  return {
+    error: 'This email already has a family. Sign in with Google, or get a recovery link sent to that address, to get back in.',
+    email_has_family: true,
+    recovery_available: isRecoveryMailConfigured(),
+  };
+}
+
+function emailVerificationInfo(email, sent) {
+  return {
+    required: true,
+    sent_to: email,
+    sent: Boolean(sent),
+    expires_in_minutes: Math.round(store.SIGNUP_CODE_TTL_MS / 60000),
+    resend_after_seconds: Math.round(SIGNUP_RESEND_COOLDOWN_MS / 1000),
+  };
+}
+
 // --- Brief 067: joining by invite link -------------------------------------
 // A hub with a join question admits a family that answers it; three wrong
 // answers in a day turn into a request for the admin instead. A hub with no
@@ -2447,6 +2545,8 @@ function questionCount(settings) {
 // `answer` is one answer (067) or a list, one per question (068).
 function joinByLink(info, profile, answer, via, ip) {
   const hub = { id: info.hub_id, name: info.hub_name };
+  const pending = pendingFamilyRefusal(profile);
+  if (pending) return pending;
   if (store.isMember(info.hub_id, profile.id)) {
     return { status: 200, body: { ok: true, membership: 'member', hub: store.getHub(info.hub_id) } };
   }
@@ -2834,6 +2934,10 @@ const server = http.createServer(async (req, res) => {
         needsOnboarding: !(active && !active.is_demo),
         needsEmail: Boolean(active && !active.is_demo && !(active.parent && active.parent.email)),
         needs_email: Boolean(active && !active.is_demo && !(active.parent && active.parent.email)),
+        // Brief 073: the family exists but its email isn't confirmed yet.
+        emailPending: Boolean(active && !active.is_demo && active.email_pending),
+        email_pending: Boolean(active && !active.is_demo && active.email_pending),
+        pending_email: active && !active.is_demo && active.email_pending ? active.parent_email : '',
         profile: active,
         auth: store.getSessionIdentity(session),
         // Brief 074: "is this your family?" for a signed-in session with
@@ -2904,6 +3008,8 @@ const server = http.createServer(async (req, res) => {
         configured: gmailConfigured(),
         setup_needed: !gmailConfigured(),
         recovery_configured: isRecoveryMailConfigured(),
+        // Brief 073: new families with a typed email confirm it by code.
+        signup_verification: signupVerifyOn(),
       });
       return;
     }
@@ -3008,7 +3114,27 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: store.PARENT_EMAIL_ERROR });
         return;
       }
-      const profile = store.createProfileForSession(session.id, {
+      // Brief 073: a typed email is confirmed by code before the family can
+      // do anything — unless it is the Google address this session already
+      // signed in with (Google proved that one).
+      const googleEmail = Number(session.google_email_verified) === 1
+        ? String(session.google_email || '').trim().toLowerCase() : '';
+      const needsCode = signupVerifyOn() && !(googleEmail && googleEmail === parentEmail.toLowerCase());
+      if (needsCode) {
+        if (!signupSendAllowed(parentEmail, clientIp(req))) {
+          sendJson(res, 429, { error: SIGNUP_RATE_ERROR, rate_limited: true });
+          return;
+        }
+        // The session's own family (and any family its Google account holds)
+        // may share the address; anyone else's verified family may not.
+        const own = store.getSessionOwnProfile(session);
+        const linked = session.google_sub ? store.getProfileByGoogleSub(session.google_sub) : null;
+        if (store.findVerifiedProfileByEmail(parentEmail, [own && !own.is_demo ? own.id : '', linked && linked.id])) {
+          sendJson(res, 409, emailHasFamilyBody());
+          return;
+        }
+      }
+      let profile = store.createProfileForSession(session.id, {
         parent_name: parentName,
         parent_email: parentEmail,
         children: kidNames.map((name) => ({ name })),
@@ -3017,7 +3143,84 @@ const server = http.createServer(async (req, res) => {
         actions: body.actions,
       });
       store.setSessionProfile(session.id, profile.id);
-      sendJson(res, 200, { ok: true, profile });
+      if (!needsCode) {
+        sendJson(res, 200, { ok: true, profile });
+        return;
+      }
+      profile = store.setProfileEmailPending(profile.id, true);
+      const sent = await sendSignupCode(profile.id, parentEmail);
+      sendJson(res, 200, {
+        ok: true,
+        profile,
+        needs_email_code: true,
+        email_verification: emailVerificationInfo(parentEmail, sent),
+        message: sent
+          ? `We sent a 6-digit code to ${parentEmail}. Enter it so we know this email is really yours.`
+          : 'We couldn’t send your code just now — tap “Send a new code” to try again.',
+      });
+      return;
+    }
+    // Brief 073: the code that confirms a new family's email.
+    if (req.method === 'POST' && url.pathname === '/api/profile/verify-email') {
+      const own = store.getSessionOwnProfile(session);
+      if (!own || own.is_demo) { sendJson(res, 400, { error: 'Set up your family first.', needsOnboarding: true }); return; }
+      if (!own.email_pending) { sendJson(res, 200, { ok: true, verified: true, already_verified: true, profile: own }); return; }
+      const body = await readJsonBody(req).catch(() => ({}));
+      const result = store.checkSignupCode(own.id, body.code);
+      if (result.ok) { sendJson(res, 200, { ok: true, verified: true, profile: result.profile }); return; }
+      const to = own.parent_email;
+      if (result.reason === 'wrong') {
+        sendJson(res, 400, {
+          error: 'That code doesn’t match — ' + result.tries_left + (result.tries_left === 1 ? ' try' : ' tries') + ' left.',
+          wrong_code: true, tries_left: result.tries_left, sent_to: to,
+        });
+        return;
+      }
+      if (result.reason === 'too_many') {
+        sendJson(res, 429, { error: 'Too many wrong tries for that code. Send a new code and try again.', too_many: true, can_resend: true, sent_to: to });
+        return;
+      }
+      if (result.reason === 'expired') {
+        sendJson(res, 410, { error: 'That code has expired — codes last 15 minutes. Send a new code.', expired: true, can_resend: true, sent_to: to });
+        return;
+      }
+      sendJson(res, 410, { error: 'There’s no live code for ' + to + ' — send a new one.', no_code: true, can_resend: true, sent_to: to });
+      return;
+    }
+    // Brief 073: send a new code, optionally to a corrected address.
+    if (req.method === 'POST' && url.pathname === '/api/profile/resend-code') {
+      let own = store.getSessionOwnProfile(session);
+      if (!own || own.is_demo) { sendJson(res, 400, { error: 'Set up your family first.', needsOnboarding: true }); return; }
+      if (!own.email_pending) { sendJson(res, 200, { ok: true, already_verified: true, profile: own }); return; }
+      const body = await readJsonBody(req).catch(() => ({}));
+      const asked = store.parentEmailOf(body);
+      const email = asked || own.parent_email;
+      if (!store.isValidParentEmail(email)) { sendJson(res, 400, { error: store.PARENT_EMAIL_ERROR }); return; }
+      const changed = email.toLowerCase() !== String(own.parent_email || '').toLowerCase();
+      const meta = store.signupCodeMeta(own.id);
+      const waitMs = meta && !changed ? SIGNUP_RESEND_COOLDOWN_MS - (Date.now() - new Date(meta.sent_at).getTime()) : 0;
+      if (waitMs > 0) {
+        const secs = Math.ceil(waitMs / 1000);
+        sendJson(res, 429, { error: `A new code can be sent in ${secs} second${secs === 1 ? '' : 's'}.`, retry_after_seconds: secs, cooldown: true });
+        return;
+      }
+      if (!signupSendAllowed(email, clientIp(req))) {
+        sendJson(res, 429, { error: SIGNUP_RATE_ERROR, rate_limited: true });
+        return;
+      }
+      const linked = session.google_sub ? store.getProfileByGoogleSub(session.google_sub) : null;
+      if (store.findVerifiedProfileByEmail(email, [own.id, linked && linked.id])) {
+        sendJson(res, 409, emailHasFamilyBody());
+        return;
+      }
+      if (changed) own = store.updateProfileEmail(own.id, email);
+      const sent = await sendSignupCode(own.id, email);
+      sendJson(res, 200, {
+        ok: true,
+        profile: own,
+        email_verification: emailVerificationInfo(email, sent),
+        message: sent ? `We sent a new code to ${email}.` : 'We couldn’t send your code just now — please try again in a minute.',
+      });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/profile/update') {
@@ -3088,6 +3291,8 @@ const server = http.createServer(async (req, res) => {
       if (bearerAuth) { sendJson(res, 403, { error: AGENT_TOKEN_MANAGE_403 }); return; }
       const own = store.getSessionOwnProfile(session);
       if (!own || own.is_demo) { sendJson(res, 403, { error: 'Switch to your own family first, then manage agent access.' }); return; }
+      const pendingMint = pendingFamilyRefusal(own);
+      if (pendingMint) { sendJson(res, pendingMint.status, pendingMint.body); return; }
       if (!agentCanIssue(own.id)) {
         sendJson(res, 403, {
           error: 'Sign in with Google first, so this token hangs off a family you can always get back.',
@@ -3943,6 +4148,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/hubs') {
       const actor = bearerAuth ? bearerAuth.profile : store.getSessionViewer(session);
       if (!actor) { sendJson(res, 400, { error: 'Set up your family first.' }); return; }
+      const pendingCreate = pendingFamilyRefusal(actor);
+      if (pendingCreate) { sendJson(res, pendingCreate.status, pendingCreate.body); return; }
       const body = await readJsonBody(req);
       const kinds = ['school', 'team', 'activity', 'other'];
       const kind = kinds.includes(body.kind) ? body.kind : 'other';
@@ -4499,6 +4706,8 @@ const server = http.createServer(async (req, res) => {
       if (!hub) { sendJson(res, 404, { error: 'That hub could not be found.' }); return; }
       const active = store.getSessionViewer(session);
       if (!active) { sendJson(res, 400, { error: 'Set up your family first.', needsOnboarding: true }); return; }
+      const pendingAsk = pendingFamilyRefusal(active);
+      if (pendingAsk) { sendJson(res, pendingAsk.status, pendingAsk.body); return; }
       if (store.isMember(hub.id, active.id)) { sendJson(res, 200, { ok: true, alreadyMember: true }); return; }
       const request = store.createJoinRequest(hub.id, active.id);
       sendJson(res, 200, { ok: true, request });

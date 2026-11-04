@@ -76,7 +76,7 @@ test('rules and restrictions are carried into the note, not just the quote', asy
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env, PORT: String(PORT), APP_DB_PATH: dbPath,
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: dbPath,
       APP_DB_GCS_BUCKET: '', APP_DB_GCS_OBJECT: '',
       SCHOOL_AGENT_API_KEY: 'test-key',
       SCHOOL_AGENT_API_URL: `http://127.0.0.1:${fakeModel.address().port}/chat`,

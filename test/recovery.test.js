@@ -159,7 +159,7 @@ test('email recovery: generic response, hashed single-use token, restore, expiry
 
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), APP_DB_PATH: dbPath, PARENTLOOP_TEST_MAIL_FILE: mailFile },
+    env: { ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: dbPath, PARENTLOOP_TEST_MAIL_FILE: mailFile },
     stdio: 'ignore',
   });
   t.after(() => {

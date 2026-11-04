@@ -83,7 +83,7 @@ test('switching families mid-session moves placements and the parent run to fami
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1',
       PORT: String(PORT),
       APP_DB_PATH: dbPath,
       PARENTLOOP_TEST_AUTH: '1',

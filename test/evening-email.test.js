@@ -90,7 +90,7 @@ test('evening email: opt-in, on time, once a day, unsubscribable', async (t) => 
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env, PORT: String(PORT), APP_DB_PATH: dbPath, SCHOOL_AGENT_API_KEY: 'test-key',
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: dbPath, SCHOOL_AGENT_API_KEY: 'test-key',
       SCHOOL_AGENT_API_URL: `http://127.0.0.1:${fakeModel.address().port}/chat`,
       PARENTLOOP_TEST_AUTH: '1', PARENTLOOP_TEST_MAIL_FILE: mailFile,
       EVENING_EMAIL_CRON_SECRET: CRON_SECRET, PUBLIC_BASE_URL: PUBLIC,

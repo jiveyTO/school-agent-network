@@ -473,6 +473,8 @@ function rowToProfile(row) {
     },
     actions: parseJson(row.actions, {}),
     created_at: row.created_at || '',
+    // Brief 073: true until the family enters the code sent to its email.
+    email_pending: Boolean(row.email_pending),
   };
 }
 
@@ -775,6 +777,20 @@ async function initDb() {
   addColumnIfMissing('profiles', 'evening_email', 'evening_email INTEGER DEFAULT 0');
   addColumnIfMissing('profiles', 'evening_email_time', "evening_email_time TEXT DEFAULT '19:00'");
   addColumnIfMissing('profiles', 'evening_email_last_day', "evening_email_last_day TEXT DEFAULT ''");
+  // Brief 073: a family made by typing an email is pending until a code
+  // sent to that address is entered. Rows from before this default to 0
+  // (verified), so every existing family is grandfathered.
+  addColumnIfMissing('profiles', 'email_pending', 'email_pending INTEGER DEFAULT 0');
+  // Brief 073: one live signup code per pending family. Only a hash of the
+  // code is kept, bound to the address it was sent to.
+  run(`CREATE TABLE IF NOT EXISTS signup_codes (
+    profile_id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    sent_at TEXT NOT NULL
+  )`);
   addColumnIfMissing('sessions', 'google_sub', "google_sub TEXT DEFAULT ''");
   addColumnIfMissing('sessions', 'google_email', "google_email TEXT DEFAULT ''");
   // Brief 074: whether Google said the signed-in email is verified, and the
@@ -1612,7 +1628,10 @@ function linkOfferCandidates(session) {
   const email = String(session.google_email || '').trim().toLowerCase();
   if (!email) return [];
   return all(
+    // Brief 073: a family still waiting on its email code is never offered
+    // (it may be someone else squatting this address).
     `SELECT * FROM profiles WHERE is_demo = 0 AND COALESCE(google_sub, '') = ''
+     AND COALESCE(email_pending, 0) = 0
      AND LOWER(TRIM(COALESCE(parent_email, ''))) = ? ORDER BY created_at ASC LIMIT ?`,
     [email, LINK_OFFER_MAX]
   ).map(rowToProfile);
@@ -1682,7 +1701,7 @@ function findProfileByParentEmail(email) {
   const normalized = String(email || '').trim().toLowerCase();
   if (!normalized) return null;
   const row = one(
-    "SELECT * FROM profiles WHERE is_demo = 0 AND (LOWER(TRIM(COALESCE(parent_email, ''))) = ? OR LOWER(TRIM(COALESCE(google_email, ''))) = ?) ORDER BY created_at DESC LIMIT 1",
+    "SELECT * FROM profiles WHERE is_demo = 0 AND COALESCE(email_pending, 0) = 0 AND (LOWER(TRIM(COALESCE(parent_email, ''))) = ? OR LOWER(TRIM(COALESCE(google_email, ''))) = ?) ORDER BY created_at DESC LIMIT 1",
     [normalized, normalized]
   );
   return rowToProfile(row);
@@ -1740,6 +1759,91 @@ function hitRecoveryRateLimit(key, limit, windowMs) {
   run('UPDATE recovery_rate_limits SET count = ? WHERE key = ?', [count, String(key)]);
   persist();
   return count <= limit;
+}
+
+// --- Brief 073: verify the email when a family is created -------------------
+// A 6-digit code goes to the typed address; only a salted hash is kept. The
+// code is bound to that address: if the family's email changes, the code no
+// longer counts and a new one must be sent.
+// PARENTLOOP_TEST_SIGNUP_CODE_TTL_MS: tests only, to see a code expire.
+const SIGNUP_CODE_TTL_MS = Number(process.env.PARENTLOOP_TEST_SIGNUP_CODE_TTL_MS) || 15 * 60 * 1000;
+const SIGNUP_CODE_MAX_ATTEMPTS = 5;
+
+function hashSignupCode(profileId, email, code) {
+  return crypto.createHash('sha256')
+    .update(String(profileId) + ':' + String(email).trim().toLowerCase() + ':' + String(code))
+    .digest('hex');
+}
+
+// A verified, non-demo family that already uses this address (as its
+// contact email or its Google sign-in email), other than `exceptIds`.
+function findVerifiedProfileByEmail(email, exceptIds) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) return null;
+  const skip = (exceptIds || []).filter(Boolean).map(String);
+  const rows = all(
+    "SELECT id FROM profiles WHERE is_demo = 0 AND COALESCE(email_pending, 0) = 0 AND (LOWER(TRIM(COALESCE(parent_email, ''))) = ? OR LOWER(TRIM(COALESCE(google_email, ''))) = ?) ORDER BY created_at ASC",
+    [normalized, normalized]
+  );
+  const hit = rows.find((r) => !skip.includes(String(r.id)));
+  return hit ? rowToProfile(getProfileRowById(hit.id)) : null;
+}
+
+function setProfileEmailPending(profileId, pending) {
+  run('UPDATE profiles SET email_pending = ? WHERE id = ? AND is_demo = 0', [pending ? 1 : 0, String(profileId)]);
+  if (!pending) run('DELETE FROM signup_codes WHERE profile_id = ?', [String(profileId)]);
+  persist();
+  return rowToProfile(getProfileRowById(profileId));
+}
+
+// Makes a fresh code for a pending family (replacing any earlier one) and
+// returns it raw, for the email only — it is never stored or logged.
+function issueSignupCode(profileId, email) {
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+  const now = Date.now();
+  run('DELETE FROM signup_codes WHERE profile_id = ?', [String(profileId)]);
+  run('INSERT INTO signup_codes (profile_id, email, code_hash, expires_at, attempts, sent_at) VALUES (?, ?, ?, ?, 0, ?)', [
+    String(profileId),
+    String(email).trim().toLowerCase(),
+    hashSignupCode(profileId, email, code),
+    new Date(now + SIGNUP_CODE_TTL_MS).toISOString(),
+    new Date(now).toISOString(),
+  ]);
+  persist();
+  return code;
+}
+
+function signupCodeMeta(profileId) {
+  const row = one('SELECT email, expires_at, attempts, sent_at FROM signup_codes WHERE profile_id = ?', [String(profileId)]);
+  return row || null;
+}
+
+// Checks a code for a pending family. Returns { ok: true, profile } once
+// verified, or { reason: 'none' | 'expired' | 'too_many' | 'wrong',
+// tries_left }. The code must match the family's current email.
+function checkSignupCode(profileId, code) {
+  const profileRow = getProfileRowById(profileId);
+  if (!profileRow || profileRow.is_demo) return { reason: 'none' };
+  if (!profileRow.email_pending) return { ok: true, already: true, profile: rowToProfile(profileRow) };
+  const email = String(profileRow.parent_email || '').trim().toLowerCase();
+  const row = one('SELECT * FROM signup_codes WHERE profile_id = ?', [String(profileId)]);
+  if (!row || row.email !== email) return { reason: 'none' };
+  if (new Date(row.expires_at).getTime() <= Date.now()) return { reason: 'expired' };
+  if (Number(row.attempts) >= SIGNUP_CODE_MAX_ATTEMPTS) return { reason: 'too_many', tries_left: 0 };
+  const given = String(code == null ? '' : code).replace(/\s+/g, '');
+  if (/^\d{6}$/.test(given) && hashSignupCode(profileId, email, given) === row.code_hash) {
+    // Whoever proves the inbox owns the address: this family is verified,
+    // and codes waiting for any other pending family on it stop counting.
+    run('UPDATE profiles SET email_pending = 0 WHERE id = ?', [String(profileId)]);
+    run('DELETE FROM signup_codes WHERE profile_id = ? OR email = ?', [String(profileId), email]);
+    persist();
+    return { ok: true, profile: rowToProfile(getProfileRowById(profileId)) };
+  }
+  const attempts = Number(row.attempts) + 1;
+  run('UPDATE signup_codes SET attempts = ? WHERE profile_id = ?', [attempts, String(profileId)]);
+  persist();
+  const left = SIGNUP_CODE_MAX_ATTEMPTS - attempts;
+  return left > 0 ? { reason: 'wrong', tries_left: left } : { reason: 'too_many', tries_left: 0 };
 }
 
 // Brief 046: agent tokens. A parent issues a named token in the browser;
@@ -3179,7 +3283,7 @@ function emailLinkSecret() {
 // Real families who asked for the evening email and have an address.
 function listEveningEmailProfiles() {
   return all(
-    "SELECT id, evening_email_time, evening_email_last_day, parent_email FROM profiles WHERE evening_email = 1 AND is_demo = 0 AND COALESCE(parent_email, '') != ''"
+    "SELECT id, evening_email_time, evening_email_last_day, parent_email FROM profiles WHERE evening_email = 1 AND is_demo = 0 AND COALESCE(email_pending, 0) = 0 AND COALESCE(parent_email, '') != ''"
   ).map((r) => ({ id: r.id, time: r.evening_email_time || '19:00', last_day: r.evening_email_last_day || '', email: r.parent_email }));
 }
 
@@ -3519,6 +3623,13 @@ module.exports = {
   consumeRecoveryToken,
   recoveryTokenMetaForProfile,
   hitRecoveryRateLimit,
+  findVerifiedProfileByEmail,
+  setProfileEmailPending,
+  issueSignupCode,
+  signupCodeMeta,
+  checkSignupCode,
+  SIGNUP_CODE_TTL_MS,
+  SIGNUP_CODE_MAX_ATTEMPTS,
   RECOVERY_TOKEN_TTL_MS,
   AGENT_TOKEN_PREFIX,
   createAgentToken,

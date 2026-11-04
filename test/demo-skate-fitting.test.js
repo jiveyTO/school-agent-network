@@ -17,7 +17,7 @@ const NEW_QUOTE = 'Skate fitting is Saturday between 4:30 and 5:30 PM at the pro
 function boot(dbPath) {
   return execFileSync(process.execPath, ['-e', "require('./db').initDb().then(() => process.exit(0))"], {
     cwd: ROOT,
-    env: { ...process.env, APP_DB_PATH: dbPath, APP_DB_GCS_BUCKET: '', APP_DB_GCS_OBJECT: '' },
+    env: { ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', APP_DB_PATH: dbPath, APP_DB_GCS_BUCKET: '', APP_DB_GCS_OBJECT: '' },
     encoding: 'utf8',
   });
 }

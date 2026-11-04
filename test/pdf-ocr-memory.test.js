@@ -316,7 +316,7 @@ test('pdf ocr memory: large picture pages downscale, survive, and degrade', asyn
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1',
       PORT: String(PORT),
       APP_DB_PATH: path.join(tmpDir, 'app.db'),
       SCHOOL_AGENT_API_URL: `http://127.0.0.1:${fakeModel.address().port}/chat`,

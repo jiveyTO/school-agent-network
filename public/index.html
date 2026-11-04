@@ -753,9 +753,42 @@
         </div>
         <button class="small-btn" id="createProfileBtn" type="button">Save my family and continue</button>
         <p class="hint" id="obProfileStatus"></p>
+        <!-- Brief 073: the typed email already belongs to a confirmed family. -->
+        <p class="hint" id="obEmailTaken" hidden>
+          <button class="text-btn" id="obEmailTakenRecovery" type="button">Email me a recovery link</button> ·
+          <a href="/api/auth/login">Sign in with Google</a>
+        </p>
         <button class="text-btn" id="useDemoBtn" type="button">Use the demo family instead</button>
       </div>
 
+    </section>
+
+    <!-- Brief 073: a new family confirms its email with a 6-digit code. -->
+    <section id="emailCodeView" aria-labelledby="email-code-h" hidden>
+      <h2 id="email-code-h">Check your email</h2>
+      <div class="card">
+        <p style="margin-top:0">We sent a 6-digit code to <b id="emailCodeTo"></b>. Enter it here so we know this email is really yours — it keeps anyone else from using your address.</p>
+        <label class="field">Your 6-digit code
+          <input type="text" id="emailCodeInput" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123456">
+        </label>
+        <button class="small-btn" id="emailCodeConfirmBtn" type="button">Confirm my email</button>
+        <p class="hint" id="emailCodeStatus" role="status"></p>
+        <p class="hint" id="emailCodeTaken" hidden>
+          <button class="text-btn" id="emailCodeTakenRecovery" type="button">Email me a recovery link</button> ·
+          <a href="/api/auth/login">Sign in with Google</a>
+        </p>
+        <p class="hint">Can’t find it? Check your spam folder, or
+          <button class="text-btn" id="emailCodeResendBtn" type="button">send a new code</button>.</p>
+        <p class="hint"><button class="text-btn" id="emailCodeChangeBtn" type="button">Wrong address? Use a different email</button></p>
+        <div id="emailCodeChange" hidden>
+          <label class="field">Your email
+            <input type="email" id="emailCodeNewEmail" autocomplete="email" placeholder="e.g. you@example.com">
+          </label>
+          <button class="small-btn secondary" id="emailCodeSendNewBtn" type="button">Send the code there</button>
+        </div>
+        <p class="hint">Until your email is confirmed, your family can’t create or join hubs.
+          <button class="text-btn" id="emailCodeDemoBtn" type="button">Look around the demo family instead</button></p>
+      </div>
     </section>
 
     <section id="joinView" aria-labelledby="join-h" hidden>
@@ -2298,6 +2331,8 @@
     document.getElementById('createProfileBtn').textContent =
       onboardingMode === 'edit' ? 'Save changes' : 'Save my family and continue';
     onboardingView.hidden = false;
+    document.getElementById('emailCodeView').hidden = true;
+    document.getElementById('obEmailTaken').hidden = true;
     document.getElementById('joinView').hidden = true;
     document.getElementById('recoveryView').hidden = true;
     tabBar.hidden = true;
@@ -2308,6 +2343,7 @@
 
   function showRecovery() {
     onboardingView.hidden = true;
+    document.getElementById('emailCodeView').hidden = true;
     document.getElementById('joinView').hidden = true;
     tabBar.hidden = true;
     viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
@@ -2320,6 +2356,7 @@
   function showMain() {
     joinFlowActive = false;
     onboardingView.hidden = true;
+    document.getElementById('emailCodeView').hidden = true;
     document.getElementById('joinView').hidden = true;
     document.getElementById('approveView').hidden = true;
     document.getElementById('recoveryView').hidden = true;
@@ -2339,6 +2376,7 @@
   function showJoin() {
     joinFlowActive = true;
     onboardingView.hidden = true;
+    document.getElementById('emailCodeView').hidden = true;
     document.getElementById('recoveryView').hidden = true;
     document.getElementById('approveView').hidden = true;
     tabBar.hidden = true;
@@ -3335,7 +3373,7 @@
   function showLinkOffer(offer) {
     joinFlowActive = true;
     onboardingView.hidden = true;
-    ['recoveryView', 'joinView', 'approveView'].forEach(function (id) { document.getElementById(id).hidden = true; });
+    ['recoveryView', 'joinView', 'approveView', 'emailCodeView'].forEach(function (id) { document.getElementById(id).hidden = true; });
     tabBar.hidden = true;
     viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
     const families = offer.families || [];
@@ -3389,6 +3427,7 @@
   function showApprove() {
     joinFlowActive = true;
     onboardingView.hidden = true;
+    document.getElementById('emailCodeView').hidden = true;
     document.getElementById('recoveryView').hidden = true;
     document.getElementById('joinView').hidden = true;
     tabBar.hidden = true;
@@ -3639,6 +3678,12 @@
     // Google email made a family with the typed-email form, is asked first.
     if (status.link_offer && status.link_offer.families && status.link_offer.families.length) {
       showLinkOffer(status.link_offer);
+      return;
+    }
+    // Brief 073: a family whose email isn't confirmed yet picks up the code
+    // step first; confirming it carries on into any saved invite/approval.
+    if (status.emailPending) {
+      showEmailCodeView(status.pending_email, '');
       return;
     }
     // Brief 067: back from Google sign-in mid-approval → the approval page.
@@ -3901,37 +3946,136 @@
       demoViewing = false;
       renderFamily(data.profile);
       await loadFamilyPlacements();
-      // Brief 067: an agent approval that sent this parent through setup
-      // goes straight back to its approval page.
-      const pendingApprove = (function () { try { return sessionStorage.getItem('pendingApproveId'); } catch (e) { return ''; } })();
-      if (pendingApprove) {
-        window.location.href = '/approve/' + encodeURIComponent(pendingApprove);
+      // Brief 073: a typed email is confirmed by code before anything else.
+      if (data.needs_email_code) {
+        statusEl.textContent = '';
+        showEmailCodeView((data.email_verification && data.email_verification.sent_to) || obEmail, data.email_verification && !data.email_verification.sent ? data.message : '');
         return;
       }
-      const pendingJoin = sessionStorage.getItem('pendingJoinToken');
-      if (pendingJoin) {
-        try {
-          statusEl.textContent = 'Saved. Joining your hub…';
-          await acceptPendingJoin(pendingJoin);
-          return;
-        } catch (e) {
-          if (e && e.data && e.data.needs_answer) {
-            showJoinQuestion(e.data, '');
-            return;
-          }
-          // Fall through to the normal next steps.
-        }
-      }
-      statusEl.textContent = 'Saved. Let’s find your hubs.';
-      await loadHubs();
-      showMain();
+      await afterFamilyReady(statusEl);
     } catch (e) {
       statusEl.textContent = e.message;
-      if (/email/i.test(e.message || '')) showObEmailError(e.message);
+      if (e && e.data && e.data.email_has_family) {
+        document.getElementById('obEmailTaken').hidden = false;
+      } else if (/email/i.test(e.message || '')) showObEmailError(e.message);
     } finally {
       btn.disabled = false;
     }
   });
+
+  // The next step once a family is ready to use (just made, or just
+  // confirmed its email): back to an agent approval, on into a saved
+  // invite, or the hubs.
+  async function afterFamilyReady(statusEl) {
+    // Brief 067: an agent approval that sent this parent through setup
+    // goes straight back to its approval page.
+    const pendingApprove = (function () { try { return sessionStorage.getItem('pendingApproveId'); } catch (e) { return ''; } })();
+    if (pendingApprove) {
+      window.location.href = '/approve/' + encodeURIComponent(pendingApprove);
+      return;
+    }
+    const pendingJoin = (function () { try { return sessionStorage.getItem('pendingJoinToken'); } catch (e) { return ''; } })();
+    if (pendingJoin) {
+      try {
+        statusEl.textContent = 'Saved. Joining your hub…';
+        await acceptPendingJoin(pendingJoin);
+        return;
+      } catch (e) {
+        if (e && e.data && e.data.needs_answer) {
+          showJoinQuestion(e.data, '');
+          return;
+        }
+        // Fall through to the normal next steps.
+      }
+    }
+    statusEl.textContent = 'Saved. Let’s find your hubs.';
+    await loadHubs();
+    showMain();
+  }
+
+  // Brief 073: the "Check your email" step. Every state keeps a way on:
+  // try again, send a new code, fix the address, or look at the demo.
+  function showEmailCodeView(email, message) {
+    onboardingView.hidden = true;
+    document.getElementById('joinView').hidden = true;
+    document.getElementById('approveView').hidden = true;
+    document.getElementById('recoveryView').hidden = true;
+    tabBar.hidden = true;
+    viewIds.forEach(function (id) { document.getElementById(id).hidden = true; });
+    document.getElementById('emailCodeView').hidden = false;
+    document.getElementById('emailCodeTo').textContent = email || 'your email';
+    document.getElementById('emailCodeInput').value = '';
+    document.getElementById('emailCodeStatus').textContent = message || '';
+    document.getElementById('emailCodeTaken').hidden = true;
+    document.getElementById('emailCodeChange').hidden = true;
+    paintDemoBar();
+    window.scrollTo(0, 0);
+    document.getElementById('emailCodeInput').focus();
+  }
+
+  document.getElementById('emailCodeConfirmBtn').addEventListener('click', async function () {
+    const btn = this;
+    const statusEl = document.getElementById('emailCodeStatus');
+    const code = document.getElementById('emailCodeInput').value.replace(/\s+/g, '');
+    if (!/^\d{6}$/.test(code)) {
+      statusEl.textContent = 'The code is 6 digits — check the email we sent.';
+      return;
+    }
+    btn.disabled = true;
+    statusEl.textContent = 'Checking…';
+    try {
+      const data = await postJson('/api/profile/verify-email', { code: code });
+      renderFamily(data.profile);
+      statusEl.textContent = 'Confirmed — thanks.';
+      await afterFamilyReady(statusEl);
+    } catch (e) {
+      // The field stays, with what was typed, for another try.
+      statusEl.textContent = (e && e.message) || 'That didn’t work. Please try again.';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  async function resendEmailCode(email) {
+    const statusEl = document.getElementById('emailCodeStatus');
+    document.getElementById('emailCodeTaken').hidden = true;
+    statusEl.textContent = 'Sending…';
+    try {
+      const data = await postJson('/api/profile/resend-code', email ? { email: email } : {});
+      const to = (data.email_verification && data.email_verification.sent_to) || email;
+      if (to) document.getElementById('emailCodeTo').textContent = to;
+      if (data.profile) renderFamily(data.profile);
+      document.getElementById('emailCodeChange').hidden = true;
+      document.getElementById('emailCodeInput').value = '';
+      statusEl.textContent = data.message || 'We sent a new code.';
+      if (data.already_verified) await afterFamilyReady(statusEl);
+    } catch (e) {
+      statusEl.textContent = (e && e.message) || 'That didn’t work. Please try again.';
+      if (e && e.data && e.data.email_has_family) document.getElementById('emailCodeTaken').hidden = false;
+    }
+  }
+
+  document.getElementById('emailCodeResendBtn').addEventListener('click', function () { resendEmailCode(''); });
+  document.getElementById('emailCodeChangeBtn').addEventListener('click', function () {
+    const box = document.getElementById('emailCodeChange');
+    box.hidden = !box.hidden;
+    if (!box.hidden) document.getElementById('emailCodeNewEmail').focus();
+  });
+  document.getElementById('emailCodeSendNewBtn').addEventListener('click', function () {
+    const value = document.getElementById('emailCodeNewEmail').value.trim();
+    if (!isValidParentEmail(value)) {
+      document.getElementById('emailCodeStatus').textContent = PARENT_EMAIL_ERROR;
+      return;
+    }
+    resendEmailCode(value);
+  });
+  document.getElementById('emailCodeDemoBtn').addEventListener('click', function () {
+    switchToDemo().catch(function (e) {
+      document.getElementById('emailCodeStatus').textContent = e.message;
+    });
+  });
+  document.getElementById('obEmailTakenRecovery').addEventListener('click', showRecovery);
+  document.getElementById('emailCodeTakenRecovery').addEventListener('click', showRecovery);
 
   document.getElementById('familyEmailSaveBtn').addEventListener('click', async function () {
     const statusEl = document.getElementById('familyEmailStatus');

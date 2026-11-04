@@ -213,7 +213,7 @@ test('onboarding and placements API', async (t) => {
   const dbPath = path.join(tmpDir2, 'app.db');
   child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), APP_DB_PATH: dbPath },
+    env: { ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1', PORT: String(PORT), APP_DB_PATH: dbPath },
     stdio: 'ignore',
   });
   t.after(() => {

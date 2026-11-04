@@ -122,7 +122,7 @@ test('empty extraction retries once, then fails visibly', async (t) => {
   child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...process.env, PARENTLOOP_TEST_SIGNUP_VERIFIED: '1',
       PORT: String(PORT),
       APP_DB_PATH: dbPath,
       SCHOOL_AGENT_API_KEY: 'test-key',
