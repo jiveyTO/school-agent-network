@@ -134,3 +134,7 @@ print them. Remove `/tmp/parentloop-deploy` afterwards.
   never appears in fixtures, placeholders, docs, or tests.
 - The hosted Cloud Run copy is the public demo sandbox only (fictional Maple
   Grove / Rivera data). Real profiles live in the local Docker run.
+
+## Commit messages (hard rule)
+
+- Commits in this project must not include Co-Authored-By trailer lines.
