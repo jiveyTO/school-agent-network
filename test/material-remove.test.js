@@ -79,6 +79,7 @@ function makeClient() {
     post: (p, body) => req(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }),
     get: (p) => req(p),
     del: (p) => req(p, { method: 'DELETE' }),
+    patch: (p, body) => req(p, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }),
   };
 }
 
@@ -240,6 +241,38 @@ test('material removal API: permissions, demo protection, evening check', async 
     assert.equal(noHub.res.status, 404);
   });
 
+  // Rename (the material card's ⋯ menu): the same people who may remove.
+  await t.test('rename: uploader and admin may, an ordinary member may not; notes follow the new name', async () => {
+    const detailA = await memberA.get(`/api/hubs/${hubId}`);
+    assert.equal(detailA.data.materials.find((m) => m.id === mat1.id).can_rename, true, 'uploader may rename');
+    const detailB = await memberB.get(`/api/hubs/${hubId}`);
+    assert.equal(detailB.data.materials.find((m) => m.id === mat1.id).can_rename, false, 'ordinary member may not');
+    const stampedBefore = detailA.data.facts.filter((f) => f.material_id === mat1.id && f.group_label === mat1.title).length;
+
+    const denied = await memberB.patch(`/api/hubs/${hubId}/materials/${mat1.id}`, { title: 'Not yours' });
+    assert.equal(denied.res.status, 403);
+    const outside = await outsider.patch(`/api/hubs/${hubId}/materials/${mat1.id}`, { title: 'Nope' });
+    assert.equal(outside.res.status, 403);
+    const blank = await memberA.patch(`/api/hubs/${hubId}/materials/${mat1.id}`, { title: '   ' });
+    assert.equal(blank.res.status, 400);
+    const long = await memberA.patch(`/api/hubs/${hubId}/materials/${mat1.id}`, { title: 'x'.repeat(121) });
+    assert.equal(long.res.status, 400);
+    const missing = await memberA.patch(`/api/hubs/${hubId}/materials/no-such-material`, { title: 'Ghost' });
+    assert.equal(missing.res.status, 404);
+
+    const renamed = await memberA.patch(`/api/hubs/${hubId}/materials/${mat1.id}`, { title: '  Cedar Valley — corrected   newsletter ' });
+    assert.equal(renamed.res.status, 200, renamed.text.slice(0, 300));
+    assert.equal(renamed.data.material.title, 'Cedar Valley — corrected newsletter', 'trimmed, spaces collapsed');
+    const after = await memberA.get(`/api/hubs/${hubId}`);
+    assert.equal(after.data.materials.find((m) => m.id === mat1.id).title, 'Cedar Valley — corrected newsletter');
+    const stampedAfter = after.data.facts.filter((f) => f.material_id === mat1.id && f.group_label === 'Cedar Valley — corrected newsletter').length;
+    assert.equal(stampedAfter, stampedBefore, 'notes headed by the old name now carry the new one');
+
+    const byAdmin = await founder.patch(`/api/hubs/${hubId}/materials/${mat1.id}`, { title: mat1.title });
+    assert.equal(byAdmin.res.status, 200, 'hub admin may rename another member’s material');
+    mat1 = byAdmin.data.material;
+  });
+
   await t.test('uploader removes their own material; facts and evening check follow', async () => {
     const before = await memberA.post('/api/parent/run', {});
     assert.equal(before.res.status, 200, before.text.slice(0, 300));
@@ -283,9 +316,12 @@ test('material removal API: permissions, demo protection, evening check', async 
     const detail = await demo.get(`/api/hubs/${demoHub.id}`);
     assert.ok(detail.data.materials.length > 0, 'demo hub has seeded materials');
     assert.ok(detail.data.materials.every((m) => m.can_remove === false), 'no Remove action in the demo');
+    assert.ok(detail.data.materials.every((m) => m.can_rename === false), 'no Rename action in the demo');
     const target = detail.data.materials[0];
     const refused = await demo.del(`/api/hubs/${demoHub.id}/materials/${target.id}`);
     assert.equal(refused.res.status, 403, 'server refuses demo removal even for its admin/uploader');
+    const noRename = await demo.patch(`/api/hubs/${demoHub.id}/materials/${target.id}`, { title: 'Renamed demo' });
+    assert.equal(noRename.res.status, 403, 'server refuses demo renames too');
     const after = await demo.get(`/api/hubs/${demoHub.id}`);
     assert.ok(after.data.materials.some((m) => m.id === target.id), 'demo material intact');
   });
