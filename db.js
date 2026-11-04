@@ -818,6 +818,7 @@ async function initDb() {
   backfillInviteExpiry();
   backfillSchoolKeys();
   persist();
+  const demoWasReset = resetDemoHubsIfChanged();
   seedDemoHubs();
   purgeDemoMemberships();
   restampDemoFactScopes();
@@ -825,6 +826,7 @@ async function initDb() {
   for (const target of DEMO_TEST_MATERIAL_REMOVALS) removeDemoTestMaterial(target);
   moveDemoSkateFitting();
   retitleLegacyPastes();
+  recordDemoSeedSignature(demoWasReset);
   // A restored database that boot left unchanged (schema-only migrations
   // don't count: they re-run every boot) is not uploaded. Uploading it would
   // move the stored generation during a deploy, so the old instance's final
@@ -904,6 +906,77 @@ function retitleLegacyPastes() {
   }
   if (changed) console.log(`paste titles: retitled ${changed} pasted material(s) from their first-line cut`);
   return changed;
+}
+
+// --- Demo reset at boot ------------------------------------------------------
+// The public demo returns to its seed at every boot. Anyone can add material
+// to the demo hubs (a live add on camera, a visitor trying the page), and an
+// add can also fold its notes into the seed's own notes, so removing the new
+// material alone would not restore the demo. Instead, boot compares the demo
+// hubs' content with the signature recorded after the last clean seed: when
+// it differs, every material, note and quote rejection in the demo hubs is
+// cleared (and the demo families' saved evening checks), and seedDemoHubs
+// rebuilds them from the seed files. When nothing changed, boot writes
+// nothing, so an unchanged database is still not uploaded.
+const DEMO_SEED_SIGNATURE_KEY = 'demo_seed_signature';
+const DEMO_SEED_MATERIAL_A = 'Maple Grove newsletter (mock)';
+const DEMO_SEED_MATERIAL_B = 'U9 Hockey — Fall schedule (fictional)';
+
+function demoContentSignature() {
+  const ids = all('SELECT id FROM hubs WHERE is_demo = 1 ORDER BY id').map((r) => r.id);
+  if (!ids.length) return '';
+  const marks = ids.map(() => '?').join(', ');
+  const materials = all(
+    `SELECT hub_id, kind, title, raw_text, status FROM materials WHERE hub_id IN (${marks}) ORDER BY hub_id, title, raw_text`,
+    ids
+  );
+  const facts = all(
+    `SELECT f.hub_id, f.id, m.title AS material_title, f.type, f.title, f.detail, f.date, f.time, f.applies_to,
+            f.action_required, f.action, f.source_document, f.source_text, f.group_label, f.group_summary, f.scope, f.scope_value
+     FROM facts f LEFT JOIN materials m ON m.id = f.material_id
+     WHERE f.hub_id IN (${marks}) ORDER BY f.hub_id, f.id`,
+    ids
+  );
+  return crypto.createHash('sha256').update(JSON.stringify({ materials, facts })).digest('hex');
+}
+
+function resetDemoHubsIfChanged() {
+  const stored = getSetting(DEMO_SEED_SIGNATURE_KEY);
+  if (!stored) {
+    // First boot with the reset: today's demo is adopted as the seed (its
+    // signature is recorded after seeding) unless it already holds a
+    // material that is not one of the two seed materials.
+    const stray = one(
+      `SELECT m.id FROM materials m JOIN hubs h ON h.id = m.hub_id AND h.is_demo = 1
+       WHERE m.title NOT IN (?, ?) LIMIT 1`,
+      [DEMO_SEED_MATERIAL_A, DEMO_SEED_MATERIAL_B]
+    );
+    if (!stray) return false;
+  } else if (demoContentSignature() === stored) {
+    return false;
+  }
+  const ids = all('SELECT id FROM hubs WHERE is_demo = 1').map((r) => r.id);
+  if (!ids.length) return false;
+  const marks = ids.map(() => '?').join(', ');
+  const extra = all(
+    `SELECT COUNT(*) AS n FROM materials WHERE hub_id IN (${marks})`, ids
+  )[0].n;
+  run(`DELETE FROM facts WHERE hub_id IN (${marks})`, ids);
+  run(`DELETE FROM fact_rejections WHERE hub_id IN (${marks})`, ids);
+  run(`DELETE FROM materials WHERE hub_id IN (${marks})`, ids);
+  run('DELETE FROM evening_checks WHERE profile_id IN (SELECT id FROM profiles WHERE is_demo = 1)');
+  persist();
+  console.log(`demo reset: the demo hubs changed since their seed; cleared ${extra} material(s) and reseeding`);
+  return true;
+}
+
+function recordDemoSeedSignature(afterReset) {
+  const stored = getSetting(DEMO_SEED_SIGNATURE_KEY);
+  if (stored && !afterReset) return;
+  const signature = demoContentSignature();
+  if (!signature || signature === stored) return;
+  setSetting(DEMO_SEED_SIGNATURE_KEY, signature);
+  persist();
 }
 
 // Rows inserted, updated or deleted on this connection since it opened.
@@ -3497,6 +3570,8 @@ module.exports = {
   legacyPasteTitle,
   retitleLegacyPastes,
   moveDemoSkateFitting,
+  demoContentSignature,
+  totalRowChanges,
   getSessionOwnProfile,
   isMember,
   getMemberRole,
