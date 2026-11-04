@@ -61,6 +61,6 @@ test('derivePasteTitle: one short line, never the whole paste', () => {
   const run = 'Dear families we have so much happening this month that it is hard to know where to start with all of it';
   const cut = derivePasteTitle(run);
   assert.ok(cut.length <= 61 && cut.endsWith('…') && !cut.includes('  '), cut);
-  assert.equal(derivePasteTitle('St. Joseph news\nBody'), 'St. Joseph news');
+  assert.equal(derivePasteTitle('St. Nicholas news\nBody'), 'St. Nicholas news');
   assert.match(derivePasteTitle(''), /^Newsletter — \d{4}-\d{2}-\d{2}$/);
 });

@@ -20,10 +20,10 @@ const FILLER = ('<p>Finding the right secondary school is important for a ' +
   'student\u2019s academic success and well-being this fall.</p>').repeat(140);
 const SJA_HTML =
   '<html><head>' +
-  '<title>St. Joseph Catholic Elementary School \u2013 Home of the Jaguars!</title>' +
+  '<title>St. Nicholas Catholic Elementary School \u2013 Home of the Wildcats!</title>' +
   '</head><body>' +
   '<nav>York Catholic District School Board schools</nav>' +
-  '<h1>St. Joseph Catholic Elementary School</h1>' +
+  '<h1>St. Nicholas Catholic Elementary School</h1>' +
   FILLER +
   '<footer>School Information 2 Glass Dr., Aurora L4G 2E8 Phone: 905-727-5782</footer>' +
   '</body></html>';
@@ -37,14 +37,14 @@ function metaReply(content) {
 }
 
 const BLANK_LOCATION = JSON.stringify({
-  school_name: 'St. Joseph Catholic Elementary School',
+  school_name: 'St. Nicholas Catholic Elementary School',
   city: '',
   province: '',
   country: '',
 });
 
 const TORONTO_MODEL = JSON.stringify({
-  school_name: 'St. Joseph Catholic Elementary School',
+  school_name: 'St. Nicholas Catholic Elementary School',
   city: 'Toronto',
   province: '',
   country: '',
@@ -145,7 +145,7 @@ test('school autofill prefers the page address over the remembered location', as
     metaQueue = [metaReply(BLANK_LOCATION)];
     const parsed = await postParseLink('/sja');
     assert.equal(parsed.res.status, 200, parsed.text.slice(0, 400));
-    assert.equal(parsed.data.fields.school_name, 'St. Joseph Catholic Elementary School');
+    assert.equal(parsed.data.fields.school_name, 'St. Nicholas Catholic Elementary School');
     assert.equal(parsed.data.fields.city, 'Aurora');
     assert.equal(parsed.data.fields.province, 'Ontario');
     assert.equal(parsed.data.fields.country, 'Canada');

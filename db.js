@@ -2871,7 +2871,7 @@ function hashJoinAnswer(hubId, answer) {
 
 // Brief 068: more forgiving matching on top of the 067 form — "&" reads as
 // "and", "St"/"Ste" as "Saint"/"Sainte", and a leading "the", "a" or "an"
-// is dropped ("The Saint Joseph's Tigers" = "st josephs tigers"). Hashes
+// is dropped ("The Riverside Tigers" = "riverside tigers"). Hashes
 // made this way carry a "v2:" prefix; 067 hashes keep matching as before.
 const JOIN_WORD_VARIANTS = { st: 'saint', ste: 'sainte' };
 function normalizeJoinAnswerV2(value) {
