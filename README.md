@@ -8,6 +8,8 @@ Track: Indie · Theme: Build for Your World
 **Live demo:** https://parentloop-964717527488.northamerica-northeast2.run.app
 *(Public demo copy — use "Use the demo family instead" on the welcome screen. The hosted copy is an anonymous shared sandbox; see "Known limits.")*
 
+**Demo video:** https://youtu.be/3D4GJYGv-7E
+
 ## The problem
 
 Every school parent lives in the same flood: PDF newsletters behind portal logins, notices in a class WhatsApp group, a hockey schedule on a league site. The information exists — it's just scattered, unsearchable, and impossible to check against your own family's life. Existing tools ask parents to hand over portal credentials or wait for the school to adopt new software. Neither happens.
