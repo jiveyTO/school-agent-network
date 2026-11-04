@@ -1527,10 +1527,23 @@ async function sendDueEveningEmails(now) {
   return out;
 }
 
+// The hubs and facts a family's evening check reads (and an agent's context
+// bundle carries): the family's own hubs only, and for a real family never a
+// demo hub — the sample notes must not reach a real family's check, even if
+// it joined a demo hub through a demo visitor's invite.
+function checkHubsFor(profile) {
+  return store.listHubsForProfile(profile.id).filter((h) => profile.is_demo || !h.is_demo);
+}
+
+function checkFactsFor(profile) {
+  const ids = new Set(checkHubsFor(profile).map((h) => h.id));
+  return store.listFactsForProfile(profile.id).filter((f) => ids.has(f.hub_id));
+}
+
 // The family's latest saved check plus whether it is still current.
 function latestEveningCheck(profile) {
   const saved = store.getEveningCheck(profile.id);
-  const fingerprint = eveningFingerprint(profile, store.listFactsForProfile(profile.id), eveningMoment(profile));
+  const fingerprint = eveningFingerprint(profile, checkFactsFor(profile), eveningMoment(profile));
   return {
     check: saved ? withDoneApplied(saved.result, profile.actions) : null,
     ran_at: saved ? saved.ran_at : '',
@@ -1539,11 +1552,135 @@ function latestEveningCheck(profile) {
   };
 }
 
+// --- Agent context bundle (evening check mode 2b) -------------------------
+// Everything a parent's own agent needs to write the evening check itself, in
+// the parent's environment: the family's own children, tracked actions and
+// placements, plus the shared materials and facts (with their source quotes
+// and caution flags) of every hub the family belongs to — the same facts the
+// prepared check reads. Never another family's children, placements, grades
+// or emails, never a contributor's identity, never a demo hub for a real
+// family. since (ISO time) keeps only materials and facts added after it.
+const LOW_CONFIDENCE = 0.7;
+
+function materialCautions(m) {
+  const out = [];
+  if (m.may_have_unread_pictures && !m.pictures_read_with_ocr) out.push('may_have_unread_pictures');
+  if (m.pictures_read_with_ocr) out.push('pictures_read_with_ocr');
+  if (Number(m.unverified_count) > 0) out.push('items_dropped_unverified_quote');
+  return out;
+}
+
+function factCautions(f, material) {
+  const out = [];
+  if (!f.quote_verified) out.push('quote_not_verified');
+  if (typeof f.confidence === 'number' && f.confidence > 0 && f.confidence < LOW_CONFIDENCE) out.push('low_confidence');
+  if (material) {
+    for (const c of materialCautions(material)) if (c !== 'items_dropped_unverified_quote') out.push(c);
+  }
+  return out;
+}
+
+function agentContextBundle(profile, sinceMs) {
+  const after = (iso) => sinceMs == null || Date.parse(iso || '') > sinceMs;
+  const hubs = [];
+  let materialCount = 0;
+  let factCount = 0;
+  for (const hub of checkHubsFor(profile)) {
+    // Arrival times for every material in the hub (a fact can be in the
+    // family's scope while its material is listed under a narrower one).
+    const allMaterials = new Map(store.listMaterials(hub.id).map((m) => [m.id, m]));
+    const materials = store.listMaterials(hub.id, profile.id)
+      .filter((m) => after(m.created_at))
+      .map((m) => ({
+        id: m.id,
+        title: m.title,
+        kind: m.kind,
+        added_at: m.created_at,
+        status: m.status,
+        scope: m.scope,
+        scope_value: m.scope_value,
+        cautions: materialCautions(m),
+      }));
+    const facts = store.listFacts(hub.id, profile.id)
+      .filter((f) => {
+        const material = allMaterials.get(f.material_id);
+        return after((material && material.created_at) || f.extracted_at);
+      })
+      .map((f) => {
+        const material = allMaterials.get(f.material_id);
+        return {
+          id: f.id,
+          material_id: f.material_id,
+          added_at: (material && material.created_at) || f.extracted_at || '',
+          type: f.type,
+          title: f.title,
+          detail: f.detail,
+          date: f.date,
+          time: f.time,
+          applies_to: f.applies_to,
+          scope: f.scope,
+          scope_value: f.scope_value,
+          action_required: f.action_required,
+          action: f.action,
+          link: f.link,
+          source_document: f.source_document,
+          source_quote: f.source_text,
+          quote_verified: f.quote_verified,
+          confidence: f.confidence,
+          supersedes: f.supersedes,
+          group_label: f.group_label,
+          published_at: f.published_at,
+          cautions: factCautions(f, material),
+        };
+      });
+    materialCount += materials.length;
+    factCount += facts.length;
+    hubs.push({
+      id: hub.id,
+      name: hub.name,
+      kind: hub.kind || 'other',
+      school_name: hub.school_name || '',
+      city: hub.city || '',
+      province: hub.province || '',
+      country: hub.country || '',
+      website: hub.website || '',
+      placements: store.effectivePlacements(hub.id, profile.id).map((p) => ({
+        child_id: p.child_id,
+        child_name: p.child_name,
+        grade: p.grade || '',
+        class: p.class || '',
+      })),
+      materials,
+      facts,
+    });
+  }
+  const children = (profile.children || [profile.child]).filter(Boolean).map((c) => ({ id: c.id || '', name: c.name || '' }));
+  return {
+    ok: true,
+    generated_at: nowIso(),
+    since: sinceMs == null ? '' : new Date(sinceMs).toISOString(),
+    family: {
+      children,
+      actions: profile.actions || {},
+      nudge_style: (profile.soul && profile.soul.nudge_style) || '',
+    },
+    hubs,
+    counts: { hubs: hubs.length, materials: materialCount, facts: factCount },
+    caution_flags: {
+      quote_not_verified: 'The quote was not code-checked against the source text. Treat the item with care and prefer the source document.',
+      low_confidence: 'The extractor was unsure about this item.',
+      may_have_unread_pictures: 'The source has pages that are mostly pictures; some notes may be missing.',
+      pictures_read_with_ocr: 'Some text was read from pictures and may contain reading errors.',
+      items_dropped_unverified_quote: 'Some items in this material were dropped because their quotes did not verify.',
+    },
+  };
+}
+
 // Structured placements for the prompt's profile JSON: each child's grade and
 // class in each school hub. Team hubs carry no placement.
 function placementRecordsForRun(profile) {
   const records = [];
-  for (const hub of store.listHubsForProfile(profile.id)) {
+  for (const hub of checkHubsFor(profile)) {
     if ((hub.kind || 'other') === 'team') continue;
     for (const p of store.effectivePlacements(hub.id, profile.id)) {
       records.push({ hub: hub.name, child: p.child_name, grade: p.grade || '', class: p.class || '' });
@@ -1554,7 +1691,7 @@ function placementRecordsForRun(profile) {
 
 function placementLinesForRun(profile) {
   const lines = [];
-  for (const hub of store.listHubsForProfile(profile.id)) {
+  for (const hub of checkHubsFor(profile)) {
     if ((hub.kind || 'other') === 'team') {
       lines.push(`${hub.name} is a team hub: no placement, its notes apply to the whole family.`);
       continue;
@@ -1573,14 +1710,17 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
   const moment = eveningMoment(viewer, simulatedLabel);
   push('evening check started');
   push(moment.simulated ? `simulated time: ${moment.label}` : `current time: ${moment.label}`);
+  const profile = viewer;
+  if (!profile) {
+    throw new Error('No family profile found — finish setup or switch to the demo family.');
+  }
+  // A family whose hubs have no notes yet (a brand-new member, a new hub)
+  // gets a real, saved empty check at once — no model call, no waiting.
+  if (!checkFactsFor(profile).length) return emptyEveningCheck(profile, moment, simulatedLabel, push);
   if (!API_KEY) {
     throw new Error(
       'SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.'
     );
-  }
-  const profile = viewer;
-  if (!profile) {
-    throw new Error('No family profile found — finish setup or switch to the demo family.');
   }
   if (profile.is_demo && fs.existsSync(FAMILY_PROFILE_PATH)) {
     try {
@@ -1592,8 +1732,8 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
       // Demo wishes are optional; the stored soul still drives the run.
     }
   }
-  const facts = store.listFactsForProfile(profile.id);
-  const hubs = store.listHubsForProfile(profile.id);
+  const facts = checkFactsFor(profile);
+  const hubs = checkHubsFor(profile);
   const childNames = (profile.children || [profile.child])
     .map((c) => c && c.name)
     .filter(Boolean);
@@ -1635,6 +1775,33 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
       ran_at: nowIso(),
       moment_label: moment.label,
       fingerprint: eveningFingerprint(profile, facts, moment),
+    });
+  }
+  return result;
+}
+
+function emptyEveningCheck(profile, moment, simulatedLabel, push) {
+  const hubs = checkHubsFor(profile);
+  const childName = (profile.children || [profile.child]).map((c) => c && c.name).filter(Boolean).join(' and ') || 'the child';
+  push(`family profile loaded for ${childName} (private to this Parent Agent)`);
+  push(`${hubs.length} ${hubs.length === 1 ? 'hub' : 'hubs'} checked: ${hubs.map((h) => h.name).join(', ') || 'none yet'}`);
+  push('0 facts checked — no school notes in these hubs yet; no model call');
+  push(PRIVACY_CHECK_LINE);
+  const result = {
+    ...normalizeParentResult({ relevant_facts: [], nudges: [], calendar_hold: null }, []),
+    empty: true,
+    empty_reason: hubs.length ? 'no_notes_yet' : 'no_hubs_yet',
+    filtering_summary: hubs.length
+      ? 'Your hubs have no school notes yet. When a newsletter or notice is added, tonight’s check picks it up.'
+      : 'You are not in any hubs yet. Join or start a hub to get an evening check.',
+  };
+  result.summary = result.filtering_summary;
+  if (!simulatedLabel) {
+    store.saveEveningCheck(profile.id, {
+      result,
+      ran_at: nowIso(),
+      moment_label: moment.label,
+      fingerprint: eveningFingerprint(profile, [], moment),
     });
   }
   return result;
@@ -2080,12 +2247,50 @@ const AGENT_MANIFEST = {
       method: 'GET',
       path: '/api/parent/latest',
       auth: 'Bearer agent token',
-      description: 'Read the token\'s family\'s most recent evening check instantly: { ok, check, ran_at, moment_label, stale }. check has the same shape as the evening check result (or null if none yet). stale is true when the family\'s notes, placements, or the day changed since it ran — then POST /api/parent/run to refresh.',
+      description: 'Read the token\'s family\'s most recent evening check instantly: { ok, check, ran_at, moment_label, stale }. check has the same shape as the evening check result (or null if none yet). stale is true when the family\'s notes, placements, or the day changed since it ran — then POST /api/parent/run to refresh. A family whose hubs have no notes yet gets a real empty check (empty: true) at once.',
+    },
+    {
+      name: 'context bundle',
+      method: 'GET',
+      path: '/api/agent/context',
+      auth: 'Bearer agent token (required)',
+      query: { since: 'optional ISO date or time; only materials and facts added after it' },
+      description: 'Everything you need to write the evening check yourself (agent check, style b): { ok, generated_at, since, family: { children, actions, nudge_style }, hubs: [{ id, name, kind, placements, materials, facts }], counts, caution_flags }. Covers every hub the token\'s family belongs to and only those; placements are the family\'s own. Each fact carries source_quote, quote_verified, and cautions; each material carries cautions (see caution_flags). Never contains another family\'s children, grades, or contact details.',
     },
   ],
   // The evening check is ParentLoop's main output. A connected agent keeps
   // its parent informed by reading it each evening; ParentLoop does not
   // push to agents.
+  // Two first-class ways to run the evening check. A family uses one.
+  evening_check_modes: {
+    app_check: {
+      who_runs_it: 'ParentLoop',
+      summary: 'ParentLoop prepares the check itself: the Tonight page, saved checks, the nightly email, and the token-scoped check endpoints. Nothing is needed from an agent.',
+      endpoints: ['GET /api/parent/latest', 'POST /api/parent/run'],
+    },
+    agent_check: {
+      who_runs_it: 'the parent\'s own agent',
+      styles: {
+        relay: {
+          summary: 'Call ParentLoop\'s prepared check with your token and deliver it to the parent, optionally adding local context only you know (their calendar, commute, reminders).',
+          steps: [
+            'GET /api/parent/latest with the token; if check is null or stale is true, POST /api/parent/run.',
+            'Tell the parent each nudge, each conflict, and the dated items for the next few days, adding any local context you hold.',
+          ],
+        },
+        generate: {
+          summary: 'Fetch the context bundle and write the check yourself, in the parent\'s environment, combining hub context with private context ParentLoop never receives.',
+          steps: [
+            'GET /api/agent/context with the token (add ?since=<generated_at of your last fetch> to get only what is new, and keep what you fetched before).',
+            'Keep the facts that apply to the family\'s children using hubs[].placements (grade and class) and each fact\'s scope; team hubs apply to the whole family.',
+            'Nudge only for facts with action_required whose tracked state in family.actions is still open; flag events that overlap in time as conflicts.',
+            'Quote source_quote when you cite an item, and tell the parent when a fact carries a caution (see caution_flags).',
+            'Your private context and your finished check stay with you: never send them to ParentLoop.',
+          ],
+        },
+      },
+    },
+  },
   evening_routine: [
     'Each evening (around 6–8 PM in the family\'s time zone), GET /api/parent/latest with the token.',
     'If check is null or stale is true, POST /api/parent/run, then use its result.',
@@ -3238,6 +3443,26 @@ const server = http.createServer(async (req, res) => {
       else actions[FACT_DONE_PREFIX + factId] = 'done';
       const updated = store.updateProfileActions(actor.id, actions) || actor;
       sendJson(res, 200, { ok: true, fact_id: factId, done: body.done !== false, can_mark_done: true, ...latestEveningCheck(updated) });
+      return;
+    }
+    // Evening check mode 2b: the context bundle a parent's own agent uses to
+    // write the check itself. Agent token only — never a browser session,
+    // so a cookie-less caller can never be handed the demo family.
+    if (req.method === 'GET' && url.pathname === '/api/agent/context') {
+      if (!bearerAuth) {
+        sendJson(res, 401, { ok: false, error: 'The context bundle needs an agent token: send Authorization: Bearer <token>.' });
+        return;
+      }
+      const sinceRaw = String(url.searchParams.get('since') || '').trim();
+      let sinceMs = null;
+      if (sinceRaw) {
+        sinceMs = Date.parse(sinceRaw);
+        if (Number.isNaN(sinceMs)) {
+          sendJson(res, 400, { ok: false, error: 'since must be an ISO date or time, e.g. 2026-11-03T18:00:00Z.' });
+          return;
+        }
+      }
+      sendJson(res, 200, agentContextBundle(bearerAuth.profile, sinceMs));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/parent/run') {
