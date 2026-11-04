@@ -1176,9 +1176,13 @@ function buildParentPrompt(profile, facts, moment, placementLines) {
     '- filtering_summary: ONE line explaining why facts were filtered out. Name every child the kept facts apply to in that line — or say "your family" when they apply across the children — never just the first child.',
     'Keep nudge wording short and calm (evening, combined message). Do not invent facts, dates, or actions.',
   ].join('\n');
+  // Brief 073: account state (whether the email is confirmed yet) is not
+  // family information and stays out of the model prompt.
+  const promptProfile = Object.assign({}, profile);
+  delete promptProfile.email_pending;
   const user =
     'Family profile (private to this Parent Agent run):\n' +
-    JSON.stringify(profile, null, 2) +
+    JSON.stringify(promptProfile, null, 2) +
     '\n\nSchool Agent facts:\n' +
     JSON.stringify(facts, null, 2);
   return { system, user };
