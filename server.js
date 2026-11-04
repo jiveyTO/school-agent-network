@@ -21,6 +21,7 @@ const INDEX_PATH = path.join(ROOT, 'public', 'index.html');
 
 // Simulated scheduler moment for the Phase 2 evening check (demo only).
 const SIMULATED_NOW_LABEL = 'Thursday, November 5, 2026, 7:30 PM';
+const SIMULATED_TODAY = '2026-11-05';
 // Real families' evening checks run on real local time (the hosted
 // families are in Ontario); only the demo family keeps the simulated moment,
 // so its fixed counts stay the regression baseline.
@@ -31,7 +32,7 @@ const FAMILY_TIME_ZONE = 'America/Toronto';
 function eveningMoment(profile, overrideLabel, now) {
   if (overrideLabel) return { label: String(overrideLabel), tomorrow: '', simulated: true, day: 'simulated:' + overrideLabel };
   if (!profile || profile.is_demo) {
-    return { label: SIMULATED_NOW_LABEL, tomorrow: 'Friday, November 6, 2026', simulated: true, day: 'simulated' };
+    return { label: SIMULATED_NOW_LABEL, tomorrow: 'Friday, November 6, 2026', simulated: true, day: 'simulated', today: SIMULATED_TODAY };
   }
   const at = now instanceof Date ? now : new Date();
   const fmt = (d, opts) => d.toLocaleString('en-US', { timeZone: FAMILY_TIME_ZONE, ...opts });
@@ -47,6 +48,7 @@ function eveningMoment(profile, overrideLabel, now) {
     tomorrow: fmt(tomorrow, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
     simulated: false,
     day: dayKey(at),
+    today: dayKey(at),
   };
 }
 const PRIVACY_CHECK_LINE =
@@ -1311,11 +1313,93 @@ async function callParentMetaApi(profile, facts, moment, placementLines) {
 // What a saved evening check was computed from. When any of it changes —
 // the family's facts, placements, tracked actions, children, or (for real
 // families) the day — the saved check is stale and gets recomputed.
+// --- Nudge rules -----------------------------------------------------------
+// The model nudges only actions the family tracks (profile.actions, e.g.
+// pizza_order: not_ordered). On top of that, any relevant fact that needs an
+// action and is due today through DUE_SOON_DAYS days ahead is nudged too, so a
+// real family's "Needs your attention tonight" is not empty while a form is
+// due tomorrow. A fact the family marked done ("fact:<id>": "done" in
+// profile.actions) is hidden from the nudges wherever a check is served; the
+// saved check keeps it, so Undo brings it back without a new run.
+const DUE_SOON_DAYS = 2;
+const CLOSED_ACTION_STATES = new Set(['ordered', 'done', 'scheduled', 'completed', 'planning_to_attend']);
+const FACT_DONE_PREFIX = 'fact:';
+
+function trackedActions(actions) {
+  const out = {};
+  for (const [k, v] of Object.entries(actions || {})) {
+    if (!k.startsWith(FACT_DONE_PREFIX)) out[k] = v;
+  }
+  return out;
+}
+
+function factMarkedDone(factId, actions) {
+  return Boolean(factId) && CLOSED_ACTION_STATES.has(String((actions || {})[FACT_DONE_PREFIX + factId] || ''));
+}
+
+// A fact that a tracked action key names (every word of pizza_order appears
+// in "Pizza orders due / Submit pizza order") stays the model's to nudge or
+// not, by that action's state; the due-soon rule leaves it alone.
+function factHasTrackedAction(fact, actions) {
+  const text = `${fact.title || ''} ${fact.action || ''}`.toLowerCase();
+  return Object.keys(trackedActions(actions)).some((key) => {
+    const words = key.toLowerCase().split(/[_\s-]+/).filter(Boolean);
+    return words.length > 0 && words.every((w) => text.includes(w));
+  });
+}
+
+function isoPlusDays(iso, days) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function addDueSoonNudges(result, profile, moment) {
+  if (!result || !moment || !moment.today) return result;
+  const actions = (profile && profile.actions) || {};
+  const end = isoPlusDays(moment.today, DUE_SOON_DAYS);
+  const have = new Set((result.nudges || []).map((n) => n.fact_id).filter(Boolean));
+  const added = [];
+  for (const f of result.relevant_facts || []) {
+    if (!f || !f.action_required || !f.date || have.has(f.id)) continue;
+    const day = String(f.date).slice(0, 10);
+    if (day < moment.today || day > end) continue;
+    if (factHasTrackedAction(f, actions)) continue;
+    added.push({
+      fact_id: f.id,
+      title: f.title,
+      action: f.action || 'Action needed',
+      deadline: day,
+      source: f.source || '',
+      due_soon: true,
+      hub_id: f.hub_id || '',
+    });
+    have.add(f.id);
+  }
+  added.sort((a, b) => a.deadline.localeCompare(b.deadline));
+  for (const n of added) {
+    const group = (result.groups || []).find((g) => n.hub_id && g.hub_id === n.hub_id);
+    if (group) group.nudges.push(n);
+  }
+  result.nudges = (result.nudges || []).concat(added);
+  result.open_action_count = result.nudges.length;
+  return result;
+}
+
+// The check as served: nudges the family marked done are left out.
+function withDoneApplied(result, actions) {
+  if (!result) return result;
+  const keep = (n) => !(n && factMarkedDone(n.fact_id, actions));
+  const nudges = (result.nudges || []).filter(keep);
+  const groups = (result.groups || result.grouped_by_hub || []).map((g) => ({ ...g, nudges: (g.nudges || []).filter(keep) }));
+  return { ...result, nudges, open_action_count: nudges.length, groups, grouped_by_hub: groups };
+}
+
 function eveningFingerprint(profile, facts, moment) {
   const basis = {
     day: moment.day,
     kids: (profile.children || [profile.child]).map((c) => (c && c.name) || ''),
-    actions: profile.actions || {},
+    actions: trackedActions(profile.actions),
     placements: placementLinesForRun(profile),
     facts: (facts || []).map((f) => [f.id, f.title, f.detail, f.date, f.time, f.action_required, f.action, f.scope, f.scope_value]),
   };
@@ -1448,7 +1532,7 @@ function latestEveningCheck(profile) {
   const saved = store.getEveningCheck(profile.id);
   const fingerprint = eveningFingerprint(profile, store.listFactsForProfile(profile.id), eveningMoment(profile));
   return {
-    check: saved ? saved.result : null,
+    check: saved ? withDoneApplied(saved.result, profile.actions) : null,
     ran_at: saved ? saved.ran_at : '',
     moment_label: saved ? saved.moment_label : '',
     stale: !saved || saved.fingerprint !== fingerprint,
@@ -1518,11 +1602,12 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
   push(`${hubs.length} ${hubs.length === 1 ? 'hub' : 'hubs'} checked: ${hubs.map((h) => h.name).join(', ') || 'none yet'}`);
   push(`${facts.length} facts checked against the family profile`);
   push(`API called: POST ${API_URL} (model: ${MODEL})`);
-  const promptProfile = { ...profile, placements: placementRecordsForRun(profile) };
+  const promptProfile = { ...profile, actions: trackedActions(profile.actions), placements: placementRecordsForRun(profile) };
   const content = await callParentMetaApi(promptProfile, facts, moment, placementLinesForRun(profile));
   push('API responded — validating filtering result');
   const raw = extractJsonObject(content);
-  const result = normalizeParentResult(raw, facts);
+  const full = addDueSoonNudges(normalizeParentResult(raw, facts), profile, moment);
+  const result = withDoneApplied(full, profile.actions);
   push(
     `${result.relevant_count} ${result.relevant_count === 1 ? 'fact' : 'facts'} relevant to ${childName}`
   );
@@ -1546,7 +1631,7 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
   // simulated_now override is a what-if and is not saved).
   if (!simulatedLabel) {
     store.saveEveningCheck(profile.id, {
-      result,
+      result: full,
       ran_at: nowIso(),
       moment_label: moment.label,
       fingerprint: eveningFingerprint(profile, facts, moment),
@@ -3133,7 +3218,26 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/parent/latest') {
       const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
       if (!actor) { sendJson(res, 404, { ok: false, error: 'No family profile found — finish setup first.' }); return; }
-      sendJson(res, 200, { ok: true, ...latestEveningCheck(actor) });
+      sendJson(res, 200, { ok: true, can_mark_done: Boolean(!bearerAuth && !actor.is_demo), ...latestEveningCheck(actor) });
+      return;
+    }
+    // A parent marks a nudge done (or undoes it). Stored per fact in the
+    // family's actions; the saved check is served without it from then on.
+    // The demo stays as it is.
+    if (req.method === 'POST' && url.pathname === '/api/parent/done') {
+      if (bearerAuth) { sendJson(res, 403, { ok: false, error: 'Mark things done from the ParentLoop page.' }); return; }
+      const actor = currentViewer(session);
+      if (!actor) { sendJson(res, 404, { ok: false, error: 'No family profile found — finish setup first.' }); return; }
+      if (actor.is_demo) { sendJson(res, 403, { ok: false, error: 'The demo stays as it is — switch to your own family to tick things off.' }); return; }
+      const body = await readJsonBody(req).catch(() => ({}));
+      const factId = String((body && body.fact_id) || '').trim();
+      const fact = factId ? store.listFactsForProfile(actor.id).find((f) => f.id === factId) : null;
+      if (!fact) { sendJson(res, 404, { ok: false, error: 'That item is not in your hubs.' }); return; }
+      const actions = { ...(actor.actions || {}) };
+      if (body.done === false) delete actions[FACT_DONE_PREFIX + factId];
+      else actions[FACT_DONE_PREFIX + factId] = 'done';
+      const updated = store.updateProfileActions(actor.id, actions) || actor;
+      sendJson(res, 200, { ok: true, fact_id: factId, done: body.done !== false, can_mark_done: true, ...latestEveningCheck(updated) });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/parent/run') {
@@ -3159,6 +3263,7 @@ const server = http.createServer(async (req, res) => {
         const moment = eveningMoment(actor, simulatedLabel);
         sendJson(res, 200, {
           ok: true,
+          can_mark_done: Boolean(!bearerAuth && actor && !actor.is_demo),
           simulated_now: moment.simulated ? moment.label : '',
           checked_at_label: moment.label,
           ran_at: nowIso(),
@@ -4110,4 +4215,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { normalizeParentResult, normalizeFact, buildParentPrompt, placementLinesForRun, deriveMaterialTitle };
+module.exports = { normalizeParentResult, normalizeFact, buildParentPrompt, placementLinesForRun, deriveMaterialTitle, addDueSoonNudges, withDoneApplied, eveningMoment };

@@ -466,6 +466,11 @@
   .family-card p { margin: 5px 0; font-size: 15.5px; }
   .nudge-card { background: #fffaf1; border-color: #f0d9ae; }
   .nudge-card p { margin: 6px 0; font-size: 15.5px; }
+  .nudge-card { position: relative; }
+  .nudge-card.has-done h3 { padding-right: 96px; }
+  .nudge-done { position: absolute; top: 12px; right: 12px; margin-top: 0; min-height: 40px; }
+  .done-undo { margin: 0; font-size: 14.5px; color: var(--muted); }
+  .done-undo .text-btn { color: var(--pine-dark); font-weight: 700; }
   .deadline-chip {
     display: inline-block;
     margin-top: 8px;
@@ -1832,6 +1837,47 @@
     else showView('hubs');
   });
 
+  // Real families can tick a nudge off (the demo stays as it is); the server
+  // says which on every check it serves.
+  let eveningCanMarkDone = false;
+  let lastDoneNudge = null;
+
+  async function setNudgeDone(factId, title, done) {
+    try {
+      const res = await fetch('/api/parent/done', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fact_id: factId, done: done }),
+      });
+      const data = await res.json().catch(function () { return {}; });
+      if (!res.ok || !data.ok) {
+        parentStatus.textContent = data.error || 'Couldn’t save that just now — try again.';
+        return;
+      }
+      lastDoneNudge = done ? { fact_id: factId, title: title } : null;
+      eveningCanMarkDone = Boolean(data.can_mark_done);
+      if (data.check) renderParentResult(data.check);
+    } catch (e) {
+      parentStatus.textContent = 'Couldn’t save that just now — try again.';
+    }
+  }
+
+  parentResultsEl.addEventListener('click', function (ev) {
+    const t = ev.target && ev.target.closest ? ev.target : null;
+    if (!t) return;
+    const doneBtn = t.closest('[data-nudge-done]');
+    if (doneBtn) {
+      doneBtn.disabled = true;
+      setNudgeDone(doneBtn.getAttribute('data-nudge-done'), doneBtn.getAttribute('data-nudge-title') || 'That', true);
+      return;
+    }
+    const undoBtn = t.closest('[data-nudge-undo]');
+    if (undoBtn) {
+      undoBtn.disabled = true;
+      setNudgeDone(undoBtn.getAttribute('data-nudge-undo'), '', false);
+    }
+  });
+
   function renderParentResult(data) {
     const result = (data && data.result) || data || {};
     const nudges = result.nudges || [];
@@ -1841,9 +1887,16 @@
       ' school notes · ' + esc(result.relevant_count != null ? result.relevant_count : '') + ' matter for ' + esc(currentChildAll) + ' · ' +
       esc(result.filtered_out_count != null ? result.filtered_out_count : '') + ' set aside. ' +
       esc(result.filtering_summary || result.summary || '') + '</p>';
+    if (lastDoneNudge) {
+      html += '<p class="done-undo">Marked “' + esc(lastDoneNudge.title) + '” done. ' +
+        '<button type="button" class="text-btn" data-nudge-undo="' + esc(lastDoneNudge.fact_id) + '">Undo</button></p>';
+    }
     if (nudges.length) {
       html += nudges.map(function (n) {
-        return '<article class="nudge-card"><h3>' + esc(n.title) + '</h3>' +
+        const canDone = eveningCanMarkDone && n.fact_id;
+        return '<article class="nudge-card' + (canDone ? ' has-done' : '') + '">' +
+          (canDone ? '<button type="button" class="toggle-btn nudge-done" data-nudge-done="' + esc(n.fact_id) + '" data-nudge-title="' + esc(n.title) + '">Done</button>' : '') +
+          '<h3>' + esc(n.title) + '</h3>' +
           '<p>' + esc(n.action) + '</p>' +
           (n.deadline ? '<span class="deadline-chip">Due ' + esc(humanDate(n.deadline)) + '</span>' : '') +
           (n.source ? '<p class="source-line">From: ' + esc(n.source) + '</p>' : '') +
@@ -3323,6 +3376,8 @@
         parentResultsEl.innerHTML = '<p class="facts-empty">No summary yet — that check didn’t finish.</p>';
         return;
       }
+      eveningCanMarkDone = Boolean(data.can_mark_done);
+      lastDoneNudge = null;
       renderParentResult(data);
       parentStatus.textContent = eveningUpdatedText(data.ran_at) || 'Done — one calm summary for tonight.';
     } catch (e) {
@@ -3426,6 +3481,7 @@
       const data = await res.json();
       if (!res.ok || !data.ok) return;
       if (data.check) {
+        eveningCanMarkDone = Boolean(data.can_mark_done);
         renderParentResult(data.check);
         parentStatus.textContent = eveningUpdatedText(data.ran_at);
       }
