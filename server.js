@@ -1053,7 +1053,7 @@ function deriveNameFromTitle(title) {
 function withTitleFallback(fields, kind, pageTitle) {
   const name = deriveNameFromTitle(pageTitle);
   if (!name || !fields) return fields;
-  if (kind === 'team') {
+  if (kind === 'team' || kind === 'activity') {
     if (!fields.name) return { ...fields, name };
   } else if (!fields.school_name) {
     return { ...fields, school_name: name };
@@ -1092,7 +1092,8 @@ async function extractIdentityFields(pageText, kind, opts) {
   if (!API_KEY) throw new Error('SCHOOL_AGENT_API_KEY is missing or empty in .env.');
   const pageTitle = (opts && opts.pageTitle) || '';
   const pageUrl = (opts && opts.pageUrl) || '';
-  const system = kind === 'team'
+  const ACTIVITY_SYSTEM = 'You read the web page of an activity provider (a club, studio, academy, or class: for example martial arts, dance, music, art, or swimming lessons) and return its identity as JSON. Return ONLY a JSON object, no markdown fences. Keys: name (the organization or program name as the page gives it, for example "Beard\u2019s Taekwondo Academy"), city (the city of its location, from the street or postal address if the page shows one). The page URL and page title are given along with the page text; the title often names the organization. Use "" for anything you cannot find.';
+  const system = kind === 'activity' ? ACTIVITY_SYSTEM : kind === 'team'
     ? 'You read a team or league web page and return the team identity as JSON. Return ONLY a JSON object, no markdown fences. Keys: name (team or organization name), sport (one of: Hockey, Soccer, Baseball, Softball, Basketball, Volleyball, Lacrosse, Swimming, Other), level (House League, Select, Rep, A, AA, AAA, or "" if unclear). The page URL and page title are given along with the page text; the title often names the team. Use "" for anything you cannot find.'
     : 'You read a school web page and return the school identity as JSON. Return ONLY a JSON object, no markdown fences. Keys: school_name, city, province, country. The page URL and page title are given along with the page text; the title often names the school. Look for the school\u2019s postal or street address (often in the page footer, for example "2 Glass Dr., Aurora L4G 2E8") and take the city from that address. Fill in province and country whenever they are reasonably inferable instead of leaving them blank: infer them from the city when you know it (for example Toronto means Toronto, Ontario, Canada) or from a school board or district named on the page (for example a Toronto Catholic District School Board page means Toronto, Ontario, Canada). Use "" only for what you cannot find or reasonably infer.';
   const user =
@@ -1100,6 +1101,14 @@ async function extractIdentityFields(pageText, kind, opts) {
     '\n\nWeb page text:\n\n' + pageText;
   const content = await postMetaChat(system, user, 4096);
   const parsed = extractJsonObject(content);
+  if (kind === 'activity') {
+    const fields = { name: cleanField(parsed.name), city: cleanField(parsed.city) };
+    if (!fields.city) {
+      const postal = extractPostalCityProvince(pageText);
+      if (postal) fields.city = postal.city;
+    }
+    return fields;
+  }
   if (kind === 'team') {
     return { name: cleanField(parsed.name), sport: cleanField(parsed.sport), level: cleanField(parsed.level) };
   }
@@ -3097,7 +3106,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/hubs/parse-link') {
       const body = await readJsonBody(req);
       const urlStr = String(body.url || '').trim();
-      const kind = body.kind === 'team' ? 'team' : 'school';
+      const kind = body.kind === 'team' || body.kind === 'activity' ? body.kind : 'school';
       let parsedUrl = null;
       try {
         parsedUrl = new URL(urlStr);
@@ -3128,7 +3137,9 @@ const server = http.createServer(async (req, res) => {
       }
       const blankFields = kind === 'team'
         ? { name: '', sport: '', level: '' }
-        : { school_name: '', city: '', province: '', country: '' };
+        : kind === 'activity'
+          ? { name: '', city: '' }
+          : { school_name: '', city: '', province: '', country: '' };
       try {
         const fields = withTitleFallback(
           await extractIdentityFields(pageText, kind, { pageTitle, pageUrl: parsedUrl.toString() }),
@@ -3200,7 +3211,7 @@ const server = http.createServer(async (req, res) => {
       }
       const extra = kind === 'team'
         ? { sport: String(body.sport || '').trim(), level: String(body.level || '').trim(), website }
-        : null;
+        : kind === 'activity' ? { website } : null;
       const hub = store.createHub(actor.id, body.name, kind, extra);
       sendJson(res, 200, { ok: true, hub });
       return;

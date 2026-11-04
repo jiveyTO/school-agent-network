@@ -1291,7 +1291,8 @@
     const site = String((hub && hub.website) || '').trim();
     const rows = [];
     if (site) {
-      const label = hub && hub.kind === 'team' ? 'Team website' : 'School website';
+      const label = hub && hub.kind === 'team' ? 'Team website'
+        : hub && hub.kind === 'activity' ? 'Activity website' : 'School website';
       rows.push('<p class="source-row" style="margin:4px 0"><b>' + esc(label) + '</b> · ' +
         '<a href="' + esc(site) + '" target="_blank" rel="noopener">' + esc(site) + '</a></p>');
     }
@@ -1300,7 +1301,8 @@
     document.getElementById('hubWebsiteAddStatus').textContent = '';
     if (!site && hub && hub.role === 'admin') {
       document.getElementById('hubWebsiteAddLabel').textContent =
-        hub.kind === 'team' ? 'Add the team website' : 'Add the school website';
+        hub.kind === 'team' ? 'Add the team website'
+          : hub.kind === 'activity' ? 'Add the activity website' : 'Add the school website';
       addWrap.hidden = false;
     } else {
       addWrap.hidden = true;
@@ -3336,11 +3338,13 @@
     const kind = document.getElementById('hubKind').value;
     const isSchool = kind === 'school';
     const isTeam = kind === 'team';
+    const isActivity = kind === 'activity';
     document.getElementById('singleNameWrap').hidden = isSchool;
     document.getElementById('schoolNameWrap').hidden = !isSchool;
     document.getElementById('teamFieldsWrap').hidden = !isTeam;
-    document.getElementById('websiteFieldWrap').hidden = !(isSchool || isTeam);
-    document.getElementById('websiteLabel').textContent = isTeam ? 'Team or league website' : 'School website';
+    document.getElementById('websiteFieldWrap').hidden = !(isSchool || isTeam || isActivity);
+    document.getElementById('websiteLabel').textContent = isTeam ? 'Team or league website'
+      : isActivity ? 'Club, studio or program website' : 'School website';
     document.getElementById('hubKindHelp').hidden = !isSchool;
     if (isSchool) prefillSchoolLocation();
   }
@@ -3368,6 +3372,9 @@
       payload.name = document.getElementById('hubName').value;
       payload.sport = document.getElementById('hubSport').value;
       payload.level = document.getElementById('hubLevel').value;
+      payload.website = document.getElementById('hubWebsite').value.trim();
+    } else if (kind === 'activity') {
+      payload.name = document.getElementById('hubName').value;
       payload.website = document.getElementById('hubWebsite').value.trim();
     } else {
       payload.name = document.getElementById('hubName').value;
@@ -3460,6 +3467,9 @@
         const sportOpts = Array.prototype.map.call(sportEl.options, function (o) { return o.value; });
         if (f.sport && sportOpts.indexOf(f.sport) !== -1) sportEl.value = f.sport;
         if (f.level) document.getElementById('hubLevel').value = f.level;
+      } else if (kind === 'activity') {
+        // Named like a school hub: "Beard's Taekwondo Academy — Aurora".
+        if (f.name) document.getElementById('hubName').value = f.city ? f.name + ' — ' + f.city : f.name;
       } else {
         if (f.school_name) document.getElementById('hubSchoolName').value = f.school_name;
         // A page-provided value always wins over the remembered location;
