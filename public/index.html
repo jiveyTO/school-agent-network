@@ -126,6 +126,11 @@
     font-weight: 800;
     letter-spacing: -0.01em;
   }
+  /* Brief 069: the wordmark is a way home on every page; it looks unchanged. */
+  header h1 a { color: inherit; text-decoration: none; }
+  header h1 a:focus-visible { outline: 2px solid #fff; outline-offset: 3px; border-radius: 4px; }
+  .home-row { margin: 14px 0 0; }
+  .home-row .small-btn { display: inline-block; text-decoration: none; }
   header .tagline {
     margin: 0;
     font-size: 17px;
@@ -711,7 +716,7 @@
 <div class="phone">
   <header>
     <span class="demo-badge" id="demoPill" hidden>Demo — fictional school &amp; family</span>
-    <h1>ParentLoop</h1>
+    <h1><a href="/" id="homeWordmark">ParentLoop</a></h1>
     <p class="tagline">You’re always in the loop.</p>
     <div id="authArea">
       <button class="auth-btn" id="startFamilyBtn" type="button" hidden>Start with your own family</button>
@@ -814,6 +819,9 @@
         </div>
         <p class="hint" id="approveStatus"></p>
       </div>
+      <!-- Brief 069: outside the card, so every approve state (waiting, done,
+           declined, expired, sign-in) keeps a way home. -->
+      <p class="home-row"><a class="small-btn secondary" id="approveHomeLink" href="/">Go to ParentLoop</a></p>
     </section>
 
     <section id="recoveryView" aria-labelledby="recovery-h" hidden>
@@ -3352,6 +3360,14 @@
     }
     return true;
   }
+
+  // Brief 069: leaving the approve page on purpose (home button or the
+  // wordmark) must not bounce the parent back to it after sign-in.
+  ['approveHomeLink', 'homeWordmark'].forEach(function (id) {
+    document.getElementById(id).addEventListener('click', function () {
+      if (!document.getElementById('approveView').hidden) forgetPendingApprove();
+    });
+  });
 
   document.getElementById('approveYesBtn').addEventListener('click', async function () {
     const btn = this;
