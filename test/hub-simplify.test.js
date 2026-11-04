@@ -65,7 +65,9 @@ test('deriveMaterialTitle uses the first line, truncates, and falls back dated',
   assert.equal(deriveMaterialTitle('## November update\nBody here.'), 'November update');
   const long = 'x'.repeat(200);
   const truncated = deriveMaterialTitle(long + '\nsecond');
-  assert.ok(truncated.length <= 81 + 1, 'long first lines truncate');
+  assert.ok(truncated.length <= 61, 'long first lines truncate (Brief 072: 60 + …)');
+  assert.equal(deriveMaterialTitle('Willow School — Fall Newsletter. Pizza Day: order by Monday for Friday lunch and more news below.'),
+    'Willow School — Fall Newsletter', 'a heading glued to its body keeps its first sentence');
   assert.ok(truncated.endsWith('…'), 'truncation is marked');
   assert.match(deriveMaterialTitle('   \n  '), /^Newsletter — \d{4}-\d{2}-\d{2}$/);
   assert.match(deriveMaterialTitle(''), /^Newsletter — \d{4}-\d{2}-\d{2}$/);

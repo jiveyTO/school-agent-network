@@ -820,6 +820,7 @@ async function initDb() {
   backfillSeedGroups();
   for (const target of DEMO_TEST_MATERIAL_REMOVALS) removeDemoTestMaterial(target);
   moveDemoSkateFitting();
+  retitleLegacyPastes();
   // A restored database that boot left unchanged (schema-only migrations
   // don't count: they re-run every boot) is not uploaded. Uploading it would
   // move the stored generation during a deploy, so the old instance's final
@@ -835,6 +836,70 @@ async function initDb() {
   // First boot with the durable store enabled uploads the seeded database so
   // later instances restore it. No-op when disabled or nothing changed.
   await flushDurableStore();
+}
+
+// Brief 072: a pasted material's title when no title was supplied. The
+// first line when it is short; a heading glued to its body ("Hillcrest
+// Public School — November Newsletter. Pizza Day: …") keeps its first
+// sentence; anything else is cut on a word at PASTE_TITLE_CAP with "…".
+// No text at all -> a dated label. Never the whole paste. The extraction
+// read then proposes a content title (Brief 053's path) that replaces this.
+const PASTE_TITLE_CAP = 60;
+
+function firstPasteLine(text) {
+  return String(text || '')
+    .split('\n')
+    .map((line) => line.trim().replace(/^#+\s*/, '').trim())
+    .find((line) => line) || '';
+}
+
+function derivePasteTitle(text, now) {
+  const first = firstPasteLine(text).replace(/\s+/g, ' ');
+  if (first) {
+    if (first.length <= PASTE_TITLE_CAP) return first;
+    const sentence = first.slice(0, PASTE_TITLE_CAP + 1).match(/^(.{8,}?[^\s.!?])[.!?](?=\s|$)/);
+    if (sentence) return sentence[1].trim();
+    const cut = first.slice(0, PASTE_TITLE_CAP);
+    const space = cut.lastIndexOf(' ');
+    return (space > 20 ? cut.slice(0, space) : cut).replace(/[\s,;:—–-]+$/, '') + '…';
+  }
+  const at = now instanceof Date && !isNaN(now.getTime()) ? now : new Date();
+  return `Newsletter — ${at.toISOString().slice(0, 10)}`;
+}
+
+// The title every paste got before Brief 072: its first line, cut at 80
+// characters. A paste still carrying exactly this was never renamed.
+function legacyPasteTitle(text) {
+  const first = firstPasteLine(text);
+  if (!first) return '';
+  return first.length > 80 ? first.slice(0, 80).trim() + '…' : first;
+}
+
+// Brief 072 backfill: pastes added before 072 whose title is still the old
+// first-line cut get the new title (their notes' labels follow, as on a
+// rename). A title a parent set (anything else) is never touched, demo
+// hubs stay as they are, and a retitled paste no longer matches, so later
+// boots change nothing.
+function retitleLegacyPastes() {
+  const rows = all(
+    `SELECT m.id AS id, m.title AS title, m.raw_text AS raw_text FROM materials m
+     JOIN hubs h ON h.id = m.hub_id
+     WHERE m.kind = 'paste' AND COALESCE(h.is_demo, 0) = 0`
+  );
+  let changed = 0;
+  for (const row of rows) {
+    const title = String(row.title || '');
+    const legacy = legacyPasteTitle(row.raw_text);
+    if (!legacy || title !== legacy) continue;
+    const next = derivePasteTitle(row.raw_text);
+    if (!next || next === title) continue;
+    run('UPDATE materials SET title = ? WHERE id = ?', [next, row.id]);
+    run('UPDATE facts SET group_label = ? WHERE material_id = ? AND group_label = ?', [next, row.id, title]);
+    run('UPDATE facts SET source_document = ? WHERE material_id = ? AND source_document = ?', [next, row.id, title]);
+    changed += 1;
+  }
+  if (changed) console.log(`paste titles: retitled ${changed} pasted material(s) from their first-line cut`);
+  return changed;
 }
 
 // Rows inserted, updated or deleted on this connection since it opened.
@@ -3351,6 +3416,9 @@ module.exports = {
   removeHubMember,
   purgeDemoMemberships,
   removeDemoTestMaterial,
+  derivePasteTitle,
+  legacyPasteTitle,
+  retitleLegacyPastes,
   moveDemoSkateFitting,
   getSessionOwnProfile,
   isMember,
