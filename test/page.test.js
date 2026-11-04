@@ -343,7 +343,7 @@ test('hub page reads top-down for a first-time parent: purpose, first steps, add
   const at = (token) => hubMarkup.indexOf(token);
   const order = ['id="hubTitle"', 'id="hubPurpose"', 'id="hubMeta"', 'id="hubStartHere"', 'id="placementCard"',
     'Got something from the school?', 'id="materialText"', 'Shared so far', 'id="hubFacts"', 'Parents here',
-    'id="hubMembersList"', 'id="inviteBtn"', 'Where updates come from', 'id="hubDanger"'];
+    'id="hubMembersList"', 'id="inviteBtn"', 'Where updates come from'];
   for (let i = 0; i < order.length; i++) {
     assert.ok(at(order[i]) !== -1, `hub view keeps ${order[i]}`);
     if (i) assert.ok(at(order[i - 1]) < at(order[i]), `phone order: ${order[i - 1]} before ${order[i]}`);
@@ -366,14 +366,26 @@ test('hub page reads top-down for a first-time parent: purpose, first steps, add
     'long hub names wrap inside the card');
 });
 
-test('hub roster marks the viewer and the contact; removal lives under Manage this hub', () => {
+test('hub roster marks the viewer and the contact; removal opens from the hub ⋯ menu', () => {
   const hubMarkup = PAGE.slice(PAGE.indexOf('id="viewHub"'), PAGE.indexOf('id="viewEvening"'));
-  assert.ok(hubMarkup.includes('<details class="hub-manage" id="hubDanger" hidden>') &&
-    hubMarkup.includes('<summary>Manage this hub</summary>'), 'admin controls are folded into a disclosure');
-  const manage = hubMarkup.slice(hubMarkup.indexOf('id="hubDanger"'), hubMarkup.indexOf('</details>'));
-  for (const token of ['id="hubManageMembersList"', 'Remove a family', 'id="deleteHubBtn"']) {
-    assert.ok(manage.includes(token), `Manage this hub holds ${token}`);
+  const at = (token) => hubMarkup.indexOf(token);
+  // Admin controls live in a ⋯ menu at the hub card's top right, not in a
+  // disclosure at the bottom of the card.
+  assert.ok(!hubMarkup.includes('<summary>Manage this hub</summary>'), 'the bottom Manage this hub disclosure is gone');
+  assert.ok(hubMarkup.includes('<span class="material-menu hub-menu" id="hubDanger" hidden>'), 'the hub menu reuses the ⋯ menu');
+  assert.ok(at('id="hubTitle"') < at('id="hubDanger"') && at('id="hubDanger"') < at('id="hubPurpose"'),
+    'the menu sits with the title, at the top of the card');
+  assert.ok(PAGE.includes('.hub-menu { position: absolute; top: -6px; right: -6px; }'), 'top-right corner');
+  assert.ok(hubMarkup.includes('aria-label="Manage this hub">⋯</button>'), 'the ⋯ button is named for screen readers');
+  const menu = hubMarkup.slice(at('id="hubDanger"'), at('id="hubPurpose"'));
+  for (const token of ['id="hubMenuRemoveFamily"', 'Remove a family', 'id="deleteHubBtn"', 'Delete this hub', 'role="menuitem"']) {
+    assert.ok(menu.includes(token), `the hub menu holds ${token}`);
   }
+  const panel = hubMarkup.slice(at('id="hubManagePanel"'), at('id="hubStartHere"'));
+  for (const token of ['id="hubManageMembersList"', 'id="deleteHubConfirm"', 'id="deleteHubYesBtn"', 'id="hubManageDoneBtn"']) {
+    assert.ok(panel.includes(token), `the manage panel under the title holds ${token}`);
+  }
+  assert.ok(PAGE.includes('.material-menu-item[hidden] { display: none; }'), 'a hidden menu item really hides');
   const fn = pageFnSource('renderHubMembers');
   assert.ok(fn.includes("(m.is_you ? ' (you)' : '')"), 'the viewer row reads "(you)"');
   assert.ok(fn.includes("'Hub contact'"), 'the contact is named in the roster');
