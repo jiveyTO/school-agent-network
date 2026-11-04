@@ -30,6 +30,11 @@ const UPLOAD_PATH = '/upload/storage/v1/b/retry-test-bucket/o';
 let stored = null; // { bytes, generation }
 let attempts = 0;
 let firstUpload = 'fail';
+// Slow mode: each upload is held this long before its generation check, so
+// an upload that starts while another is in flight carries a stale
+// generation. refusals counts the 412s handed out.
+let uploadDelayMs = 0;
+let refusals = 0;
 
 function readBody(req) {
   return new Promise((resolve) => {
@@ -79,9 +84,11 @@ function startStub() {
         req.socket.destroy();
         return;
       }
+      if (uploadDelayMs) await new Promise((r) => setTimeout(r, uploadDelayMs));
       const match = url.searchParams.get('ifGenerationMatch');
       const current = stored ? stored.generation : 0;
       if (match != null && Number(match) !== current) {
+        refusals += 1;
         res.writeHead(412, { 'Content-Type': 'application/json' });
         res.end('{}');
         return;
@@ -186,6 +193,8 @@ async function addFamily(parentName) {
 async function scenario(t, mode, body) {
   stored = null;
   attempts = 0;
+  refusals = 0;
+  uploadDelayMs = 0;
   firstUpload = mode;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parentloop-durable-retry-'));
   const child = spawnServer(path.join(tmpDir, 'app.db'));
@@ -255,5 +264,25 @@ test('durable store retries failed uploads', { timeout: 120000 }, async (t) => {
       await stopServer(child);
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  await t.test('uploads never overlap, and a write made mid-upload is uploaded too', async () => {
+    await scenario(t, 'ok', async () => {
+      await waitFor(() => stored !== null, 'the seed upload');
+      await waitForServer();
+      // Each upload now takes 2.5 s. The first write's upload starts after
+      // the 1.5 s debounce; the second write lands while it is in flight.
+      uploadDelayMs = 2500;
+      await addFamily('Slow Sasha');
+      await new Promise((r) => setTimeout(r, 2200));
+      await addFamily('Slow Sam');
+      await waitFor(() => stored.bytes.includes('Slow Sam'), 'the mid-upload write to upload');
+      assert.ok(stored.bytes.includes('Slow Sasha'), 'the first write is there too');
+      assert.equal(refusals, 0, 'no upload ever raced another into an HTTP 412');
+      // Write-back is still on: one more write uploads.
+      uploadDelayMs = 0;
+      await addFamily('After Avery');
+      await waitFor(() => stored.bytes.includes('After Avery'), 'a later write to upload');
+    });
   });
 });
