@@ -181,10 +181,12 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     const info = await jf(`/api/join/${token}`);
     // Brief 067 adds the join question (never its answers), whether the
     // admin decides, and the admin's first name — public card fields only.
-    // Brief 068 adds every question's prompt and the belonging-check note.
+    // Brief 068 adds every question's prompt and the belonging-check note;
+    // Brief 070 the landing's signpost that a question comes after setup.
     assert.deepEqual(Object.keys(info.data).sort(), [
       'admin_first_name',
       'challenge_note',
+      'challenge_signpost',
       'has_question',
       'hub_name',
       'inviter_first_name',

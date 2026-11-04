@@ -2391,13 +2391,33 @@ function joinAnswersFrom(body) {
 }
 
 // Brief 068: a belonging check, not a password. Shown on the join card.
-const JOIN_CHALLENGE_NOTE_SCHOOL = 'A couple of quick questions only parents from this school would know, so a forwarded link alone can’t join.';
-const JOIN_CHALLENGE_NOTE_OTHER = 'A couple of quick questions only families in this group would know, so a forwarded link alone can’t join.';
+// Brief 070: the wording follows the hub's actual question count.
 const JOIN_WRONG_NOTE = 'Couldn’t answer the hub’s questions.';
 
-function joinChallengeNote(hubId) {
+function challengePhrase(count) {
+  if (count >= 3) return 'a few quick questions';
+  if (count === 2) return 'a couple of quick questions';
+  return 'a quick question';
+}
+
+function challengeWho(hubId) {
   const hub = store.getHub(hubId);
-  return hub && hub.kind === 'school' ? JOIN_CHALLENGE_NOTE_SCHOOL : JOIN_CHALLENGE_NOTE_OTHER;
+  return hub && hub.kind === 'school' ? 'only parents from this school would know' : 'only families in this group would know';
+}
+
+function joinChallengeNote(hubId, count) {
+  const phrase = challengePhrase(count);
+  return phrase.charAt(0).toUpperCase() + phrase.slice(1) + ' ' + challengeWho(hubId) + ', so a forwarded link alone can’t join.';
+}
+
+// Brief 070: shown on the invite landing to a visitor with no family yet.
+// The question itself is asked once, after setup, right before joining.
+function joinChallengeSignpost(hubId, count) {
+  return 'You’ll answer ' + challengePhrase(count) + ' ' + challengeWho(hubId) + ' — right after you sign in or set up your family.';
+}
+
+function questionCount(settings) {
+  return settings && settings.has_question ? (settings.questions || []).length || 1 : 0;
 }
 
 // Decides one family's join through an invite. Returns { status, body }.
@@ -2436,7 +2456,7 @@ function joinByLink(info, profile, answer, via, ip) {
   const prompts = {
     question: settings.question,
     questions: settings.questions,
-    challenge_note: joinChallengeNote(info.hub_id),
+    challenge_note: joinChallengeNote(info.hub_id, questionCount(settings)),
   };
   const given = (Array.isArray(answer) ? answer : [answer]).map((a) => String(a == null ? '' : a).trim());
   if (settings.questions.some((q, i) => !given[i])) {
@@ -3686,7 +3706,7 @@ const server = http.createServer(async (req, res) => {
         has_question: Boolean(settings.has_question),
         question: settings.has_question ? settings.question : '',
         questions: settings.has_question ? settings.questions : [],
-        challenge_note: settings.has_question ? joinChallengeNote(row.hub_id) : '',
+        challenge_note: settings.has_question ? joinChallengeNote(row.hub_id, questionCount(settings)) : '',
         needs_admin_ok: !linkJoinsOpen(row.hub_id, settings) && !settings.has_question,
         admin_first_name: hubRow ? hubAdminFirstName(row.hub_id) : '',
         membership: row.membership || '',
@@ -4370,7 +4390,10 @@ const server = http.createServer(async (req, res) => {
         has_question: settings.has_question,
         question: settings.has_question ? settings.question : '',
         questions: settings.has_question ? settings.questions : [],
-        challenge_note: settings.has_question ? joinChallengeNote(info.hub_id) : '',
+        challenge_note: settings.has_question ? joinChallengeNote(info.hub_id, questionCount(settings)) : '',
+        // Brief 070: only when the question will really be asked.
+        challenge_signpost: settings.has_question && !linkJoinsOpen(info.hub_id, settings)
+          ? joinChallengeSignpost(info.hub_id, questionCount(settings)) : '',
         needs_admin_ok: !linkJoinsOpen(info.hub_id, settings) && !settings.has_question,
         admin_first_name: hubAdminFirstName(info.hub_id),
       });
@@ -4389,9 +4412,21 @@ const server = http.createServer(async (req, res) => {
       // and the invite completes after sign-in or family setup. The demo
       // profile must never become a member of a non-demo hub.
       const own = bearerAuth ? bearerAuth.profile : store.getSessionOwnProfile(session);
+      // Brief 070: read the body first, so an answer sent before there is a
+      // family is never silently dropped — the reply says it was not checked
+      // and that the question comes right after setup.
+      const body = await readJsonBody(req).catch(() => ({}));
       if (!own || own.is_demo) {
+        const settings = store.getJoinSettings(info.hub_id);
+        const asksLater = Boolean(settings.has_question) && !linkJoinsOpen(info.hub_id, settings);
+        const sentAnswer = joinAnswersFrom(body).some((a) => a.trim());
         sendJson(res, 409, {
-          error: 'To join this hub, sign in or set up your family first — your invite is saved.',
+          error: asksLater && sentAnswer
+            ? 'Set up your family or sign in first — your answer wasn’t checked yet. You’ll answer the hub’s question right after, and your invite is saved.'
+            : 'To join this hub, sign in or set up your family first — your invite is saved.',
+          answer_checked: false,
+          question_after_setup: asksLater,
+          challenge_signpost: asksLater ? joinChallengeSignpost(info.hub_id, questionCount(settings)) : '',
           needsAccountChoice: true,
           needs_account_choice: true,
           hub_name: info.hub_name,
@@ -4403,7 +4438,6 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       // Brief 067: the hub's join question, or the admin's OK, decides.
-      const body = await readJsonBody(req).catch(() => ({}));
       let outcome;
       try {
         outcome = joinByLink(info, own, joinAnswersFrom(body),

@@ -3262,11 +3262,20 @@
 
   // Brief 067: the hub's join question on the join card, wherever the saved
   // invite was picked back up (the link itself, or after sign-in/setup).
-  function showJoinQuestion(data, message) {
+  // `kept` (Brief 070): the answers just tried, left in their fields after
+  // a miss so the parent can fix a typo instead of retyping.
+  function showJoinQuestion(data, message, kept) {
     showJoin();
     document.getElementById('joinChoice').hidden = true;
     document.getElementById('joinQuestion').hidden = false;
+    document.getElementById('joinAdminNote').hidden = true;
     renderChallengeFields('join', data);
+    if (Array.isArray(kept)) {
+      document.getElementById('joinAnswerInput').value = kept[0] || '';
+      document.getElementById('joinQuestionMore').querySelectorAll('.challenge-answer').forEach(function (el, i) {
+        el.value = kept[i + 1] || '';
+      });
+    }
     document.getElementById('joinAcceptBtn').hidden = false;
     document.getElementById('joinStatus').textContent = message || '';
     document.getElementById('joinAnswerInput').focus();
@@ -3291,7 +3300,10 @@
     document.getElementById('joinChoice').hidden = false;
     const hubName = (info && (info.hub_name || info.hubName)) || 'this hub';
     document.getElementById('joinChoiceText').textContent =
-      'To join ' + hubName + ', first choose how to keep your family — your invite is saved.';
+      'To join ' + hubName + ', first choose how to keep your family — your invite is saved.' +
+      (info && info.challenge_signpost ? ' ' + info.challenge_signpost : '');
+    // The signpost now rides in the line above; don't say it twice.
+    if (info && info.challenge_signpost) document.getElementById('joinAdminNote').hidden = true;
     document.getElementById('joinStatus').textContent = '';
     window.scrollTo(0, 0);
   }
@@ -3408,6 +3420,15 @@
     }
   });
 
+  // Brief 070: the hub's question is asked once per join, right before the
+  // family joins. A visitor with no family yet only sees a signpost here;
+  // the question comes after sign-in or setup, when an answer can be
+  // checked at once and attempts counted for that family.
+  function joinLandingMode(data, hasReal) {
+    if (!data || !data.has_question) return 'plain';
+    return hasReal ? 'question' : 'signpost';
+  }
+
   async function loadJoinView() {
     const m = window.location.pathname.match(/^\/join\/(.+)$/);
     if (!m) return false;
@@ -3416,22 +3437,34 @@
       const res = await fetch('/api/join/' + encodeURIComponent(joinToken));
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'That invite link is no longer available.');
+      let pending = '';
+      let hasReal = false;
+      try {
+        pending = sessionStorage.getItem('pendingJoinToken') || '';
+      } catch (e) {}
+      try {
+        const sRes = await fetch('/api/onboarding/status');
+        const s = await sRes.json();
+        hasReal = Boolean(s && s.hasActiveProfile && !s.isDemo);
+      } catch (e) {}
       document.getElementById('joinText').textContent =
         data.inviter_first_name + ' invited you to ' + data.hub_name + ' · ' + data.member_count + ' families';
       document.getElementById('joinAcceptBtn').hidden = false;
       document.getElementById('joinChoice').hidden = true;
       // Brief 067: the hub's question, or a note that the admin decides.
-      document.getElementById('joinQuestion').hidden = !data.has_question;
+      const mode = joinLandingMode(data, hasReal);
+      document.getElementById('joinQuestion').hidden = mode !== 'question';
       renderChallengeFields('join', data);
       const adminNote = document.getElementById('joinAdminNote');
-      adminNote.hidden = !data.needs_admin_ok;
-      adminNote.textContent = 'Joining sends a request — ' + (data.admin_first_name || 'the hub admin') + ' will let you in.';
+      if (mode === 'signpost') {
+        adminNote.hidden = !data.challenge_signpost;
+        adminNote.textContent = data.challenge_signpost || '';
+      } else {
+        adminNote.hidden = !data.needs_admin_ok;
+        adminNote.textContent = 'Joining sends a request — ' + (data.admin_first_name || 'the hub admin') + ' will let you in.';
+      }
       showJoin();
       try {
-        const pending = sessionStorage.getItem('pendingJoinToken');
-        const sRes = await fetch('/api/onboarding/status');
-        const s = await sRes.json();
-        const hasReal = Boolean(s && s.hasActiveProfile && !s.isDemo);
         if (pending && !hasReal) {
           // Mid-detour (or a reload while still demo): show the account
           // question right away instead of another Join button.
@@ -3440,7 +3473,9 @@
         } else if (pending && hasReal && pending === joinToken) {
           await acceptPendingJoin(pending);
         }
-      } catch (e) {}
+      } catch (e) {
+        if (e && e.data && e.data.needs_answer) showJoinQuestion(e.data, '');
+      }
     } catch (e) {
       document.getElementById('joinText').textContent = e.message;
       showJoin();
@@ -4443,7 +4478,7 @@
         stashPendingJoin(joinToken);
         showJoinChoice(e.data);
       } else if (e && e.data && e.data.needs_answer) {
-        showJoinQuestion(e.data, e.data.wrong_answer ? e.message : '');
+        showJoinQuestion(e.data, e.data.wrong_answer ? e.message : '', e.data.wrong_answer ? collectChallengeAnswers('join') : null);
       } else {
         statusEl.textContent = (e && e.message) || 'Something went wrong. Please try again.';
       }
