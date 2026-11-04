@@ -1833,6 +1833,10 @@ function currentViewer(session) {
 // resolve to exactly one family (never the demo family). Management of
 // tokens stays browser-only; a token can never mint or revoke tokens.
 const AGENT_TOKEN_401 = 'That agent token is not valid. Check it, or ask the parent for a fresh one.';
+// Brief 064: an Authorization header that carries no Bearer token at all
+// (empty, "Bearer" alone, another scheme, a bare token) — usually an unset
+// $TOKEN in the caller. Refused, never served the session's (demo) view.
+const AGENT_TOKEN_MISSING_401 = 'The Authorization header didn’t carry a token — send Authorization: Bearer <token>.';
 const AGENT_TOKEN_MANAGE_403 = 'Agent tokens are managed in the browser — open My family to see them.';
 
 // Brief 047: public machine-readable front door for agents. Static by
@@ -1889,7 +1893,7 @@ const AGENT_MANIFEST = {
     notes: [
       'Tokens are revocable: the parent can revoke a token at any time in My family → Agent access, and a revoked token stops working immediately.',
       'A token can never issue, list, or revoke agent tokens — token management is browser-only.',
-      'Send the token on every agent request as Authorization: Bearer <token>. Without a token these endpoints fall back to the browser session (demo) view.',
+      'Send the token on every agent request as Authorization: Bearer <token>. A request whose Authorization header is not a valid token is refused with 401. With no Authorization header at all you get the browser session\'s view, which for a cookie-less client is the public demo — never use that as a family\'s data.',
     ],
   },
   endpoints: [
@@ -1994,6 +1998,10 @@ function bearerRaw(req) {
   const header = String((req.headers && req.headers.authorization) || '');
   const m = /^Bearer\s+(.+)$/i.exec(header.trim());
   return m ? m[1].trim() : '';
+}
+
+function hasAuthorizationHeader(req) {
+  return Boolean(req.headers) && Object.prototype.hasOwnProperty.call(req.headers, 'authorization');
 }
 
 function agentCanIssue(profileId) {
@@ -2225,9 +2233,15 @@ const server = http.createServer(async (req, res) => {
   try {
     // A Bearer token on any API request must resolve, or the request is
     // refused outright — a revoked or unknown token never falls through
-    // to session (demo) data.
+    // to session (demo) data. So is an Authorization header with no token
+    // in it (brief 064); only a request with no such header at all gets
+    // the session's view.
     const rawBearer = bearerRaw(req);
     let bearerAuth = null;
+    if (url.pathname.startsWith('/api/') && !rawBearer && hasAuthorizationHeader(req)) {
+      sendJson(res, 401, { error: AGENT_TOKEN_MISSING_401 });
+      return;
+    }
     if (rawBearer) {
       bearerAuth = store.resolveAgentToken(rawBearer);
       if (!bearerAuth && url.pathname.startsWith('/api/')) {
