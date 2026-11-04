@@ -1883,6 +1883,13 @@
     const nudges = result.nudges || [];
     const hold = result.calendar_hold;
     let html = '';
+    // A family whose hubs have no notes yet gets a calm empty state, not
+    // "We checked 0 school notes".
+    if (result.empty || result.checked_count === 0) {
+      parentResultsEl.innerHTML = '<p class="facts-empty">' + esc(result.filtering_summary ||
+        'Your hubs have no school notes yet. When a newsletter or notice is added, tonight’s check picks it up.') + '</p>';
+      return;
+    }
     html += '<p class="hint">We checked ' + esc(result.checked_count != null ? result.checked_count : '') +
       ' school notes · ' + esc(result.relevant_count != null ? result.relevant_count : '') + ' matter for ' + esc(currentChildAll) + ' · ' +
       esc(result.filtered_out_count != null ? result.filtered_out_count : '') + ' set aside. ' +
@@ -3352,6 +3359,9 @@
       'Writing one calm summary…',
     ]);
     if (background) parentStatus.textContent = 'Updating with the latest notes…';
+    else if (parentResultsEl.children.length === 1 && parentResultsEl.firstElementChild.classList.contains('facts-empty')) {
+      parentResultsEl.innerHTML = '<p class="facts-empty">Loading tonight’s check…</p>';
+    }
     parentError.hidden = true;
     renderParentLogs([
       { at: new Date().toISOString(), message: 'evening check started (browser → server)' },
@@ -3392,6 +3402,7 @@
       parentErrorText.textContent = e.message;
       parentError.hidden = false;
       parentStatus.textContent = 'That check didn’t work — here’s what happened.';
+      parentResultsEl.innerHTML = '<p class="facts-empty">No summary yet — that check didn’t finish.</p>';
     } finally {
       stopStagedStatus(stages);
       document.getElementById('parentDots').hidden = true;
@@ -3479,7 +3490,10 @@
     try {
       const res = await fetch('/api/parent/latest');
       const data = await res.json();
-      if (!res.ok || !data.ok) return;
+      if (!res.ok || !data.ok) {
+        showEveningPlaceholder('We couldn’t load tonight’s check. Tap “Run my evening check” to try again.');
+        return;
+      }
       if (data.check) {
         eveningCanMarkDone = Boolean(data.can_mark_done);
         renderParentResult(data.check);
@@ -3487,10 +3501,20 @@
       }
       const visible = !document.getElementById('viewEvening').hidden;
       if ((data.stale || !data.check) && visible) await runEveningCheck({ background: Boolean(data.check) });
+      else if (!data.check) showEveningPlaceholder('No evening check yet — it runs when you open Tonight, or tap “Run my evening check”.');
     } catch (e) {
-      // Leave whatever is on screen; the button still works.
+      // The button still works; never leave the loading line up.
+      showEveningPlaceholder('We couldn’t load tonight’s check. Tap “Run my evening check” to try again.');
     } finally {
       eveningLoading = false;
+    }
+  }
+
+  // Replaces "Loading tonight’s check…" (and only that) with a real state.
+  function showEveningPlaceholder(text) {
+    const first = parentResultsEl.firstElementChild;
+    if (!first || /Loading tonight/.test(first.textContent || '')) {
+      parentResultsEl.innerHTML = '<p class="facts-empty">' + esc(text) + '</p>';
     }
   }
 

@@ -78,6 +78,8 @@ function assertRealRoute(endpoint) {
     assert.ok(SERVER_SOURCE.includes("req.method === 'POST' && url.pathname === '/api/parent/run'"), 'evening check route exists');
   } else if (p === '/api/parent/latest' && method === 'GET') {
     assert.ok(SERVER_SOURCE.includes("req.method === 'GET' && url.pathname === '/api/parent/latest'"), 'latest evening check route exists');
+  } else if (p === '/api/agent/context' && method === 'GET') {
+    assert.ok(SERVER_SOURCE.includes("req.method === 'GET' && url.pathname === '/api/agent/context'"), 'context bundle route exists');
   } else {
     assert.fail(`manifest lists an endpoint with no known real route: ${method} ${p}`);
   }
@@ -96,6 +98,7 @@ const EXPECTED_ENDPOINTS = [
   ['POST', '/api/hubs/{hub_id}/materials'],
   ['POST', '/api/parent/run'],
   ['GET', '/api/parent/latest'],
+  ['GET', '/api/agent/context'],
 ];
 
 test('GET /api/agent manifest: shape, real routes, recipe, no data', async (t) => {
@@ -158,6 +161,23 @@ test('GET /api/agent manifest: shape, real routes, recipe, no data', async (t) =
     assert.ok(text.indexOf('GET /api/parent/latest') !== -1 && text.indexOf('POST /api/parent/run') > text.indexOf('GET /api/parent/latest'),
       'read the saved check first, run only when stale');
     assert.ok(/stale/.test(text) && /tell the parent/i.test(text), 'refresh when stale, then tell the parent');
+  });
+
+  await t.test('both evening check modes are documented: app check, and agent relay / generate', async () => {
+    const modes = manifest.evening_check_modes;
+    assert.ok(modes && modes.app_check && modes.agent_check, 'app and agent modes listed');
+    assert.deepEqual(modes.app_check.endpoints, ['GET /api/parent/latest', 'POST /api/parent/run']);
+    const { relay, generate } = modes.agent_check.styles || {};
+    assert.ok(relay && generate, 'agent mode has both styles');
+    const relayText = relay.steps.join('\n');
+    assert.ok(relayText.includes('GET /api/parent/latest') && relayText.includes('POST /api/parent/run'), 'relay calls the prepared check');
+    assert.ok(/local context/i.test(relay.summary), 'relay may add local context');
+    const genText = generate.steps.join('\n');
+    assert.ok(genText.includes('GET /api/agent/context') && genText.includes('?since='), 'generate fetches the bundle with since');
+    assert.ok(/never send them to ParentLoop/i.test(genText), 'private context stays with the agent');
+    const bundle = manifest.endpoints.find((e) => e.path === '/api/agent/context');
+    assert.ok(/source_quote/.test(bundle.description) && /cautions/.test(bundle.description), 'bundle documents quotes and cautions');
+    assert.ok(bundle.query && bundle.query.since, 'since query documented');
   });
 
   await t.test('find-or-create recipe is ordered lookup -> join/create -> placements -> report', async () => {
