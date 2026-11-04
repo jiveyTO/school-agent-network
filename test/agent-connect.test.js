@@ -75,6 +75,22 @@ test('the approval page and the agent note are on the page', () => {
   assert.ok(!PAGE.includes('pl_agent_'), 'no token value is baked into the page');
 });
 
+// Brief 069: the approve page used to strand a parent on "Done — …" with no
+// way home. Every approve state keeps the wordmark link and the home button.
+test('the approve page always has a way home, including the done state', () => {
+  assert.ok(PAGE.includes('<h1><a href="/" id="homeWordmark">ParentLoop</a></h1>'), 'the shared header wordmark links home');
+  const view = PAGE.slice(PAGE.indexOf('<section id="approveView"'), PAGE.indexOf('<section id="recoveryView"'));
+  const home = '<a class="small-btn secondary" id="approveHomeLink" href="/">Go to ParentLoop</a>';
+  assert.ok(view.includes(home), 'the approve view has the Go to ParentLoop button');
+  // It sits after the card closes, outside the parts each state hides
+  // (approveDetail, approveSignIn), so the done/declined/expired text keeps it.
+  const afterStatus = view.slice(view.indexOf('id="approveStatus"'));
+  assert.match(afterStatus, /^[^]*?<\/p>\s*<\/div>\s*(<!--[^]*?-->\s*)?<p class="home-row">/, 'right after the card closes');
+  const done = PAGE.slice(PAGE.indexOf('function showApproveDone('), PAGE.indexOf('async function loadApproveView('));
+  assert.ok(done.includes("'approveDetail').hidden = true"), 'done state hides the approve controls…');
+  assert.ok(!done.includes('approveHomeLink') && !done.includes('homeWordmark'), '…but never the way home');
+});
+
 test('agent joins by invite with one parent approval', async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parentloop-agent-connect-'));
   const child = spawn(process.execPath, ['server.js'], {
@@ -118,6 +134,13 @@ test('agent joins by invite with one parent approval', async (t) => {
     const bad = await agent.get('/join/not-a-real-invite', { Accept: 'application/json' });
     assert.equal(bad.res.status, 404);
     assert.equal(bad.data.error, 'That invite link is no longer available.');
+  });
+
+  await t.test('a served approve page carries the way home, even for a bogus id', async () => {
+    const html = await agent.get('/approve/not-a-real-request', { Accept: 'text/html' });
+    assert.equal(html.res.status, 200);
+    assert.ok(html.text.includes('<a href="/" id="homeWordmark">ParentLoop</a>'));
+    assert.ok(html.text.includes('id="approveHomeLink" href="/">Go to ParentLoop</a>'));
   });
 
   await t.test('connect: approval link, code, and a secret only the agent keeps', async () => {
