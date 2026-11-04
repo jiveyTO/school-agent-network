@@ -183,7 +183,8 @@ test('onboarding, sources, Gmail safety, and demo flow', async (t) => {
     const titles = (run.data.nudges || []).map((n) => n.title.toLowerCase());
     assert.ok(titles.some((x) => x.includes('pizza')), titles.join(', '));
     assert.ok(titles.some((x) => x.includes('uniform')), titles.join(', '));
-    assert.equal(run.data.nudges.length, 2, JSON.stringify(run.data.nudges));
+    assert.ok(titles.some((x) => x.includes('skate fitting')), titles.join(', '));
+    assert.equal(run.data.nudges.length, 3, JSON.stringify(run.data.nudges));
     assert.equal(run.data.conflicts.length, 3, JSON.stringify((run.data.conflicts || []).map((c) => c.message)));
     assert.equal(run.data.relevant_count, 28, `relevant: ${run.data.relevant_count} filtered: ${run.data.filtered_out_count}`);
     assert.equal(run.data.filtered_out_count, 1);

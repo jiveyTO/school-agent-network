@@ -1392,7 +1392,16 @@ function withDoneApplied(result, actions) {
   const keep = (n) => !(n && factMarkedDone(n.fact_id, actions));
   const nudges = (result.nudges || []).filter(keep);
   const groups = (result.groups || result.grouped_by_hub || []).map((g) => ({ ...g, nudges: (g.nudges || []).filter(keep) }));
-  return { ...result, nudges, open_action_count: nudges.length, groups, grouped_by_hub: groups };
+  const doneFactIds = (result.relevant_facts || []).filter((f) => f && factMarkedDone(f.id, actions)).map((f) => f.id);
+  return { ...result, nudges, open_action_count: nudges.length, groups, grouped_by_hub: groups, done_fact_ids: doneFactIds };
+}
+
+// How the page may tick things off: 'saved' for a family's own page (stored
+// in its actions), 'browser' for the demo (kept in the visitor's browser only;
+// the shared demo never changes), '' for an agent token.
+function doneModeFor(actor, bearerAuth) {
+  if (bearerAuth || !actor) return '';
+  return actor.is_demo ? 'browser' : 'saved';
 }
 
 function eveningFingerprint(profile, facts, moment) {
@@ -3467,7 +3476,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/parent/latest') {
       const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
       if (!actor) { sendJson(res, 404, { ok: false, error: 'No family profile found — finish setup first.' }); return; }
-      sendJson(res, 200, { ok: true, can_mark_done: Boolean(!bearerAuth && !actor.is_demo), ...latestEveningCheck(actor) });
+      sendJson(res, 200, { ok: true, can_mark_done: Boolean(!bearerAuth && !actor.is_demo), done_mode: doneModeFor(actor, bearerAuth), ...latestEveningCheck(actor) });
       return;
     }
     // A parent marks a nudge done (or undoes it). Stored per fact in the
@@ -3486,7 +3495,7 @@ const server = http.createServer(async (req, res) => {
       if (body.done === false) delete actions[FACT_DONE_PREFIX + factId];
       else actions[FACT_DONE_PREFIX + factId] = 'done';
       const updated = store.updateProfileActions(actor.id, actions) || actor;
-      sendJson(res, 200, { ok: true, fact_id: factId, done: body.done !== false, can_mark_done: true, ...latestEveningCheck(updated) });
+      sendJson(res, 200, { ok: true, fact_id: factId, done: body.done !== false, can_mark_done: true, done_mode: 'saved', ...latestEveningCheck(updated) });
       return;
     }
     // Evening check mode 2b: the context bundle a parent's own agent uses to
@@ -3533,6 +3542,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, {
           ok: true,
           can_mark_done: Boolean(!bearerAuth && actor && !actor.is_demo),
+          done_mode: doneModeFor(actor, bearerAuth),
           simulated_now: moment.simulated ? moment.label : '',
           checked_at_label: moment.label,
           ran_at: nowIso(),

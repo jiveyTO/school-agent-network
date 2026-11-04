@@ -50,7 +50,7 @@ function harness(latest, tonightHidden) {
     setTimeout: (cb, ms) => setTimeout(cb, ms >= 15000 ? 5 : ms),
     clearTimeout,
     esc: (v) => String(v),
-    eveningCanMarkDone: false,
+    setEveningDoneMode: () => {},
     parentRunBtn: { disabled: false },
     parentResultsEl: results,
     parentStatus: el('parentStatus'),

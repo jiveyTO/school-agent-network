@@ -23,7 +23,7 @@ const DEMO_HUB_B_NAME = 'U9 Hockey — Maple Grove';
 const DEMO_SCHOOL_WEBSITE = 'https://maplegrove-elementary.example.com';
 const HOCKEY_FACTS = [
   { id: 'fact-u9-hockey-practice-2026-11-03', type: 'event', title: 'U9 Hockey practice', detail: 'Weekly practice at Maple Grove Arena, Rink 2.', date: '2026-11-03', time: '6:00 PM–7:00 PM', applies_to: 'U9 Hockey players', action_required: false, action: '', link: '', source_document: 'U9 Hockey — Maple Grove (fictional schedule)', source_text: 'Practice is Tuesday at 6:00 PM on Rink 2.', published_at: '2026-11-01T09:00:00.000Z', confidence: 0.98, group_label: 'Weekly schedule' },
-  { id: 'fact-u9-hockey-skate-fitting-2026-11-04', type: 'event', title: 'Skate fitting', detail: 'Skate fitting at the arena pro shop before the season opener.', date: '2026-11-04', time: '4:30 PM–5:30 PM', applies_to: 'U9 Hockey players', action_required: true, action: 'Bring skates for fitting', link: '', source_document: 'U9 Hockey — Maple Grove (fictional schedule)', source_text: 'Skate fitting is Wednesday between 4:30 and 5:30 PM at the pro shop.', published_at: '2026-11-01T09:00:00.000Z', confidence: 0.97, group_label: 'Season prep' },
+  { id: 'fact-u9-hockey-skate-fitting-2026-11-04', type: 'event', title: 'Skate fitting', detail: 'Skate fitting at the arena pro shop before the season opener.', date: '2026-11-07', time: '4:30 PM–5:30 PM', applies_to: 'U9 Hockey players', action_required: true, action: 'Bring skates for fitting', link: '', source_document: 'U9 Hockey — Maple Grove (fictional schedule)', source_text: 'Skate fitting is Saturday between 4:30 and 5:30 PM at the pro shop.', published_at: '2026-11-01T09:00:00.000Z', confidence: 0.97, group_label: 'Season prep' },
   { id: 'fact-u9-hockey-game-2026-11-06', type: 'event', title: 'U9 Hockey game', detail: 'Home game against the fictional Riverdale Rockets at Maple Grove Arena.', date: '2026-11-06', time: '6:30 PM–7:30 PM', applies_to: 'U9 Hockey players', action_required: false, action: '', link: '', source_document: 'U9 Hockey — Maple Grove (fictional schedule)', source_text: 'Our first home game is Friday at 6:30 PM against Riverdale.', published_at: '2026-11-01T09:00:00.000Z', confidence: 0.99, group_label: 'Games' },
   { id: 'fact-u9-hockey-photo-day-2026-11-14', type: 'event', title: 'Team photo day', detail: 'Team photos in full uniform at Maple Grove Arena.', date: '2026-11-14', time: '10:00 AM–11:00 AM', applies_to: 'U9 Hockey players', action_required: true, action: 'Wear full uniform for photos', link: '', source_document: 'U9 Hockey — Maple Grove (fictional schedule)', source_text: 'Team photo day is Saturday, November 14 at 10:00 AM. Wear your full uniform.', published_at: '2026-11-01T09:00:00.000Z', confidence: 0.98, group_label: 'Team photo' },
   { id: 'fact-u9-hockey-snack-schedule', type: 'announcement', title: 'Team snack schedule posted', detail: 'The rotating snack schedule is posted at the arena. No action needed tonight.', date: '', time: '', applies_to: 'U9 Hockey players', action_required: false, action: '', link: '', source_document: 'U9 Hockey — Maple Grove (fictional schedule)', source_text: 'The team snack schedule is posted at the arena.', published_at: '2026-11-01T09:00:00.000Z', confidence: 0.95, group_label: 'Team snacks', group_summary: 'Team snack schedule is posted at the arena.' },
@@ -819,6 +819,7 @@ async function initDb() {
   restampDemoFactScopes();
   backfillSeedGroups();
   for (const target of DEMO_TEST_MATERIAL_REMOVALS) removeDemoTestMaterial(target);
+  moveDemoSkateFitting();
   // A restored database that boot left unchanged (schema-only migrations
   // don't count: they re-run every boot) is not uploaded. Uploading it would
   // move the stored generation during a deploy, so the old instance's final
@@ -2174,6 +2175,33 @@ function removeDemoTestMaterial({ hubId, materialId, title }) {
   return { facts_removed: factIds.length, checks_cleared: stale.length };
 }
 
+// The demo's skate fitting moved from Wed Nov 4 (already past at the demo's
+// Thursday-evening moment, so it looked forgotten) to Sat Nov 7, so the demo
+// evening check shows it as due soon. Saturday has no all-day school events,
+// so the demo keeps its 3 conflicts. Existing databases are moved once; the
+// fact keeps its id. No-op once moved.
+const DEMO_SKATE_FITTING_ID = 'fact-u9-hockey-skate-fitting-2026-11-04';
+const DEMO_SKATE_FITTING_OLD_QUOTE = 'Skate fitting is Wednesday between 4:30 and 5:30 PM at the pro shop.';
+
+function moveDemoSkateFitting() {
+  const row = one(
+    `SELECT f.id AS id, f.date AS date, f.material_id AS material_id
+     FROM facts f JOIN hubs h ON h.id = f.hub_id AND h.is_demo = 1 WHERE f.id = ?`,
+    [DEMO_SKATE_FITTING_ID]
+  );
+  if (!row || row.date !== '2026-11-04') return false;
+  const seed = HOCKEY_FACTS.find((f) => f.id === DEMO_SKATE_FITTING_ID);
+  run('UPDATE facts SET date = ?, source_text = ? WHERE id = ?', [seed.date, seed.source_text, DEMO_SKATE_FITTING_ID]);
+  if (row.material_id) {
+    run('UPDATE materials SET raw_text = REPLACE(raw_text, ?, ?) WHERE id = ?', [
+      DEMO_SKATE_FITTING_OLD_QUOTE, seed.source_text, row.material_id,
+    ]);
+  }
+  persist();
+  console.log(`demo update: skate fitting moved to ${seed.date}`);
+  return true;
+}
+
 function purgeDemoMemberships() {
   if (!tableColumns('hubs').includes('is_demo') || !tableColumns('profiles').includes('is_demo')) return [];
   const rows = all(
@@ -3323,6 +3351,7 @@ module.exports = {
   removeHubMember,
   purgeDemoMemberships,
   removeDemoTestMaterial,
+  moveDemoSkateFitting,
   getSessionOwnProfile,
   isMember,
   getMemberRole,

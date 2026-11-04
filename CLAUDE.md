@@ -102,7 +102,7 @@ print them. Remove `/tmp/parentloop-deploy` afterwards.
    `recovery_configured: true` (brief 051d: both are required).
 2. `GET /api/auth/login` returns HTTP 302 to Google with the hosted
    callback URI.
-3. Demo evening check still exactly 2 nudges, 3 conflicts, 28 relevant,
+3. Demo evening check still exactly 3 nudges, 3 conflicts, 28 relevant,
    1 set aside, PRIVACY CHECK line present.
 4. Durability: boot logs show the durable store restore line (e.g.
    "database restored from hosted storage") and the ENGAGED line, and a

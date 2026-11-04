@@ -202,7 +202,7 @@ test('GET /api/agent manifest: shape, real routes, recipe, no data', async (t) =
     await post('/api/profile/demo', {});
     const run = await post('/api/parent/run', {});
     assert.equal(run.res.status, 200, run.text.slice(0, 300));
-    assert.equal(run.data.nudges.length, 2);
+    assert.equal(run.data.nudges.length, 3);
     assert.equal(run.data.conflicts.length, 3);
     assert.equal(run.data.relevant_count, 28);
     assert.equal(run.data.filtered_out_count, 1);
