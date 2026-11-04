@@ -388,6 +388,31 @@ test('agent tokens over HTTP: lifecycle, scope, and guards', async (t) => {
     assert.equal(noBearer.data.profile.is_demo, true, 'cookieless session still lands on demo');
   });
 
+  await t.test('brief 064: an Authorization header with no token is 401, never the demo', async () => {
+    // The Nov 3 failure: `-H "Authorization: Bearer $TOKEN"` with $TOKEN unset
+    // was read as "no header" and got the demo family's hubs with a 200.
+    for (const header of ['', 'Bearer', 'Bearer ', 'Bearer    ', 'Basic dXNlcjpwYXNz', 'Token pl_agent_x', 'pl_agent_x']) {
+      for (const urlPath of ['/api/hubs', '/api/family-profile']) {
+        const res = await agent(urlPath, null, { headers: { Authorization: header } });
+        assert.equal(res.res.status, 401, `Authorization ${JSON.stringify(header)} on ${urlPath} is refused`);
+        assert.match(res.data.error, /didn’t carry a token/, 'the message says the header carried no token');
+        assert.equal(res.data.hubs, undefined, 'no hub data comes back');
+        assert.equal(res.data.profile, undefined, 'no family data comes back');
+      }
+    }
+    const invalid = await agent('/api/hubs', null, { headers: { Authorization: 'Bearer pl_agent_not-a-real-token' } });
+    assert.equal(invalid.res.status, 401);
+    assert.match(invalid.data.error, /not valid/, 'a sent-but-wrong token keeps its own message');
+
+    const lower = await agent('/api/hubs', null, { headers: { Authorization: 'bearer   ' + raw + '  ' } });
+    assert.equal(lower.res.status, 200, 'scheme case and surrounding spaces are tolerated');
+    assert.ok(lower.data.hubs.some((h) => h.id === hubId), 'a valid token still returns its family’s hubs');
+    assert.ok(lower.data.hubs.every((h) => !h.is_demo), 'and never a demo hub');
+
+    const page = await fetch(`${BASE}/`, { headers: { Authorization: 'Bearer' } });
+    assert.equal(page.status, 200, 'the page itself is not an API route and stays reachable');
+  });
+
   await t.test('last_used_at is stamped after agent use', async () => {
     const listed = await amy.get('/api/agent-tokens');
     const mine = listed.data.tokens.find((tk) => tk.id === record.id);
