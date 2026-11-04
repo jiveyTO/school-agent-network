@@ -174,14 +174,22 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     assert.equal(detail.data.member_count, 1);
 
     const invite = await post(`/api/hubs/${createdHub.id}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await post(`/api/hubs/${createdHub.id}/join-settings`, { open: true })).res.status, 200);
     assert.match(invite.data.path, /^\/join\/.+/);
     const token = invite.data.token;
     const info = await jf(`/api/join/${token}`);
+    // Brief 067 adds the join question (never its answers), whether the
+    // admin decides, and the admin's first name — public card fields only.
     assert.deepEqual(Object.keys(info.data).sort(), [
+      'admin_first_name',
+      'has_question',
       'hub_name',
       'inviter_first_name',
       'kind',
       'member_count',
+      'needs_admin_ok',
+      'question',
     ]);
     assert.equal(info.data.hub_name, 'Test Hub Alpha — Maple Grove');
     assert.equal(info.data.inviter_first_name, 'Founder');
@@ -300,6 +308,8 @@ test('ParentLoop hubs, migration, joining, and Parent Agent v2', async (t) => {
     assert.equal(created.res.status, 200);
     const hubId = created.data.hub.id;
     const invite = await post(`/api/hubs/${hubId}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await post(`/api/hubs/${hubId}/join-settings`, { open: true })).res.status, 200);
     assert.equal(invite.res.status, 200);
     await post('/api/profile', {
       parent_name: 'Deleter Dan',

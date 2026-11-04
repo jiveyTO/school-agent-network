@@ -109,6 +109,8 @@ test('hub membership is visible to members and every hub names a contact', async
 
   await t.test('a joined member sees both families, founder first, and the contact', async () => {
     const invite = await post(`/api/hubs/${hubId}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await post(`/api/hubs/${hubId}/join-settings`, { open: true })).res.status, 200);
     assert.equal(invite.res.status, 200);
     await post('/api/profile', {
       parent_name: 'Joiner Jo',

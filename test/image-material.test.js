@@ -195,6 +195,8 @@ test('image material: vision extraction, retention, member-only view', async (t)
 
   await t.test('another hub member can view it; a non-member cannot', async () => {
     const invite = await founder.post(`/api/hubs/${hubId}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await founder.post(`/api/hubs/${hubId}/join-settings`, { open: true })).res.status, 200);
     assert.equal(invite.res.status, 200);
     const member = makeClient();
     await member.post('/api/profile', {

@@ -153,6 +153,8 @@ test('hub simplification: sources, website, and one-box adding', async (t) => {
     assert.equal(empty.res.status, 400);
 
     const tokenRes = await post(`/api/hubs/${hub.id}/invites`, {});
+    // Brief 067: this hub lets anyone with a link join (the default asks the admin).
+    assert.equal((await post(`/api/hubs/${hub.id}/join-settings`, { open: true })).res.status, 200);
     assert.equal(tokenRes.res.status, 200);
     await post('/api/profile', {
       parent_name: 'Member Meg',
