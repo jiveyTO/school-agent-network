@@ -12,6 +12,7 @@ const pdfParse = require('pdf-parse');
 const zlib = require('zlib');
 const crypto = require('crypto');
 const { mergeSameEventFacts, detectConflicts } = require('./event-dedupe');
+const { eveningEmailContent, friendlyDay, escapeHtml } = require('./evening-email');
 
 const ROOT = __dirname;
 const NEWSLETTER_PATH = path.join(ROOT, 'data', 'mock-newsletter.txt');
@@ -1451,60 +1452,6 @@ function clockMinutes(hhmm) {
 
 function eveningUnsubscribeToken(profileId) {
   return crypto.createHmac('sha256', store.emailLinkSecret()).update('evening-email-off:' + profileId).digest('hex').slice(0, 40);
-}
-
-function friendlyDay(iso) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
-  if (!m) return String(iso || '');
-  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
-}
-
-function escapeHtml(text) {
-  return String(text == null ? '' : text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-// Subject + plain text + simple HTML for one family's evening check: what to
-// do, timing conflicts, and what's coming up in the next week.
-function eveningEmailContent(profile, result, links, today) {
-  const kids = (profile.children || []).map((c) => c && c.name).filter(Boolean).join(' and ') || 'your family';
-  const nudges = (result && result.nudges) || [];
-  const conflicts = (result && result.conflicts) || [];
-  const horizon = new Date(Date.parse(today + 'T00:00:00Z') + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const nudged = new Set(nudges.map((n) => n.fact_id));
-  const upcoming = ((result && result.relevant_facts) || [])
-    .filter((f) => f.date && f.date >= today && f.date <= horizon && !nudged.has(f.id))
-    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
-    .slice(0, 8);
-  const subject = nudges.length
-    ? `Tonight: ${nudges.length} ${nudges.length === 1 ? 'thing' : 'things'} to do`
-    : conflicts.length
-      ? `Tonight: ${conflicts.length} timing ${conflicts.length === 1 ? 'conflict' : 'conflicts'}`
-      : 'Tonight: a calm evening';
-  const nudgeLine = (n) => `${n.title}${n.action ? ' — ' + n.action : ''}${n.deadline ? ' (by ' + friendlyDay(n.deadline) + ')' : ''}`;
-  const conflictLine = (c) => String(c.message || c.title || '').trim();
-  const upcomingLine = (f) => `${friendlyDay(f.date)}: ${f.title}`;
-  const text = [
-    `Here's tonight's evening check for ${kids}.`,
-    '',
-    nudges.length ? 'To do:' : 'Nothing to do tonight.',
-    ...nudges.map((n) => '- ' + nudgeLine(n)),
-    ...(conflicts.length ? ['', 'Heads up:', ...conflicts.map((c) => '- ' + conflictLine(c))] : []),
-    ...(upcoming.length ? ['', 'Coming up this week:', ...upcoming.map((f) => '- ' + upcomingLine(f))] : []),
-    '',
-    'Open ParentLoop: ' + links.app,
-    '',
-    'You get this because you turned on the evening email in ParentLoop. Stop these emails: ' + links.unsubscribe,
-  ].join('\n');
-  const list = (items, fn) => '<ul>' + items.map((x) => '<li>' + escapeHtml(fn(x)) + '</li>').join('') + '</ul>';
-  const html = [
-    `<p>Here's tonight's evening check for ${escapeHtml(kids)}.</p>`,
-    nudges.length ? '<p><b>To do</b></p>' + list(nudges, nudgeLine) : '<p>Nothing to do tonight.</p>',
-    conflicts.length ? '<p><b>Heads up</b></p>' + list(conflicts, conflictLine) : '',
-    upcoming.length ? '<p><b>Coming up this week</b></p>' + list(upcoming, upcomingLine) : '',
-    `<p><a href="${escapeHtml(links.app)}">Open ParentLoop</a></p>`,
-    `<p style="color:#68766d;font-size:12px">You get this because you turned on the evening email in ParentLoop. <a href="${escapeHtml(links.unsubscribe)}">Stop these emails</a>.</p>`,
-  ].join('');
-  return { subject, text, html };
 }
 
 // One scheduler tick: send the evening email to every family whose time has
