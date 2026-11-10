@@ -50,6 +50,7 @@ docker compose up -d
 ```
 
 - Requires `SCHOOL_AGENT_API_KEY` in `.env` (Meta Model API key) for extraction and the evening check; see `.env.example`.
+- Model routing (brief 022): material extraction and the evening check run on Muse Ember (`muse-ember-1.0`) first and escalate to Muse Spark (`SCHOOL_AGENT_MODEL`, default `muse-spark-1.3`) only when Ember's read fails its checks: the call fails or the reply doesn't parse; an extraction yields zero facts from a non-trivial source or fewer than half its quotes verify; or more than half of an evening check's relevant items match no checked fact. `SCHOOL_AGENT_MODEL_ROUTING=spark-only` puts every call back on Spark. OCR and school/team identity reads stay on Spark. Each call logs a `model usage:` line (model, tokens, estimated cost, Spark-equivalent cost); each extraction or check logs a `model route:` line (accepted model, `escalated`, reason).
 - `docker compose up -d --build` after code changes.
 - Tests: `docker compose exec -T school-agent node --test test/` (50 passing at last full run).
 

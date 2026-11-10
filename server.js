@@ -78,7 +78,28 @@ function loadEnvFile() {
 loadEnvFile();
 
 const API_KEY = process.env.SCHOOL_AGENT_API_KEY || '';
+// The strong model (Spark). Every call not routed below uses it (OCR,
+// school/team identity reads), and it is the escalation target.
 const MODEL = process.env.SCHOOL_AGENT_MODEL || 'muse-spark-1.3';
+// Brief 022: model routing. Material extraction and the evening check's
+// relevance filtering run on the fast model (Ember) first and escalate to
+// MODEL only on a concrete failure signal (see extractionEscalationReason
+// and eveningEscalationReason). SCHOOL_AGENT_MODEL_ROUTING=spark-only
+// flips every call back to MODEL with today's behavior, no code change.
+const FAST_MODEL = process.env.SCHOOL_AGENT_FAST_MODEL || 'muse-ember-1.0';
+const MODEL_ROUTING =
+  String(process.env.SCHOOL_AGENT_MODEL_ROUTING || 'ember-first').trim().toLowerCase() === 'spark-only'
+    ? 'spark-only'
+    : 'ember-first';
+const EMBER_FIRST = MODEL_ROUTING === 'ember-first';
+// USD per 1M tokens, for the usage log's cost estimate only. Ember's
+// prices triple for the whole request above 200K input tokens; requests
+// are per material / per check and stay far below that.
+const MODEL_PRICES = {
+  'muse-ember-1.0': { input: 0.10, cached: 0.004, output: 0.50, longContextTokens: 200000, longContextFactor: 3 },
+  'muse-spark-1.3': { input: 1.25, cached: 1.25, output: 4.25 },
+};
+const EMBER_LONG_CONTEXT_TOKENS = 200000;
 const API_URL =
   process.env.SCHOOL_AGENT_API_URL || 'https://api.meta.ai/v1/chat/completions';
 const PORT = Number(process.env.PORT || 3000);
@@ -699,9 +720,51 @@ function metaContentUsable(content) {
   return typeof content === 'string' && !!content.trim();
 }
 
-async function postMetaChat(system, user, maxTokens, timeoutMs) {
+// Brief 022: one usage line per Meta Model API call (every attempt,
+// retries included), so the escalation rate and savings show in the logs:
+//   model usage: {"purpose":"extraction","model":"muse-ember-1.0",...}
+// est_usd prices the call; spark_equiv_usd prices the same tokens on
+// Spark, so (spark_equiv_usd - est_usd) summed over Ember calls is the
+// saving. Token counts only — no prompt or reply text is logged.
+function priceModelCall(model, usage) {
+  const price = MODEL_PRICES[model];
+  if (!price) return null;
+  const prompt = usage.prompt_tokens;
+  const cached = Math.min(usage.cached_tokens, prompt);
+  const factor = price.longContextTokens && prompt > price.longContextTokens ? price.longContextFactor : 1;
+  const usd = ((prompt - cached) * price.input + cached * price.cached + usage.completion_tokens * price.output) * factor / 1e6;
+  return Math.round(usd * 1e6) / 1e6;
+}
+
+function modelUsageOf(data) {
+  const u = (data && data.usage) || {};
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  return {
+    prompt_tokens: n(u.prompt_tokens),
+    cached_tokens: n(u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens),
+    completion_tokens: n(u.completion_tokens),
+    reasoning_tokens: n(u.completion_tokens_details && u.completion_tokens_details.reasoning_tokens),
+  };
+}
+
+function logModelUsage(entry, sink) {
+  if (sink && Array.isArray(sink.calls)) sink.calls.push(entry);
+  console.log('model usage: ' + JSON.stringify(entry));
+  if (entry.model === FAST_MODEL && entry.prompt_tokens > EMBER_LONG_CONTEXT_TOKENS) {
+    console.warn(`model usage WARNING: ${entry.purpose} sent ${entry.prompt_tokens} input tokens to ${entry.model} (over ${EMBER_LONG_CONTEXT_TOKENS}; long-context price applies to the whole request)`);
+  }
+}
+
+// call = { model, purpose, sink } — model defaults to MODEL (Spark);
+// purpose labels the usage line; sink (optional, { calls: [] }) collects
+// the usage entries for a per-extraction / per-check summary.
+async function postMetaChat(system, user, maxTokens, timeoutMs, call) {
   const callTimeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 90000;
+  const model = (call && call.model) || MODEL;
+  const purpose = (call && call.purpose) || 'other';
+  const sink = call && call.sink;
   async function attempt() {
+    const startedAt = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), callTimeout);
     let res;
@@ -714,7 +777,7 @@ async function postMetaChat(system, user, maxTokens, timeoutMs) {
           Authorization: `Bearer ${API_KEY}`,
         },
         body: JSON.stringify({
-          model: MODEL,
+          model,
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: user },
@@ -723,19 +786,36 @@ async function postMetaChat(system, user, maxTokens, timeoutMs) {
           max_tokens: maxTokens,
         }),
       });
+    } catch (err) {
+      logModelUsage({ purpose, model, error: (err && err.name) || 'fetch failed', ms: Date.now() - startedAt }, sink);
+      throw err;
     } finally {
       clearTimeout(timeout);
     }
     const bodyText = await res.text();
     if (!res.ok) {
+      logModelUsage({ purpose, model, status: res.status, ms: Date.now() - startedAt }, sink);
       throw new Error(`Meta Model API error ${res.status}: ${bodyText.slice(0, 1000)}`);
     }
     let data;
     try {
       data = JSON.parse(bodyText);
     } catch {
+      logModelUsage({ purpose, model, status: res.status, ms: Date.now() - startedAt, non_json: true }, sink);
       throw new Error('Meta Model API returned non-JSON: ' + bodyText.slice(0, 500));
     }
+    const usage = modelUsageOf(data);
+    const entry = {
+      purpose,
+      model,
+      served_model: (data && data.model) || '',
+      ...usage,
+      finish_reason: metaFinishReasonOf(data) || '',
+      ms: Date.now() - startedAt,
+      est_usd: priceModelCall(model, usage),
+    };
+    if (model !== MODEL) entry.spark_equiv_usd = priceModelCall(MODEL, usage);
+    logModelUsage(entry, sink);
     return { data, bodyText };
   }
   // First attempt. A blank reply usually means the model spent its token
@@ -822,7 +902,7 @@ function withExtractionOptions(system, options) {
   return out;
 }
 
-async function callMetaApi(newsletterText, options) {
+async function callMetaApi(newsletterText, options, call) {
   const built = buildPrompt(newsletterText);
   const system = withExtractionOptions(built.system, options);
   const user = built.user;
@@ -831,7 +911,7 @@ async function callMetaApi(newsletterText, options) {
   // default). Worst case per upload stays bounded: 120 s OCR budget +
   // 180 s extraction + parse overhead ≈ 300 s, ~2x inside the 600 s
   // Cloud Run request timeout (see the Deploy recipe).
-  return postMetaChat(system, user, 32768, 180000);
+  return postMetaChat(system, user, 32768, 180000, call);
 }
 
 // Brief 044: the same extraction pipeline, reading an image. The image is
@@ -868,7 +948,7 @@ function buildImagePrompt(accompanyingText) {
   return { system, userText };
 }
 
-async function callMetaApiImage(accompanyingText, image, options) {
+async function callMetaApiImage(accompanyingText, image, options, call) {
   const built = buildImagePrompt(accompanyingText);
   const system = withExtractionOptions(built.system, options);
   const userText = built.userText;
@@ -878,7 +958,7 @@ async function callMetaApiImage(accompanyingText, image, options) {
     { type: 'image_url', image_url: { url: dataUrl } },
   ];
   // Same 180 s extraction budget as the text path (brief 051e).
-  return postMetaChat(system, user, 32768, 180000);
+  return postMetaChat(system, user, 32768, 180000, call);
 }
 
 // Brief 048: the OCR read. Same vision transport as brief 044's image
@@ -898,7 +978,7 @@ async function callMetaApiOcr(image) {
     { type: 'text', text: 'Transcribe all text in this page image verbatim.' },
     { type: 'image_url', image_url: { url: dataUrl } },
   ];
-  return postMetaChat(system, user, 8192);
+  return postMetaChat(system, user, 8192, undefined, { model: MODEL, purpose: 'ocr' });
 }
 
 // Read the flagged pages of a picture-risk PDF as images. Returns the
@@ -1108,7 +1188,7 @@ async function extractIdentityFields(pageText, kind, opts) {
   const user =
     'Page URL:\n' + pageUrl + '\n\nPage title:\n' + pageTitle +
     '\n\nWeb page text:\n\n' + pageText;
-  const content = await postMetaChat(system, user, 4096);
+  const content = await postMetaChat(system, user, 4096, undefined, { model: MODEL, purpose: 'identity' });
   const parsed = extractJsonObject(content);
   if (kind === 'activity') {
     const fields = { name: cleanField(parsed.name), city: cleanField(parsed.city) };
@@ -1190,10 +1270,12 @@ function buildParentPrompt(profile, facts, moment, placementLines) {
   return { system, user };
 }
 
-function normalizeParentResult(raw, facts) {
+// Resolves a model-returned relevant/nudge item to one of the checked facts
+// (by id, then title), or null.
+function makeFactLookup(facts) {
   const byId = new Map(facts.map((f) => [f.id, f]));
   const byTitle = new Map(facts.map((f) => [f.title, f]));
-  const lookupFact = (item) => {
+  return (item) => {
     if (!item) return null;
     if (typeof item === 'string') return byId.get(item) || byTitle.get(item) || null;
     if (item.fact_id && byId.has(item.fact_id)) return byId.get(item.fact_id);
@@ -1201,6 +1283,27 @@ function normalizeParentResult(raw, facts) {
     if (item.title && byTitle.has(item.title)) return byTitle.get(item.title);
     return null;
   };
+}
+
+// Brief 022: the evening check's failure signal for escalating a fast-model
+// reply to MODEL. The reply has already parsed as a JSON object (a parse
+// failure escalates on its own); it fails when relevant_facts is missing
+// or not an array, or when more than half of the items it lists do not
+// resolve to a fact that was actually checked (invented or garbled ids).
+// '' means the reply is accepted.
+function eveningEscalationReason(raw, facts) {
+  if (!raw || !Array.isArray(raw.relevant_facts)) return 'reply has no relevant_facts array';
+  const listed = raw.relevant_facts.length;
+  if (!listed) return '';
+  const lookupFact = makeFactLookup(facts);
+  const unresolved = raw.relevant_facts.filter((item) => !lookupFact(item)).length;
+  if (unresolved * 2 > listed) return `${unresolved} of ${listed} relevant items match no checked fact`;
+  return '';
+}
+
+function normalizeParentResult(raw, facts) {
+  const byId = new Map(facts.map((f) => [f.id, f]));
+  const lookupFact = makeFactLookup(facts);
 
   const relevant = [];
   const seenRelevant = new Set();
@@ -1313,12 +1416,12 @@ function normalizeParentResult(raw, facts) {
   };
 }
 
-async function callParentMetaApi(profile, facts, moment, placementLines) {
+async function callParentMetaApi(profile, facts, moment, placementLines, call) {
   const { system, user } = buildParentPrompt(profile, facts, moment, placementLines);
   // 16k (was 8k): the model can spend most of 8k reasoning and return no
   // content (finish_reason "length"); the evening check is now the home
   // screen and the nightly email, so it gets room to finish.
-  return postMetaChat(system, user, 16384);
+  return postMetaChat(system, user, 16384, undefined, call);
 }
 
 // What a saved evening check was computed from. When any of it changes —
@@ -1712,11 +1815,9 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
   push(`family profile loaded for ${childName} (private to this Parent Agent)`);
   push(`${hubs.length} ${hubs.length === 1 ? 'hub' : 'hubs'} checked: ${hubs.map((h) => h.name).join(', ') || 'none yet'}`);
   push(`${facts.length} facts checked against the family profile`);
-  push(`API called: POST ${API_URL} (model: ${MODEL})`);
   const promptProfile = { ...profile, actions: trackedActions(profile.actions), placements: placementRecordsForRun(profile) };
-  const content = await callParentMetaApi(promptProfile, facts, moment, placementLinesForRun(profile));
-  push('API responded — validating filtering result');
-  const raw = extractJsonObject(content);
+  const placementLines = placementLinesForRun(profile);
+  const raw = await routedEveningRead(promptProfile, facts, moment, placementLines, push);
   const full = addDueSoonNudges(normalizeParentResult(raw, facts), profile, moment);
   const result = withDoneApplied(full, profile.actions);
   push(
@@ -1749,6 +1850,78 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
     });
   }
   return result;
+}
+
+// Brief 022: the evening check's model call. Ember-first: the fast model's
+// reply is accepted unless the call fails (other than a timeout), the reply
+// does not parse, or eveningEscalationReason flags it; then the check is
+// redone once on MODEL and that reply is used (validated as before).
+// spark-only: one MODEL call, exactly as before brief 022.
+async function routedEveningRead(promptProfile, facts, moment, placementLines, push) {
+  const sink = { calls: [] };
+  const readOn = async (model) => {
+    push(`API called: POST ${API_URL} (model: ${model})`);
+    const content = await callParentMetaApi(promptProfile, facts, moment, placementLines, { model, purpose: 'evening_check', sink });
+    push('API responded — validating filtering result');
+    return extractJsonObject(content);
+  };
+  let raw = null;
+  let model = MODEL;
+  let reason = '';
+  if (EMBER_FIRST) {
+    model = FAST_MODEL;
+    try {
+      raw = await readOn(FAST_MODEL);
+      reason = eveningEscalationReason(raw, facts);
+    } catch (err) {
+      if (extractionTimedOut(err)) throw err;
+      reason = 'reply failed: ' + shortErrorText(err);
+    }
+    if (reason) {
+      push(`${FAST_MODEL} reply not accepted (${reason}) — escalating to ${MODEL}`);
+      model = MODEL;
+      raw = await readOn(MODEL);
+    }
+  } else {
+    raw = await readOn(MODEL);
+  }
+  logModelRoute('evening_check', { routing: MODEL_ROUTING, accepted_model: model, escalated: Boolean(reason), reason, facts_checked: facts.length }, sink);
+  return raw;
+}
+
+// A log-safe failure label: never the model's reply text or an API body.
+function shortErrorText(err) {
+  const message = err && err.message ? String(err.message) : String(err);
+  const api = message.match(/^Meta Model API (error \d+|returned non-JSON|returned no message content)/);
+  if (api) return 'Meta Model API ' + api[1];
+  if ((err && err.name === 'SyntaxError') || /^Could not parse model JSON/.test(message)) return 'reply JSON did not parse';
+  if (/^Model (did not return|JSON was not)/.test(message)) return message.split('. First ')[0].slice(0, 60);
+  if (/fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|socket/i.test(message)) return 'connection failed';
+  return 'reply failed validation';
+}
+
+function extractionTimedOut(err) {
+  if (!err) return false;
+  const message = err.message ? String(err.message) : String(err);
+  return err.name === 'AbortError' || /aborted|abort|timed out|timeout/i.test(message);
+}
+
+// One routing line per extraction / evening check: which model's result was
+// accepted, whether it escalated and why, and the summed usage of every
+// call it made. Count "escalated":true over all lines for the rate.
+function logModelRoute(purpose, fields, sink) {
+  const calls = (sink && sink.calls) || [];
+  const sum = (k) => calls.reduce((n, c) => n + (Number(c[k]) || 0), 0);
+  const entry = {
+    purpose,
+    ...fields,
+    calls: calls.length,
+    prompt_tokens: sum('prompt_tokens'),
+    completion_tokens: sum('completion_tokens'),
+    est_usd: Math.round(sum('est_usd') * 1e6) / 1e6,
+  };
+  console.log('model route: ' + JSON.stringify(entry));
+  return entry;
 }
 
 function emptyEveningCheck(profile, moment, simulatedLabel, push) {
@@ -1825,6 +1998,24 @@ function extractionCallFailed(err) {
 // the material's own text (pasted text; a PDF's text layer plus OCR reads;
 // an image's transcript from this same read). Dropped items go to the
 // material's audit log and its unverified count. Off for the demo run.
+// Brief 022: the escalation rule for a fast-model (Ember) extraction. The
+// read is redone on MODEL (Spark) when any of these holds, else accepted:
+//   - the call failed (HTTP error, non-JSON, no content) or the reply did
+//     not parse — but not a timeout, which keeps the facts_pending path;
+//   - it yielded zero facts from a non-trivial source;
+//   - quote verification is on and fewer than half of its facts passed
+//     (QUOTE_PASS_FLOOR), i.e. it quoted text the source does not contain.
+// '' means accepted.
+const QUOTE_PASS_FLOOR = 0.5;
+function extractionEscalationReason(read, nonTrivial, verifyQuotes) {
+  if (read.error) return 'reply failed: ' + shortErrorText(read.error);
+  if (!read.facts.length) return nonTrivial ? 'zero facts from a non-trivial source' : '';
+  if (verifyQuotes && read.verified.length < read.facts.length * QUOTE_PASS_FLOOR) {
+    return `quote verification kept ${read.verified.length} of ${read.facts.length}`;
+  }
+  return '';
+}
+
 async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scopeOverride, stampSource, image, titleFrom, verifyQuotes) {
   const push = (message) => logs.push({ at: nowIso(), message });
   const hasImage = Boolean(image && image.data && image.mime);
@@ -1833,41 +2024,116 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
     withTranscript: Boolean(verifyQuotes && hasImage),
     verifyQuotes: Boolean(verifyQuotes),
   };
-  const callModel = () => (hasImage ? callMetaApiImage(newsletterText, image, modelOptions) : callMetaApi(newsletterText, modelOptions));
+  const sink = { calls: [] };
+  const callModel = (model) => {
+    const call = { model, purpose: 'extraction', sink };
+    return hasImage ? callMetaApiImage(newsletterText, image, modelOptions, call) : callMetaApi(newsletterText, modelOptions, call);
+  };
   const parseReply = (reply) => (titleFrom || verifyQuotes
     ? parseExtractionReply(reply)
     : { facts: extractJsonArray(reply), title: '', transcript: '' });
-  push(`API called: POST ${API_URL} (model: ${MODEL})`);
-  let content = await callModel();
-  push('API responded — parsing facts');
-  let parsedReply = parseReply(content);
-  let rawFacts = parsedReply.facts;
-  let proposedTitle = parsedReply.title;
-  let transcript = parsedReply.transcript;
+  // One read on one model: call, parse, normalize, and (when on) check
+  // each quote against the source. No side effects, so a read that is
+  // escalated past leaves nothing behind. With catchErrors, a failed call
+  // or unparseable reply comes back as { error } instead of throwing.
+  const readOn = async (model, catchErrors) => {
+    let parsedReply;
+    try {
+      push(`API called: POST ${API_URL} (model: ${model})`);
+      const content = await callModel(model);
+      push('API responded — parsing facts');
+      parsedReply = parseReply(content);
+    } catch (err) {
+      if (!catchErrors || extractionTimedOut(err)) throw err;
+      return { model, error: err, facts: [], verified: [], rejected: [], title: '', transcript: '' };
+    }
+    const extractedAt = nowIso();
+    const facts = parsedReply.facts.map((f) => normalizeFact(f, extractedAt));
+    // Guarantee id uniqueness even if two facts slugify the same.
+    const seen = new Set();
+    for (const fact of facts) {
+      if (seen.has(fact.id)) {
+        let n = 2;
+        while (seen.has(`${fact.id}-${n}`)) n += 1;
+        fact.id = `${fact.id}-${n}`;
+      }
+      seen.add(fact.id);
+    }
+    const transcript = parsedReply.transcript || '';
+    const verified = [];
+    const rejected = [];
+    if (verifyQuotes) {
+      const readText = String(transcript).trim();
+      const source = normalizeQuoteText([newsletterText, readText].filter(Boolean).join('\n'));
+      for (const fact of facts) {
+        const check = verifyQuote(fact.source_text, source);
+        if (check.ok) verified.push({ ...fact, quote_verified: true });
+        else rejected.push({ title: fact.title, detail: fact.detail, quote: fact.source_text, reason: check.reason });
+      }
+    }
+    return { model, error: null, facts, verified, rejected, title: parsedReply.title || '', transcript };
+  };
   // The model sometimes returns a valid but empty fact list for a
   // non-trivial source. Retry the model call ONCE before giving up, so one
   // flaky reply cannot silently save zero facts as a success. An image
-  // counts as a non-trivial source on its own.
+  // counts as a non-trivial source on its own. Ember-first, that one
+  // retry is the escalation to MODEL.
   const nonWhitespace = String(newsletterText || '').replace(/\s/g, '').length;
   const nonTrivial = nonWhitespace > 100 || hasImage;
-  if (rawFacts.length === 0 && nonTrivial) {
-    push('no facts parsed from a non-trivial source — retrying the model call once');
-    push(`API called: POST ${API_URL} (model: ${MODEL})`);
-    content = await callModel();
-    push('API responded — parsing facts');
-    parsedReply = parseReply(content);
-    rawFacts = parsedReply.facts;
-    proposedTitle = parsedReply.title || proposedTitle;
-    transcript = parsedReply.transcript || transcript;
+  let read;
+  let reason = '';
+  if (EMBER_FIRST) {
+    const first = await readOn(FAST_MODEL, true);
+    reason = extractionEscalationReason(first, nonTrivial, verifyQuotes);
+    read = first;
+    if (reason) {
+      push(`${FAST_MODEL} extraction not accepted (${reason}) — escalating to ${MODEL}`);
+      let second;
+      try {
+        second = await readOn(MODEL, false);
+      } catch (err) {
+        // A failed escalation must not hide usable first-read facts.
+        if (first.error || !first.verified.length) throw err;
+        second = null;
+        push(`${MODEL} read failed — keeping the ${FAST_MODEL} read`);
+      }
+      // Spark's read wins unless it kept fewer notes than Ember's did.
+      const kept = (r) => (verifyQuotes ? r.verified.length : r.facts.length);
+      if (second && (first.error || kept(second) >= kept(first))) {
+        read = { ...second, title: second.title || first.title, transcript: second.transcript || first.transcript };
+      } else if (second) {
+        push(`${MODEL} kept fewer notes than ${FAST_MODEL} — keeping the ${FAST_MODEL} read`);
+      }
+    }
+  } else {
+    read = await readOn(MODEL, false);
+    if (read.facts.length === 0 && nonTrivial) {
+      reason = 'zero facts from a non-trivial source';
+      push('no facts parsed from a non-trivial source — retrying the model call once');
+      const second = await readOn(MODEL, false);
+      read = { ...second, title: second.title || read.title, transcript: second.transcript || read.transcript };
+    }
   }
-  if (rawFacts.length === 0 && nonTrivial) {
+  logModelRoute('extraction', {
+    routing: MODEL_ROUTING,
+    accepted_model: read.model,
+    escalated: EMBER_FIRST && Boolean(reason),
+    reason,
+    material_id: materialId || '',
+    image: hasImage,
+    facts: read.facts.length,
+    quotes_verified: verifyQuotes ? read.verified.length : null,
+    quotes_rejected: verifyQuotes ? read.rejected.length : null,
+  }, sink);
+  push(`extraction accepted from ${read.model}`);
+  if (read.facts.length === 0 && nonTrivial) {
     // Every material route marks the material 'failed' on a throw and
     // returns this message, so the hub list shows the failure instead of
     // an empty success. Tiny pastes keep today's behavior below.
     throw new Error(EMPTY_EXTRACTION_MESSAGE);
   }
   if (titleFrom && materialId) {
-    const title = cleanMaterialTitle(proposedTitle, hasImage ? '' : newsletterText, titleFrom.fileName);
+    const title = cleanMaterialTitle(read.title, hasImage ? '' : newsletterText, titleFrom.fileName);
     // Brief 072: a rename made while the read was running wins.
     const current = typeof titleFrom.ifTitle === 'string' ? store.getMaterial(materialId) : null;
     if (current && String(current.title || '') !== titleFrom.ifTitle) {
@@ -1879,36 +2145,17 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
       push('no usable title in the read — material keeps its neutral label');
     }
   }
-  const extractedAt = nowIso();
-  let facts = rawFacts.map((f) => normalizeFact(f, extractedAt));
-  // Guarantee id uniqueness even if two facts slugify the same.
-  const seen = new Set();
-  for (const fact of facts) {
-    if (seen.has(fact.id)) {
-      let n = 2;
-      while (seen.has(`${fact.id}-${n}`)) n += 1;
-      fact.id = `${fact.id}-${n}`;
-    }
-    seen.add(fact.id);
-  }
+  let facts = read.facts;
   push(`${facts.length} facts extracted`);
   if (verifyQuotes) {
-    const readText = String(transcript || '').trim();
+    const readText = String(read.transcript || '').trim();
     if (hasImage && materialId && readText) {
       const pasted = String(newsletterText || '').trim();
       store.updateMaterialText(materialId, pasted ? pasted + '\n\n' + readText : readText);
     }
-    const source = normalizeQuoteText([newsletterText, readText].filter(Boolean).join('\n'));
-    const verified = [];
-    const rejected = [];
-    for (const fact of facts) {
-      const check = verifyQuote(fact.source_text, source);
-      if (check.ok) verified.push({ ...fact, quote_verified: true });
-      else rejected.push({ title: fact.title, detail: fact.detail, quote: fact.source_text, reason: check.reason });
-    }
-    if (materialId) store.recordFactRejections(hubId, materialId, rejected);
-    push(`quotes verified against the original: ${verified.length} kept, ${rejected.length} left out`);
-    facts = verified;
+    if (materialId) store.recordFactRejections(hubId, materialId, read.rejected);
+    push(`quotes verified against the original: ${read.verified.length} kept, ${read.rejected.length} left out`);
+    facts = read.verified;
   }
   let materialTitle = '';
   if (materialId) {
@@ -4742,7 +4989,7 @@ if (require.main === module) {
           try { store.sweepAgentConnects(); } catch (e) { /* next hour */ }
         }, 60 * 60 * 1000).unref();
         console.log(`School Agent Network listening at http://0.0.0.0:${PORT}`);
-        console.log(`Model: ${MODEL} via ${API_URL}`);
+        console.log(`Model routing: ${MODEL_ROUTING} (${EMBER_FIRST ? `extraction + evening check on ${FAST_MODEL} first, escalating to ${MODEL}` : `all calls on ${MODEL}`}; OCR + identity reads on ${MODEL}) via ${API_URL}`);
         console.log(
           API_KEY
             ? 'SCHOOL_AGENT_API_KEY: present (configured)'

@@ -55,6 +55,9 @@ let hubId = null;
 // FIFO queue of model reply contents; each Meta API call consumes one.
 let modelQueue = [];
 let modelCalls = 0;
+// Brief 022: the model each call asked for. Ember-first (the default), the
+// one retry for an empty read is the escalation from Ember to Spark.
+let modelsCalled = [];
 
 async function waitForServer() {
   const deadline = Date.now() + 25000;
@@ -104,9 +107,11 @@ test('empty extraction retries once, then fails visibly', async (t) => {
   const dbPath = path.join(tmpDir, 'app.db');
 
   fakeModel = http.createServer((req, res) => {
-    req.resume();
+    let body = '';
+    req.on('data', (c) => { body += c; });
     req.on('end', () => {
       modelCalls += 1;
+      try { modelsCalled.push(JSON.parse(body).model); } catch { modelsCalled.push(''); }
       const content = modelQueue.length ? modelQueue.shift() : '[]';
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
@@ -145,6 +150,7 @@ test('empty extraction retries once, then fails visibly', async (t) => {
   await t.test('empty first, valid retry → facts saved, status extracted', async () => {
     modelQueue = ['[]', GOOD_FACTS];
     modelCalls = 0;
+    modelsCalled = [];
     const added = await post(`/api/hubs/${hubId}/materials`, {
       kind: 'paste',
       title: 'Retry notice',
@@ -154,6 +160,7 @@ test('empty extraction retries once, then fails visibly', async (t) => {
     assert.ok(added.data.facts_added >= 1);
     assert.equal(added.data.material.status, 'extracted');
     assert.equal(modelCalls, 2, 'model was called exactly twice');
+    assert.deepEqual(modelsCalled, ['muse-ember-1.0', 'muse-spark-1.3'], 'empty Ember read escalated to Spark');
     const detail = await jf(`/api/hubs/${hubId}`);
     const material = detail.data.materials.find((m) => m.id === added.data.material.id);
     assert.ok(material, 'material is listed in the hub');
@@ -167,6 +174,7 @@ test('empty extraction retries once, then fails visibly', async (t) => {
   await t.test('empty twice → 500 plus a failed material in the hub list', async () => {
     modelQueue = ['[]', '[]'];
     modelCalls = 0;
+    modelsCalled = [];
     // Its own text: the same text as the first subtest is now (brief 062)
     // a duplicate of that material, not a second add.
     const failed = await post(`/api/hubs/${hubId}/materials`, {
@@ -177,6 +185,7 @@ test('empty extraction retries once, then fails visibly', async (t) => {
     assert.equal(failed.res.status, 500, failed.text.slice(0, 400));
     assert.match(failed.data.error, /couldn't pull any notes/i);
     assert.equal(modelCalls, 2, 'model was retried exactly once');
+    assert.deepEqual(modelsCalled, ['muse-ember-1.0', 'muse-spark-1.3'], 'the one retry is the Spark escalation');
     const detail = await jf(`/api/hubs/${hubId}`);
     const material = detail.data.materials.find((m) => m.title === 'Unlucky notice');
     assert.ok(material, 'failed material stays in the hub material list');
@@ -190,6 +199,7 @@ test('empty extraction retries once, then fails visibly', async (t) => {
   await t.test('tiny paste keeps today’s behavior: no retry, success', async () => {
     modelQueue = ['[]'];
     modelCalls = 0;
+    modelsCalled = [];
     const tiny = await post(`/api/hubs/${hubId}/materials`, {
       kind: 'paste',
       title: 'Tiny note',
@@ -199,5 +209,6 @@ test('empty extraction retries once, then fails visibly', async (t) => {
     assert.equal(tiny.data.facts_added, 0);
     assert.equal(tiny.data.material.status, 'extracted');
     assert.equal(modelCalls, 1, 'no retry for a trivially small paste');
+    assert.deepEqual(modelsCalled, ['muse-ember-1.0'], 'a tiny paste stays on Ember');
   });
 });
