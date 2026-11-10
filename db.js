@@ -737,6 +737,9 @@ async function initDb() {
   // Brief 062: provenance of an email-kind material sent by an agent.
   addColumnIfMissing('materials', 'email_from', "email_from TEXT DEFAULT ''");
   addColumnIfMissing('materials', 'email_date', "email_date TEXT DEFAULT ''");
+  // Brief 023: where a material came from, as the adding agent named it
+  // (e.g. one teacher's Google Classroom feed). Empty when not given.
+  addColumnIfMissing('materials', 'source', "source TEXT DEFAULT ''");
   // Each family's latest evening check, saved so the home screen, agents,
   // and the evening email can show it without recomputing.
   run(`CREATE TABLE IF NOT EXISTS evening_checks (
@@ -1201,10 +1204,19 @@ function normalizeGrade(value) {
   return gradeNumberOf(value);
 }
 
+// Brief 023: teacher-named classes match across spellings — "Mme Karam",
+// "Mme. Karam", "Karam", and "Karam's class" all normalize to "karam".
+// A leading honorific is only stripped when a name follows it, so a bare
+// label is never blanked; labels like "3B" are unchanged.
+const CLASS_HONORIFIC = /^(?:mme|mlle|mrs|mr|ms|miss|dr|m)\.?\s+(?=\S)/;
 function normalizeClass(value) {
   return String(value || '')
     .toLowerCase()
+    .replace(/[\u2019\u2018]/g, "'")
+    .trim()
     .replace(/^class\s+/, '')
+    .replace(CLASS_HONORIFIC, '')
+    .replace(/(?:'s|s')?\s+class$/, '')
     .replace(/[^a-z0-9]/g, '');
 }
 
@@ -3131,8 +3143,8 @@ function createMaterial(hubId, uploadedBy, kind, title, rawText, status, scope, 
   const fileData = file && file.data ? new Uint8Array(file.data) : null;
   const extra = meta || {};
   run(
-    'INSERT INTO materials (id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_data, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, fingerprint, email_from, email_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, hubId, uploadedBy || '', kind || 'paste', title || '', rawText || '', new Date().toISOString(), status || 'stored', scope || 'school', scopeValue || '', fileData, fileData ? String(file.name || '') : '', fileData ? fileData.length : 0, fileData ? String(file.mime || '') : '', file && file.pictureRisk ? 1 : 0, file && file.picturesReadWithOcr ? 1 : 0, String(extra.fingerprint || ''), String(extra.emailFrom || ''), String(extra.emailDate || '')]
+    'INSERT INTO materials (id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_data, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, fingerprint, email_from, email_date, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, hubId, uploadedBy || '', kind || 'paste', title || '', rawText || '', new Date().toISOString(), status || 'stored', scope || 'school', scopeValue || '', fileData, fileData ? String(file.name || '') : '', fileData ? fileData.length : 0, fileData ? String(file.mime || '') : '', file && file.pictureRisk ? 1 : 0, file && file.picturesReadWithOcr ? 1 : 0, String(extra.fingerprint || ''), String(extra.emailFrom || ''), String(extra.emailDate || ''), String(extra.source || '')]
   );
   persist();
   return getMaterial(id);
@@ -3146,11 +3158,11 @@ function updateMaterialScope(id, scope, scopeValue) {
 function getMaterial(id) {
   if (!id) return null;
   const row = one(
-    "SELECT id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, unverified_count, email_from, email_date, (file_data IS NOT NULL) AS has_file FROM materials WHERE id = ?",
+    "SELECT id, hub_id, uploaded_by, kind, title, raw_text, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, unverified_count, email_from, email_date, source, (file_data IS NOT NULL) AS has_file FROM materials WHERE id = ?",
     [id]
   );
   if (!row) return null;
-  return { ...row, has_file: Boolean(row.has_file), may_have_unread_pictures: Boolean(row.may_have_unread_pictures), pictures_read_with_ocr: Boolean(row.pictures_read_with_ocr), unverified_count: Number(row.unverified_count || 0), email_from: row.email_from || '', email_date: row.email_date || '' };
+  return { ...row, has_file: Boolean(row.has_file), may_have_unread_pictures: Boolean(row.may_have_unread_pictures), pictures_read_with_ocr: Boolean(row.pictures_read_with_ocr), unverified_count: Number(row.unverified_count || 0), email_from: row.email_from || '', email_date: row.email_date || '', source: row.source || '' };
 }
 
 // Brief 062: the hub's earliest non-failed material with this fingerprint,
@@ -3304,7 +3316,7 @@ function countFactsByMaterial(hubId) {
 }
 
 function listMaterials(hubId, profileId) {
-  const rows = all("SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, unverified_count, email_from, email_date, (file_data IS NOT NULL) AS has_file FROM materials WHERE hub_id = ? ORDER BY created_at ASC", [hubId]).map(scopedMaterialRow);
+  const rows = all("SELECT id, hub_id, uploaded_by, kind, title, created_at, status, scope, scope_value, file_name, file_size, file_mime, may_have_unread_pictures, pictures_read_with_ocr, unverified_count, email_from, email_date, source, (file_data IS NOT NULL) AS has_file FROM materials WHERE hub_id = ? ORDER BY created_at ASC", [hubId]).map(scopedMaterialRow);
   if (!profileId) return rows;
   return rows.filter((m) => rowInScope(m, placementScopeSets(profileId, hubId)));
 }
@@ -3403,6 +3415,7 @@ function scopedMaterialRow(r) {
     unverified_count: Number(r.unverified_count || 0),
     email_from: r.email_from || '',
     email_date: r.email_date || '',
+    source: r.source || '',
   };
 }
 
@@ -3746,6 +3759,7 @@ module.exports = {
   listFactsForProfile,
   GRADE_OPTIONS,
   canonicalGrade,
+  normalizeClass,
   gradeNumberOf,
   gradeMatchesScope,
 };

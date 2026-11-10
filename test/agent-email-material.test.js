@@ -224,13 +224,15 @@ test('agents feed the hub: email kind, idempotent adds', async (t) => {
   await t.test('the manifest tells agents how to keep the hub fed', async () => {
     const manifest = (await makeClient().get('/api/agent')).data;
     const feed = manifest.keep_hub_fed;
-    assert.ok(Array.isArray(feed) && feed.length === 5, 'five-point section');
+    // Brief 023 added the classroom-feed line (audience class + source).
+    assert.ok(Array.isArray(feed) && feed.length === 6, 'six-point section');
     const text = feed.join(' ');
     assert.match(text, /mailbox/);
     assert.match(text, /own child specifically stays out/);
     assert.match(text, /duplicate: true/);
     assert.match(text, /materials first/);
     assert.match(text, /Keep it tidy/);
+    assert.match(text, /classroom feed/);
     const add = manifest.endpoints.find((e) => e.name === 'add material');
     assert.equal(add.email_body.kind, 'email');
     assert.match(add.description, /idempotent/);

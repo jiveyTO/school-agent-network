@@ -1482,14 +1482,20 @@
   // other dated note.
   // Brief 062: where a material came from. An email an agent sent shows its
   // sender and the date it was sent; everything else shows when it was added.
+  // Brief 023: a source the adding agent named (e.g. a teacher's Classroom
+  // feed) follows on the same line.
   function materialSourceText(m) {
     const from = String((m && m.email_from) || '').trim();
+    const named = String((m && m.source) || '').trim();
+    let text;
     if (m && m.kind === 'email' && from) {
       // "Ms. Ngo <office@school.example>" reads as "Ms. Ngo".
       const name = from.replace(/\s*<[^>]*>\s*$/, '').replace(/^"|"$/g, '').trim() || from;
-      return 'Email from ' + name + (m.email_date ? ', ' + humanDate(m.email_date) : '');
+      text = 'Email from ' + name + (m.email_date ? ', ' + humanDate(m.email_date) : '');
+    } else {
+      text = 'Added ' + humanDate(m.created_at);
     }
-    return 'Added ' + humanDate(m.created_at);
+    return named ? text + ' · ' + named : text;
   }
 
   // A material card's ⋯ menu, top right of its title row: the original

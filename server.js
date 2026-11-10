@@ -652,6 +652,7 @@ function materialPayload(material) {
     unverified_count: Number(material.unverified_count || 0),
     email_from: material.email_from || '',
     email_date: material.email_date || '',
+    source: material.source || '',
   };
 }
 
@@ -1673,6 +1674,7 @@ function agentContextBundle(profile, sinceMs) {
         status: m.status,
         scope: m.scope,
         scope_value: m.scope_value,
+        source: m.source || '',
         cautions: materialCautions(m),
       }));
     const facts = store.listFacts(hub.id, profile.id)
@@ -2237,10 +2239,24 @@ function normalizeWebsiteUrl(value) {
   return raw;
 }
 
-function resolveAudience(actor, audience, hubId) {
+// Brief 023: an explicit audience_value (e.g. the one teacher's class a
+// Classroom post belongs to) wins over the submitter's own placement for
+// grade/class; without one, the placement-derived value stands as before.
+function cleanAudienceValue(value) {
+  return String(value == null ? '' : value).replace(/\s+/g, ' ').trim().slice(0, 80).trim();
+}
+
+function cleanMaterialSource(value) {
+  return String(value == null ? '' : value).replace(/\s+/g, ' ').trim().slice(0, 200).trim();
+}
+
+function resolveAudience(actor, audience, hubId, audienceValue) {
   const mode = String(audience || 'auto').toLowerCase();
   if (mode === '' || mode === 'auto') return null;
   if (mode === 'school') return { scope: 'school', value: '' };
+  const explicit = cleanAudienceValue(audienceValue);
+  if (explicit && mode === 'grade') return { scope: 'grade', value: store.canonicalGrade(explicit) };
+  if (explicit && mode === 'class') return { scope: 'class', value: explicit };
   const placed = actor ? store.effectivePlacements(hubId, actor.id) : [];
   if (mode === 'grade') {
     const grade = placed.map((p) => p.grade).find((g) => String(g || '').trim());
@@ -2456,8 +2472,13 @@ const AGENT_MANIFEST = {
       path: '/api/hubs/{hub_id}/materials',
       auth: 'Bearer agent token',
       body: { kind: 'paste', title: 'notice title', text: 'newsletter or notice text' },
+      optional: {
+        audience: 'auto (default), school, grade, or class — who the material applies to; its facts are stamped with that scope',
+        audience_value: 'with audience grade or class: the grade (e.g. "Grade 2") or class/teacher (e.g. "Mme Karam") it applies to, max 80 characters; omit to use your own family\'s placement',
+        source: 'where the material came from, max 200 characters (e.g. "Google Classroom — Mme Karam\'s class, via your daily check"); shown on the material and returned as material.source',
+      },
       email_body: { kind: 'email', subject: 'the email subject', from: 'the sender as shown in the mailbox', date: 'the date the email was sent', text: 'the email body text' },
-      description: 'Add material to a hub the family belongs to and extract its facts. For pasted text send kind paste with title and text. For a school email send kind email with subject, from, date, and text (the body); send a PDF attachment separately as kind pdf. Returns { ok, duplicate, material, facts_added }. Adds are idempotent: if the hub already has the same material, the response is { ok: true, duplicate: true, material } pointing at the existing one, and nothing new is added.',
+      description: 'Add material to a hub the family belongs to and extract its facts. For pasted text send kind paste with title and text. For a school email send kind email with subject, from, date, and text (the body); send a PDF attachment separately as kind pdf. Optional audience + audience_value scope it to one grade or one class (teacher names match with or without Mme/Mr/Ms, so "Mme Karam" and "Karam" are the same class); optional source records where it came from. Returns { ok, duplicate, material, facts_added }. Adds are idempotent: if the hub already has the same material, the response is { ok: true, duplicate: true, material } pointing at the existing one, and nothing new is added.',
     },
     {
       name: 'rename material',
@@ -2542,6 +2563,7 @@ const AGENT_MANIFEST = {
     'You may contribute school material you find in your parent\'s mailbox to their hubs, using their token (POST /api/hubs/{hub_id}/materials with kind email).',
     'Share only what applies to other families too. Anything about your parent\'s own child specifically stays out of the hub.',
     'Adds are idempotent: re-sending something the hub already has is safe and returns { ok: true, duplicate: true } with the existing material. Treat that as done and move on.',
+    'A post from one teacher\'s classroom feed (e.g. Google Classroom) applies to that class only: send it with audience class, audience_value naming the teacher\'s class (e.g. "Mme Karam"), and source naming the feed — never as a grade- or school-wide post.',
     'When you can, check the hub\'s materials first (GET /api/hubs/{hub_id}), and send one clean copy of the original rather than a forward.',
     'Keep it tidy: rename a material with a clearer title (PATCH /api/hubs/{hub_id}/materials/{material_id}) or remove one that is out of date or was added by mistake (DELETE on the same path) — material your family added, or any material when your family is the hub admin. Ask the parent before removing something another family added.',
   ],
@@ -3580,7 +3602,7 @@ const server = http.createServer(async (req, res) => {
         const hub = body.hub_id ? store.getHub(body.hub_id) : store.getDemoHub();
         if (!hub) throw new Error('Choose a hub first.');
         const actor = store.getSessionViewer(session);
-        const override = resolveAudience(actor, body.audience, hub.id);
+        const override = resolveAudience(actor, body.audience, hub.id, body.audience_value);
         // Brief 062: the same text already in this hub is answered as a
         // duplicate (or re-read in place if its notes are still pending).
         const fingerprint = materialFingerprint(text);
@@ -4734,7 +4756,8 @@ const server = http.createServer(async (req, res) => {
           answerDuplicate(existing);
           return;
         }
-        const override = resolveAudience(actor, body.audience, hub.id);
+        const override = resolveAudience(actor, body.audience, hub.id, body.audience_value);
+        const materialSource = cleanMaterialSource(body.source);
         const suppliedTitle = String(body.title || '').trim();
         const retainedFile = pdfFile || imageFile;
         // Brief 053: a file material (image or PDF) without a supplied title
@@ -4761,6 +4784,7 @@ const server = http.createServer(async (req, res) => {
             fingerprint,
             emailFrom: emailMeta ? emailMeta.emailFrom : '',
             emailDate: emailMeta ? emailMeta.emailDate : '',
+            source: materialSource,
           });
         }
         materialsExtracting.add(material.id);
