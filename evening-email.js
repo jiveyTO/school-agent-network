@@ -134,6 +134,8 @@ function eveningEmailContent(profile, result, links, today) {
   const kids = (profile.children || []).map((c) => c && c.name).filter(Boolean).join(' and ') || 'your family';
   const nudges = (result && result.nudges) || [];
   const conflicts = (result && result.conflicts) || [];
+  // The subject counts the same pairs the Heads up section renders, so the
+  // two always agree.
   const clashes = conflicts.filter(isTimedClash);
   const horizon = new Date(Date.parse(today + 'T00:00:00Z') + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const nudged = new Set(nudges.map((n) => n.fact_id));
@@ -143,8 +145,8 @@ function eveningEmailContent(profile, result, links, today) {
     .slice(0, 8);
   const subject = nudges.length
     ? `Tonight: ${nudges.length} ${nudges.length === 1 ? 'thing' : 'things'} to do`
-    : conflicts.length
-      ? `Tonight: ${conflicts.length} timing ${conflicts.length === 1 ? 'conflict' : 'conflicts'}`
+    : clashes.length
+      ? `Tonight: ${clashes.length} timing ${clashes.length === 1 ? 'conflict' : 'conflicts'}`
       : 'Tonight: a calm evening';
   const text = [
     `Here's tonight's evening check for ${kids}.`,

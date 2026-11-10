@@ -64,12 +64,33 @@ test('a genuine timed clash renders one short line; hubs named once when they di
   const section = mail.text.split('Heads up:\n')[1].split('\n\n')[0];
   assert.deepEqual(section.split('\n'), [`- Wed, Nov 11: Swim practice overlaps Band rehearsal (Riverside Swim Club / ${HUB})`]);
   assert.ok(mail.html.includes('<p><b>Heads up</b></p><ul><li>Wed, Nov 11: Swim practice overlaps Band rehearsal (Riverside Swim Club / Elm Park Public — Elm Park)</li></ul>'), mail.html);
-  assert.equal(mail.subject, 'Tonight: 2 timing conflicts', 'subject logic unchanged');
+  assert.equal(mail.subject, 'Tonight: 1 timing conflict', 'subject counts only the clash Heads up shows');
 
   const sameHub = Object.assign({}, swim, { hub_name: HUB, hub: HUB });
   const one = eveningEmailContent(PROFILE, { nudges: [], relevant_facts: [sameHub, band], conflicts: [pair(sameHub, band)] }, LINKS, TODAY);
   assert.ok(one.text.includes('Heads up:\n- Wed, Nov 11: Swim practice overlaps Band rehearsal\n'), one.text);
   assert.ok(!one.text.includes(HUB), 'one hub: no hub name at all');
+});
+
+test('the subject counts exactly the pairs the Heads up section renders', () => {
+  // No nudges and only date-only pairs: no Heads up, so no conflicts in the subject.
+  const quiet = mondayCheck();
+  quiet.nudges = [];
+  const calm = eveningEmailContent(PROFILE, quiet, LINKS, TODAY);
+  assert.ok(!/Heads up/.test(calm.text) && !/Heads up/.test(calm.html), calm.text);
+  assert.equal(calm.subject, 'Tonight: a calm evening');
+
+  // Two genuine clashes among date-only pairs: the subject says 2, the section lists 2.
+  const swim = fact('rs-swim', 'Swim practice', '2026-11-11', { time: '4:00-5:00 PM', hub_name: 'Riverside Swim Club', hub: 'Riverside Swim Club' });
+  const band = fact('ep-band', 'Band rehearsal', '2026-11-11', { time: '4:30 PM' });
+  const choir = fact('ep-choir', 'Choir', '2026-11-11', { time: '4:15-4:45 PM' });
+  const lunch = fact('ep-lunch', 'Pizza lunch', '2026-11-11');
+  const conflicts = [pair(swim, band), pair(swim, choir), pair(swim, lunch), pair(band, lunch)];
+  const busy = eveningEmailContent(PROFILE, { nudges: [], relevant_facts: [swim, band, choir, lunch], conflicts }, LINKS, TODAY);
+  const lines = busy.text.split('Heads up:\n')[1].split('\n\n')[0].split('\n');
+  assert.equal(lines.length, 2, busy.text);
+  assert.equal(busy.subject, 'Tonight: 2 timing conflicts');
+  assert.equal((busy.html.match(/<li>[^<]* overlaps /g) || []).length, 2, busy.html);
 });
 
 test('the weekday is never duplicated in Coming up lines', () => {
