@@ -1241,3 +1241,33 @@ test('each material card has a ⋯ menu in its title row: original, full text, r
   assert.ok(!other.includes('>Rename<') && !other.includes('>Remove<'), 'no Rename/Remove for someone else’s material');
   assert.ok(PAGE.includes("method: 'PATCH'"), 'rename saves through PATCH');
 });
+
+// Brief 024: in the Tonight page's "From your hubs" list, only facts that
+// need an action get a done checkbox. Events and announcements render as
+// plain rows that keep their date pill, even when their wording mentions a
+// fee or an order. Fictional fixtures.
+test('hub rows: a checkbox only on action facts; events keep their date pill', () => {
+  const vm = require('node:vm');
+  const src = ['esc', 'humanDate', 'factActionKind', 'noteQuoteLines', 'factBullet', 'isActionItem', 'eveningFactBullet']
+    .map(pageFnSource).join('\n') + '\nrender(rows);';
+  const rows = [
+    { id: 'ev-1', type: 'event', title: 'Science Centre Workshop', detail: 'Workshop with a visiting scientist (fees covered by the school council).', date: '2026-12-01', action_required: false, action: '' },
+    { id: 'an-1', type: 'announcement', title: 'Pizza order results', detail: 'Pizza orders raised $300.', date: '', action_required: false, action: '' },
+    { id: 'pay-1', type: 'event', title: 'Science Centre Workshop', detail: 'Workshop on Dec 1.', date: '2026-12-01', action_required: true, action: 'Pay $12.00 per student on SchoolDay.' },
+  ];
+  const run = (doneMode, doneIds) => vm.runInNewContext(
+    src.replace('render(rows);', 'var eveningDoneMode = mode; var eveningDoneSet = new Set(done); rows.map(eveningFactBullet);'),
+    { rows, mode: doneMode, done: doneIds }
+  );
+  for (const mode of ['saved', 'browser']) {
+    const [event, announcement, payment] = run(mode, ['ev-1']);
+    assert.ok(!event.includes('data-fact-done'), mode + ': a pure event has no checkbox');
+    assert.ok(event.includes('date-chip') && event.includes('Due '), mode + ': the event keeps its date pill');
+    assert.ok(!event.includes('calm-chip'), mode + ': a stored done mark on a non-action fact is not shown');
+    assert.ok(!announcement.includes('data-fact-done'), mode + ': an announcement has no checkbox');
+    assert.ok(payment.includes('data-fact-done="pay-1"'), mode + ': the action fact keeps its checkbox');
+    assert.ok(payment.includes('Pay $12.00 per student on SchoolDay.'), mode + ': its action shows');
+  }
+  const [, , noMode] = run('', []);
+  assert.ok(!noMode.includes('data-fact-done'), 'no done mode, no checkbox');
+});

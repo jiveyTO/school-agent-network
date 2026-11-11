@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const initSqlJs = require('sql.js');
-const { isSameEvent, sameScope, mergeFactPair } = require('./event-dedupe');
+const { isSameEvent, sameScope, mergeFactPair, isCostFact, planEventCostFolds } = require('./event-dedupe');
 
 const ROOT = __dirname;
 const DB_PATH = process.env.APP_DB_PATH
@@ -845,6 +845,7 @@ async function initDb() {
   for (const target of DEMO_TEST_MATERIAL_REMOVALS) removeDemoTestMaterial(target);
   moveDemoSkateFitting();
   retitleLegacyPastes();
+  foldEventCostFacts();
   recordDemoSeedSignature(demoWasReset);
   // A restored database that boot left unchanged (schema-only migrations
   // don't count: they re-run every boot) is not uploaded. Uploading it would
@@ -925,6 +926,72 @@ function retitleLegacyPastes() {
   }
   if (changed) console.log(`paste titles: retitled ${changed} pasted material(s) from their first-line cut`);
   return changed;
+}
+
+// --- Brief 024: fold an event's own cost fact into the event --------------
+// Extractions before brief 024 could store one material's event ("Scientists
+// in School Workshop", Dec 1) and its cost ("Workshop cost — Pay $12.00 per
+// student on SchoolDay") as two checklist rows. Boot folds each such pair in
+// real (non-demo) hubs with the same conservative matcher new extractions use
+// (event-dedupe.js planEventCostFolds): the event keeps its id and takes the
+// payment action (the more specific text), the cost fact is deleted. A family
+// that marked the removed fact done gets the surviving event marked done; a
+// saved evening check naming the removed fact is cleared so it recomputes.
+// Unclear pairs are left alone. Idempotent: once folded, no cost fact is left
+// to match, so later boots write nothing.
+function foldEventCostFacts() {
+  const candidates = all(
+    `SELECT DISTINCT f.material_id AS material_id FROM facts f
+     JOIN hubs h ON h.id = f.hub_id
+     WHERE COALESCE(h.is_demo, 0) = 0 AND f.action_required = 1 AND COALESCE(f.material_id, '') <> ''`
+  ).map((r) => String(r.material_id));
+  let total = 0;
+  for (const materialId of candidates) {
+    const facts = all('SELECT * FROM facts WHERE material_id = ? ORDER BY id', [materialId]).map(factRowToObject);
+    if (!facts.some(isCostFact)) continue;
+    const { facts: next, folds } = planEventCostFolds(facts);
+    if (!folds.length) continue;
+    const hub = one('SELECT name FROM hubs WHERE id = ?', [facts[0].hub_id]) || {};
+    for (const fold of folds) {
+      const event = next.find((f) => f.id === fold.event_id);
+      if (!event) continue;
+      run(
+        `UPDATE facts SET action_required = 1, action = ?, detail = ?, date = ?, link = ?, source_text = ?, quote_verified = ?
+         WHERE id = ?`,
+        [event.action || '', event.detail || '', event.date || '', event.link || '', event.source_text || '',
+          event.quote_verified ? 1 : 0, event.id]
+      );
+      run('DELETE FROM facts WHERE id = ?', [fold.cost_id]);
+      const doneKey = 'fact:' + fold.cost_id;
+      const eventKey = 'fact:' + fold.event_id;
+      let familiesMoved = 0;
+      for (const row of all('SELECT id, actions FROM profiles')) {
+        let actions;
+        try {
+          actions = JSON.parse(row.actions || '{}');
+        } catch {
+          continue;
+        }
+        if (!actions || typeof actions !== 'object' || actions[doneKey] !== 'done') continue;
+        // Done on the removed cost fact means done on the surviving event.
+        // Other marks (the removed key itself included) are left as they are.
+        if (actions[eventKey] === 'done') continue;
+        actions[eventKey] = 'done';
+        run('UPDATE profiles SET actions = ? WHERE id = ?', [JSON.stringify(actions), row.id]);
+        familiesMoved += 1;
+      }
+      const quoted = JSON.stringify(String(fold.cost_id));
+      const stale = all('SELECT profile_id, result_json FROM evening_checks')
+        .filter((c) => String(c.result_json || '').includes(quoted));
+      for (const c of stale) run('DELETE FROM evening_checks WHERE profile_id = ?', [c.profile_id]);
+      console.log(
+        `event cost fold: hub "${hub.name || facts[0].hub_id}" material ${materialId}: folded "${fold.cost_title}" (${fold.cost_id}) into "${fold.event_title}" (${fold.event_id}); action now "${event.action}"; moved ${familiesMoved} family done mark(s); cleared ${stale.length} saved evening check(s)`
+      );
+      total += 1;
+    }
+  }
+  if (total) persist();
+  return total;
 }
 
 // --- Demo reset at boot ------------------------------------------------------
@@ -3601,6 +3668,7 @@ function seedDemoHubs() {
 }
 
 module.exports = {
+  foldEventCostFacts,
   DB_PATH,
   HOCKEY_FACTS,
   initDb,

@@ -177,6 +177,137 @@ function mergeSameEventFacts(facts) {
   return merged;
 }
 
+// --- Brief 024: an event and its own cost are ONE fact ---------------------
+// One material often yields an event ("Scientists in School Workshop", Dec 1)
+// and, separately, that event's cost ("Workshop cost — Pay $12.00 per student
+// on SchoolDay"). Two checklist rows for one thing confused a parent, so the
+// cost folds into the event: the event carries the payment as its action.
+// Conservative: a pair folds only when exactly one event in the same material
+// is matched; anything unclear is left alone. A fee with no event stays.
+const COST_TITLE_WORDS = new Set([
+  'cost', 'costs', 'fee', 'fees', 'price', 'prices', 'payment', 'payments', 'pay', 'paying',
+  'admission', 'charge', 'charges',
+]);
+const COST_FILLER_WORDS = new Set([
+  'the', 'a', 'an', 'for', 'of', 'to', 'and', 'per', 'student', 'students', 'child', 'each',
+  'required', 'reminder', 'amount', 'on', 'by', 'due',
+]);
+const PAY_ACTION = /\b(?:pay|pays|paid|paying|payment|payments|fees?|costs?|e-?transfer|cash|cheque|check)\b|\$\s?\d/i;
+const MONEY = /\$\s?\d|\b\d+(?:[.,]\d{2})?\s?(?:\$|dollars?)\b/i;
+const PAY_METHOD = /\b(?:on|via|through|using|by)\s+(?:school\s?day|schoolcash|school cash|kev|e-?transfer|cash|cheque|check|credit|debit|online|the portal)\b|\bschool\s?day\b|\bschool\s?cash\b|\be-?transfer\b/i;
+const PAY_DEADLINE = /\b(?:by|before|due|until|no later than)\b[^.]*\b(?:\d{1,2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow)/i;
+
+function plainWords(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
+}
+
+function singular(word) {
+  return word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word;
+}
+
+// A cost fact: not itself an event, needs an action, its title names a cost
+// and its action (or detail) is a payment.
+function isCostFact(f) {
+  if (!f || !f.action_required) return false;
+  if (String(f.type || '').toLowerCase() === 'event') return false;
+  if (!plainWords(f.title).some((w) => COST_TITLE_WORDS.has(w))) return false;
+  return PAY_ACTION.test(String(f.action || '')) || MONEY.test(String(f.detail || ''));
+}
+
+// What the cost title names besides the cost: "Workshop cost" -> ["workshop"].
+function costSubjectWords(title) {
+  return plainWords(normalizeEventTitle(title))
+    .filter((w) => !COST_TITLE_WORDS.has(w) && !COST_FILLER_WORDS.has(w) && !/^\d+$/.test(w))
+    .map(singular);
+}
+
+function costMatchesEvent(cost, event, eventsInMaterial) {
+  if (!event || String(event.type || '').toLowerCase() !== 'event') return false;
+  if (cost.date && event.date && cost.date !== event.date) return false;
+  if (!sameHub(cost, event) || !sameScope(cost, event)) return false;
+  const subject = costSubjectWords(cost.title);
+  if (!subject.length) return eventsInMaterial === 1;
+  const eventWords = new Set(plainWords(normalizeEventTitle(event.title)).map(singular));
+  return subject.every((w) => eventWords.has(w));
+}
+
+function actionSpecificity(text) {
+  const t = String(text || '');
+  if (!t.trim()) return -1;
+  return (MONEY.test(t) ? 4 : 0) + (PAY_METHOD.test(t) ? 2 : 0) + (PAY_DEADLINE.test(t) ? 1 : 0);
+}
+
+function moreSpecificAction(a, b) {
+  const sa = actionSpecificity(a);
+  const sb = actionSpecificity(b);
+  if (sa !== sb) return sb > sa ? String(b || '') : String(a || '');
+  return longerText(a, b);
+}
+
+// The one event a cost fact belongs to, or null when none (or more than one
+// that cannot be told apart) matches.
+function eventForCost(cost, facts) {
+  const material = String(cost.material_id || '');
+  const events = (facts || []).filter(
+    (f) => f !== cost && String(f.material_id || '') === material && String(f.type || '').toLowerCase() === 'event'
+  );
+  let hits = events.filter((e) => costMatchesEvent(cost, e, events.length));
+  if (hits.length > 1) {
+    // Several events match ("Workshop" and "Two workshops of 90 minutes"):
+    // the one already asking for a payment is the one this cost belongs to.
+    const paying = hits.filter((e) => e.action_required && PAY_ACTION.test(String(e.action || '')));
+    hits = paying;
+  }
+  return hits.length === 1 ? hits[0] : null;
+}
+
+function foldCostIntoEvent(event, cost) {
+  const folded = Object.assign({}, event, { id: event.id });
+  folded.action_required = true;
+  folded.action = event.action_required ? moreSpecificAction(event.action, cost.action) : String(cost.action || event.action || '');
+  const eventDetail = String(event.detail || '').trim();
+  const costDetail = String(cost.detail || '').trim();
+  if (costDetail && !eventDetail.toLowerCase().includes(costDetail.toLowerCase())) {
+    folded.detail = eventDetail ? `${eventDetail.replace(/[.\s]*$/, '.')} ${costDetail}` : costDetail;
+  }
+  folded.source_text = joinUnique([event.source_text, cost.source_text], '\n\n');
+  if (!folded.date && cost.date) folded.date = cost.date;
+  if (!folded.link && cost.link) folded.link = cost.link;
+  if ('quote_verified' in event || 'quote_verified' in cost) {
+    folded.quote_verified = Boolean(event.quote_verified && cost.quote_verified);
+  }
+  return folded;
+}
+
+// Fold every event's own cost fact into the event. Returns the new list and
+// the folds made ({ event_id, cost_id, event_title, cost_title }).
+function planEventCostFolds(facts) {
+  const list = (facts || []).map((f) => Object.assign({}, f));
+  const folds = [];
+  const removed = new Set();
+  for (const cost of list) {
+    if (removed.has(cost) || !isCostFact(cost)) continue;
+    const live = list.filter((f) => !removed.has(f));
+    const event = eventForCost(cost, live);
+    if (!event) continue;
+    const folded = foldCostIntoEvent(event, cost);
+    Object.keys(event).forEach((k) => delete event[k]);
+    Object.assign(event, folded);
+    removed.add(cost);
+    folds.push({ event_id: event.id, cost_id: cost.id, event_title: event.title, cost_title: cost.title, action: event.action });
+  }
+  return { facts: list.filter((f) => !removed.has(f)), folds };
+}
+
+function foldEventCosts(facts) {
+  return planEventCostFolds(facts).facts;
+}
+
 function parseClock(text) {
   const m = /(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?/i.exec(String(text || ''));
   if (!m) return null;
@@ -259,5 +390,8 @@ module.exports = {
   clearerTitle,
   mergeFactPair,
   mergeSameEventFacts,
+  isCostFact,
+  planEventCostFolds,
+  foldEventCosts,
   detectConflicts,
 };

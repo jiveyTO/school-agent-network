@@ -11,7 +11,7 @@ const { sendRecoveryEmail, sendEmail, isRecoveryMailConfigured } = require('./re
 const pdfParse = require('pdf-parse');
 const zlib = require('zlib');
 const crypto = require('crypto');
-const { mergeSameEventFacts, detectConflicts } = require('./event-dedupe');
+const { mergeSameEventFacts, planEventCostFolds, detectConflicts } = require('./event-dedupe');
 const { eveningEmailContent, friendlyDay, escapeHtml } = require('./evening-email');
 
 const ROOT = __dirname;
@@ -481,6 +481,7 @@ function buildPrompt(newsletterText) {
     '- source_text must be copied verbatim from the newsletter for every fact.',
     '- group_label uses the newsletter’s own section wording, not a paraphrase.',
     '- Rules, dress codes, and conduct guidelines are informational facts, not actions: set action_required false for them unless the text names a form, an order, a payment, or a deadline.',
+    '- An event and its own cost are ONE fact: when the source gives the cost or payment for an event it describes, do not make a separate cost fact. Put the payment on the event fact (action_required true, action naming the amount, how to pay, and the deadline). A fee with no event of its own stays its own fact.',
     '- confidence reflects how certain the extraction is (1.0 = explicit in the text).',
     '- The newsletter covers the week of November 2-6, 2026 (Mon Nov 2 to Fri Nov 6, 2026).',
     '  Resolve relative dates ("Friday", "November 18") to ISO dates in 2026.',
@@ -937,6 +938,7 @@ function buildImagePrompt(accompanyingText) {
     '- Only extract what the image or pasted text actually shows. Do not invent facts, dates, or details you cannot read.',
     '- source_text must be transcribed verbatim from the image or pasted text for every fact.',
     '- Rules, dress codes, and conduct guidelines are informational facts, not actions: set action_required false for them unless the source names a form, an order, a payment, or a deadline.',
+    '- An event and its own cost are ONE fact: when the source gives the cost or payment for an event it describes, do not make a separate cost fact. Put the payment on the event fact (action_required true, action naming the amount, how to pay, and the deadline). A fee with no event of its own stays its own fact.',
     '- confidence reflects how certain the extraction is (1.0 = clearly readable in the image).',
     '- Resolve relative dates ("Friday", "November 18") to ISO dates in 2026 when the source gives a year context; otherwise keep the clearest ISO date the source supports.',
     '- applies_to must name the audience explicitly: "all students" for whole-school items, "Grade N" or "Grades N-M" when the source targets a grade, "Class X" when it targets a specific class or teacher. Default to the school-wide audience; when ambiguous, choose the narrower one.',
@@ -2190,9 +2192,16 @@ async function extractAndSaveFacts(newsletterText, logs, hubId, materialId, scop
   // One newsletter section can name an event the Looking Ahead list repeats:
   // fold those same-event duplicates before saving so the hub facts list stays
   // clean. Cross-material duplicates merge again inside insertFacts.
-  const deduped = mergeSameEventFacts(withHub);
-  if (deduped.length !== withHub.length) {
-    push(`merged ${withHub.length - deduped.length} same-event duplicate(s)`);
+  const sameEventMerged = mergeSameEventFacts(withHub);
+  if (sameEventMerged.length !== withHub.length) {
+    push(`merged ${withHub.length - sameEventMerged.length} same-event duplicate(s)`);
+  }
+  // Brief 024: an event and its own cost are one fact — the event carries
+  // the payment as its action, so the checklist shows one row, not two.
+  const costFold = planEventCostFolds(sameEventMerged);
+  const deduped = costFold.facts;
+  if (costFold.folds.length) {
+    push(`folded ${costFold.folds.length} event cost fact(s) into their event`);
   }
   if (hubId) {
     store.insertFacts(hubId, materialId || '', deduped, true);

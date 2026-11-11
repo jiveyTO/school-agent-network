@@ -2001,8 +2001,11 @@
     eveningDoneMode = (data && data.done_mode) || (data && data.can_mark_done ? 'saved' : '');
   }
 
+  // Brief 024: a checkbox only where there is something to do. Events and
+  // announcements (action_required false) render as plain rows with their
+  // date pill, even when their wording mentions an order or a fee.
   function isActionItem(f) {
-    return Boolean(f && (f.action_required || factActionKind(f) !== ''));
+    return Boolean(f && f.action_required);
   }
 
   function eveningFactBullet(f) {
