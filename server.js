@@ -1639,6 +1639,222 @@ function latestEveningCheck(profile) {
     ran_at: saved ? saved.ran_at : '',
     moment_label: saved ? saved.moment_label : '',
     stale: !saved || saved.fingerprint !== fingerprint,
+    provenance: saved ? checkProvenance(saved) : null,
+  };
+}
+
+// Brief 032: who produced a saved check. App runs say { source: 'app' };
+// an agent-submitted check names the submitting token and when it arrived.
+function checkProvenance(saved) {
+  if (saved.source !== 'agent') return { source: 'app' };
+  return { source: 'agent', token_name: saved.source_token_name || '', submitted_at: saved.submitted_at || '' };
+}
+
+// Brief 032: once a family's saved check came from its agent, an app-side
+// run that the parent did not start in the app (today: POST /api/parent/run
+// with an agent token) still returns its result but does not replace the
+// saved check. Only the parent's own run in the app (browser session) takes
+// the family back to app-side checks. Logged with the family id.
+function keepSavedAgentCheck(profile, trigger, push) {
+  if (trigger === 'parent') return false;
+  const saved = store.getEveningCheck(profile.id);
+  if (!saved || saved.source !== 'agent') return false;
+  console.log(`evening check: app-side refresh skipped for family ${profile.id}: agent-submitted check kept until the parent runs one in the app`);
+  if (push) push('not saved: this family\'s saved check came from its agent and stays until the parent runs a check in the app');
+  return true;
+}
+
+// --- Agent-submitted evening check (brief 032) ----------------------------
+// The family's agent did the check itself from GET /api/agent/context and
+// hands the finished result back. It is stored in the same saved-check row
+// the Tonight page, GET /api/parent/latest and the evening email read. Every
+// fact it names must be one this family's check can see (its own hubs, never
+// a demo hub, within its placement scope); fact details come from ParentLoop's
+// own copy, the agent supplies only the choices and its wording.
+const AGENT_CHECK_MAX_ITEMS = 500;
+const AGENT_CHECK_MAX_TEXT = 2000;
+
+class AgentCheckError extends Error {}
+
+function agentCheckText(value, field, required) {
+  if (value === undefined || value === null) {
+    if (required) throw new AgentCheckError(`${field} is required.`);
+    return '';
+  }
+  if (typeof value !== 'string') throw new AgentCheckError(`${field} must be a string.`);
+  const text = value.trim();
+  if (text.length > AGENT_CHECK_MAX_TEXT) throw new AgentCheckError(`${field} is longer than ${AGENT_CHECK_MAX_TEXT} characters.`);
+  if (required && !text) throw new AgentCheckError(`${field} is required.`);
+  return text;
+}
+
+function agentCheckList(body, field, required) {
+  const value = body[field];
+  if (value === undefined) {
+    if (required) throw new AgentCheckError(`${field} is required (an array; send [] when there are none).`);
+    return [];
+  }
+  if (!Array.isArray(value)) throw new AgentCheckError(`${field} must be an array.`);
+  if (value.length > AGENT_CHECK_MAX_ITEMS) throw new AgentCheckError(`${field} has more than ${AGENT_CHECK_MAX_ITEMS} items.`);
+  return value;
+}
+
+// A fact reference: "id" or { id } (relevant_facts) / { fact_id } (nudges).
+function agentFactRef(item, field) {
+  if (typeof item === 'string') return item.trim();
+  if (item && typeof item === 'object' && !Array.isArray(item)) {
+    const id = item.fact_id !== undefined ? item.fact_id : item.id;
+    if (typeof id === 'string' && id.trim()) return id.trim();
+  }
+  throw new AgentCheckError(`every item in ${field} needs a fact id.`);
+}
+
+function relevantFactEntry(fact) {
+  return {
+    id: fact.id,
+    title: fact.title,
+    type: fact.type,
+    date: fact.date,
+    time: fact.time,
+    applies_to: fact.applies_to,
+    action_required: fact.action_required,
+    action: fact.action,
+    source: fact.source_document,
+    source_text: fact.source_text,
+    group_label: fact.group_label || '',
+    scope: fact.scope || 'school',
+    scope_value: fact.scope_value || '',
+    hub_id: fact.hub_id || '',
+    hub_name: fact.hub_name || fact.hub || '',
+    hub: fact.hub_name || fact.hub || '',
+  };
+}
+
+// Validates a submitted check against the family's visible facts and builds
+// the saved-check result (same shape normalizeParentResult produces).
+// Throws AgentCheckError with a plain message for a 400.
+function buildAgentEveningCheck(body, visibleFacts) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new AgentCheckError('Send the check as a JSON object: { relevant_facts, nudges, conflicts, filtered_out_count, filtering_summary }.');
+  }
+  const rawRelevant = agentCheckList(body, 'relevant_facts', true);
+  const rawNudges = agentCheckList(body, 'nudges', true);
+  const rawConflicts = agentCheckList(body, 'conflicts', false);
+  const byId = new Map(visibleFacts.map((f) => [f.id, f]));
+  const unknown = new Set();
+  const need = (id) => {
+    const fact = byId.get(id);
+    if (!fact) unknown.add(id);
+    return fact;
+  };
+
+  const relevant = [];
+  const seen = new Set();
+  for (const item of rawRelevant) {
+    const fact = need(agentFactRef(item, 'relevant_facts'));
+    if (!fact || seen.has(fact.id)) continue;
+    seen.add(fact.id);
+    relevant.push(relevantFactEntry(fact));
+  }
+
+  const nudges = [];
+  for (const item of rawNudges) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new AgentCheckError('every nudge must be an object with a fact_id.');
+    const fact = need(agentFactRef(item, 'nudges'));
+    const title = agentCheckText(item.title, 'nudge title', false);
+    const action = agentCheckText(item.action, 'nudge action', false);
+    const deadline = agentCheckText(item.deadline, 'nudge deadline', false);
+    const source = agentCheckText(item.source, 'nudge source', false);
+    if (!fact) continue;
+    nudges.push({
+      fact_id: fact.id,
+      title: title || fact.title || '',
+      action: action || fact.action || 'Action needed',
+      deadline: deadline || fact.date || '',
+      source: source || fact.source_document || '',
+      hub_id: fact.hub_id || '',
+    });
+  }
+
+  const relevantById = new Map(relevant.map((f) => [f.id, f]));
+  const conflicts = [];
+  for (const item of rawConflicts) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new AgentCheckError('every conflict must be an object naming two facts.');
+    let refs = [];
+    if (Array.isArray(item.fact_ids)) refs = item.fact_ids;
+    else if (Array.isArray(item.facts)) refs = item.facts;
+    else if (item.fact_a !== undefined || item.fact_b !== undefined) refs = [item.fact_a, item.fact_b];
+    if (refs.length !== 2) throw new AgentCheckError('every conflict must name exactly two facts (fact_ids: [id, id]).');
+    const ids = refs.map((r) => agentFactRef(r, 'conflicts'));
+    if (ids[0] === ids[1]) throw new AgentCheckError('a conflict must name two different facts.');
+    const message = agentCheckText(item.message, 'conflict message', false);
+    const pair = ids.map((id) => need(id));
+    if (!pair[0] || !pair[1]) continue;
+    const [a, b] = pair.map((f) => relevantById.get(f.id) || relevantFactEntry(f));
+    const hubA = a.hub_name || 'a hub';
+    const hubB = b.hub_name || 'a hub';
+    conflicts.push({
+      date: a.date || b.date || '',
+      fact_a: a,
+      fact_b: b,
+      facts: [a, b],
+      hub_names: [hubA, hubB],
+      cross_hub: hubA !== hubB,
+      message: message || `${a.title} (${hubA}) overlaps ${b.title} (${hubB})${a.date ? ' on ' + a.date : ''}`,
+    });
+  }
+
+  if (unknown.size) {
+    const list = Array.from(unknown).slice(0, 20).join(', ');
+    throw new AgentCheckError(`These fact ids are not in this family's hubs or not visible to this family: ${list}. Use only fact ids from GET /api/agent/context.`);
+  }
+
+  let filteredOut = visibleFacts.length - relevant.length;
+  if (body.filtered_out_count !== undefined) {
+    const n = body.filtered_out_count;
+    if (!Number.isInteger(n) || n < 0) throw new AgentCheckError('filtered_out_count must be a whole number, 0 or more.');
+    filteredOut = n;
+  }
+  const summaryText = agentCheckText(body.filtering_summary !== undefined ? body.filtering_summary : body.summary, 'filtering_summary', false) ||
+    `${filteredOut} facts filtered out because they do not apply to this family.`;
+
+  let calendarHold = null;
+  if (body.calendar_hold !== undefined && body.calendar_hold !== null) {
+    if (typeof body.calendar_hold !== 'object' || Array.isArray(body.calendar_hold)) throw new AgentCheckError('calendar_hold must be an object or null.');
+    calendarHold = {
+      title: agentCheckText(body.calendar_hold.title, 'calendar_hold.title', false),
+      date: agentCheckText(body.calendar_hold.date, 'calendar_hold.date', false),
+      note: agentCheckText(body.calendar_hold.note, 'calendar_hold.note', false),
+    };
+  }
+
+  const groupsMap = new Map();
+  const groupFor = (hubId, hubName) => {
+    const key = hubId || hubName || 'hub';
+    if (!groupsMap.has(key)) groupsMap.set(key, { hub_id: hubId || '', hub_name: hubName || '', hub: hubName || '', facts: [], nudges: [] });
+    return groupsMap.get(key);
+  };
+  for (const fact of relevant) groupFor(fact.hub_id, fact.hub_name).facts.push(fact);
+  for (const nudge of nudges) {
+    const fact = byId.get(nudge.fact_id);
+    groupFor(fact.hub_id, fact.hub_name || fact.hub).nudges.push(nudge);
+  }
+  const groups = Array.from(groupsMap.values());
+
+  return {
+    relevant_facts: relevant,
+    nudges,
+    calendar_hold: calendarHold,
+    filtered_out_count: filteredOut,
+    filtering_summary: summaryText,
+    summary: summaryText,
+    checked_count: visibleFacts.length,
+    relevant_count: relevant.length,
+    open_action_count: nudges.length,
+    groups,
+    grouped_by_hub: groups,
+    conflicts,
+    conflict_count: conflicts.length,
   };
 }
 
@@ -1796,7 +2012,7 @@ function placementLinesForRun(profile) {
   return lines;
 }
 
-async function runParentAgent(logs, simulatedLabel, viewer) {
+async function runParentAgent(logs, simulatedLabel, viewer, trigger) {
   const push = (message) => logs.push({ at: nowIso(), message });
   const moment = eveningMoment(viewer, simulatedLabel);
   push('evening check started');
@@ -1807,7 +2023,7 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
   }
   // A family whose hubs have no notes yet (a brand-new member, a new hub)
   // gets a real, saved empty check at once — no model call, no waiting.
-  if (!checkFactsFor(profile).length) return emptyEveningCheck(profile, moment, simulatedLabel, push);
+  if (!checkFactsFor(profile).length) return emptyEveningCheck(profile, moment, simulatedLabel, push, trigger);
   if (!API_KEY) {
     throw new Error(
       'SCHOOL_AGENT_API_KEY is missing or empty in .env. Add it and restart the server.'
@@ -1857,8 +2073,11 @@ async function runParentAgent(logs, simulatedLabel, viewer) {
   push(PRIVACY_CHECK_LINE);
   // The latest check is saved per family so the home screen, agents, and
   // the evening email can show it without recomputing (an explicit
-  // simulated_now override is a what-if and is not saved).
-  if (!simulatedLabel) {
+  // simulated_now override is a what-if and is not saved). Brief 032: nor
+  // does a run the parent did not start replace an agent-submitted check.
+  if (!simulatedLabel && keepSavedAgentCheck(profile, trigger, push)) {
+    // The family's agent-submitted check stays the saved one.
+  } else if (!simulatedLabel) {
     store.saveEveningCheck(profile.id, {
       result: full,
       ran_at: nowIso(),
@@ -1941,7 +2160,7 @@ function logModelRoute(purpose, fields, sink) {
   return entry;
 }
 
-function emptyEveningCheck(profile, moment, simulatedLabel, push) {
+function emptyEveningCheck(profile, moment, simulatedLabel, push, trigger) {
   const hubs = checkHubsFor(profile);
   const childName = (profile.children || [profile.child]).map((c) => c && c.name).filter(Boolean).join(' and ') || 'the child';
   push(`family profile loaded for ${childName} (private to this Parent Agent)`);
@@ -1957,7 +2176,7 @@ function emptyEveningCheck(profile, moment, simulatedLabel, push) {
       : 'You are not in any hubs yet. Join or start a hub to get an evening check.',
   };
   result.summary = result.filtering_summary;
-  if (!simulatedLabel) {
+  if (!simulatedLabel && !keepSavedAgentCheck(profile, trigger, push)) {
     store.saveEveningCheck(profile.id, {
       result,
       ran_at: nowIso(),
@@ -2396,6 +2615,13 @@ const AGENT_RECIPE = [
     path: '/api/hubs/{hub_id}',
     description: 'Confirm with GET /api/hubs/{hub_id} (or GET /api/hubs), then report back which hub you joined or created, the placements you saved, and any material you added.',
   },
+  {
+    step: 5,
+    action: 'Each evening, do the check and submit it back',
+    method: 'POST',
+    path: '/api/agent/evening-check',
+    description: 'Agent mode is a three-step obligation: pull GET /api/agent/context, do the check on your side, and POST the finished check to /api/agent/evening-check so the parent\'s Tonight page and nightly email stay current (see evening_check_modes.agent_check.styles.generate). The alternative is the app-side check: GET /api/parent/latest, and POST /api/parent/run when it is stale.',
+  },
 ];
 const AGENT_MANIFEST = {
   service: 'ParentLoop',
@@ -2539,6 +2765,21 @@ const AGENT_MANIFEST = {
       query: { since: 'optional ISO date or time; only materials and facts added after it' },
       description: 'Everything you need to write the evening check yourself (agent check, style b): { ok, generated_at, since, family: { children, actions, nudge_style }, hubs: [{ id, name, kind, placements, materials, facts }], counts, caution_flags }. Covers every hub the token\'s family belongs to and only those; placements are the family\'s own. Each fact carries source_quote, quote_verified, and cautions; each material carries cautions (see caution_flags). Never contains another family\'s children, grades, or contact details.',
     },
+    {
+      name: 'submit evening check',
+      method: 'POST',
+      path: '/api/agent/evening-check',
+      auth: 'Bearer agent token (required)',
+      body: {
+        relevant_facts: 'required array of fact ids (or { id }) from GET /api/agent/context that apply to the family; [] when none',
+        nudges: 'required array of { fact_id, title?, action?, deadline?, source? }; [] when nothing needs the parent',
+        conflicts: 'optional array of { fact_ids: [id, id], message? } for items that overlap in time',
+        filtered_out_count: 'optional whole number of facts you set aside (default: facts not in relevant_facts)',
+        filtering_summary: 'optional one-line summary of what you set aside and why',
+        calendar_hold: 'optional { title, date, note } or null',
+      },
+      description: 'Hand your finished evening check back so the parent\'s Tonight page, GET /api/parent/latest and the nightly email show it. Same shape as the saved check. Every fact id must come from a hub the token\'s family belongs to and be visible to it (as in GET /api/agent/context), or the whole check is refused with 400; ParentLoop fills each fact\'s details from its own copy. Saved with provenance { source: "agent", token_name, submitted_at }. Returns { ok, saved, check, ran_at, moment_label, stale, provenance }. While the saved check is your agent\'s, a POST /api/parent/run from a token does not replace it; the parent running a check in the app does.',
+    },
   ],
   // The evening check is ParentLoop's main output. A connected agent keeps
   // its parent informed by reading it each evening; ParentLoop does not
@@ -2547,7 +2788,7 @@ const AGENT_MANIFEST = {
   evening_check_modes: {
     app_check: {
       who_runs_it: 'ParentLoop',
-      summary: 'ParentLoop prepares the check itself: the Tonight page, saved checks, the nightly email, and the token-scoped check endpoints. Nothing is needed from an agent.',
+      summary: 'The alternative to agent mode: ParentLoop prepares the check itself (spending ParentLoop\'s model credits) when the parent taps Run my evening check, or when a relay agent calls POST /api/parent/run. The Tonight page, saved checks, the nightly email, and the token-scoped check endpoints show it. Nothing is needed from an agent.',
       endpoints: ['GET /api/parent/latest', 'POST /api/parent/run'],
     },
     agent_check: {
@@ -2561,20 +2802,19 @@ const AGENT_MANIFEST = {
           ],
         },
         generate: {
-          summary: 'Fetch the context bundle and write the check yourself, in the parent\'s environment, combining hub context with private context ParentLoop never receives.',
+          summary: 'Do the check on your side and hand it back — a three-step obligation each evening: pull the context bundle, do the check (combining hub context with private context ParentLoop never receives), and submit the finished check back so the parent\'s ParentLoop (Tonight page and nightly email) stays current. ParentLoop runs no model for you.',
+          endpoints: ['GET /api/agent/context', 'POST /api/agent/evening-check'],
           steps: [
-            'GET /api/agent/context with the token (add ?since=<generated_at of your last fetch> to get only what is new, and keep what you fetched before).',
-            'Keep the facts that apply to the family\'s children using hubs[].placements (grade and class) and each fact\'s scope; team hubs apply to the whole family.',
-            'Nudge only for facts with action_required whose tracked state in family.actions is still open; flag events that overlap in time as conflicts.',
-            'Also nudge, as tonight-prep, a fact dated tomorrow that names something the child should wear or bring that day (a theme or dress-up day, wear a poppy, bring a food-bank item), even when action_required is false; word the action as what the parent gets ready tonight. A plain event with nothing to prepare (a ceremony, an assembly) does not nudge, nor does a wear-or-bring day that is not tomorrow.',
-            'Quote source_quote when you cite an item, and tell the parent when a fact carries a caution (see caution_flags).',
-            'Your private context and your finished check stay with you: never send them to ParentLoop.',
+            '1. Pull the bundle: GET /api/agent/context with the token (add ?since=<generated_at of your last fetch> to get only what is new, and keep what you fetched before).',
+            '2. Do the check: Keep the facts that apply to the family\'s children using hubs[].placements (grade and class) and each fact\'s scope; team hubs apply to the whole family. Nudge only for facts with action_required whose tracked state in family.actions is still open; flag events that overlap in time as conflicts. Also nudge, as tonight-prep, a fact dated tomorrow that names something the child should wear or bring that day (a theme or dress-up day, wear a poppy, bring a food-bank item), even when action_required is false; word the action as what the parent gets ready tonight. A plain event with nothing to prepare (a ceremony, an assembly) does not nudge, nor does a wear-or-bring day that is not tomorrow. Quote source_quote when you cite an item, and tell the parent when a fact carries a caution (see caution_flags).',
+            '3. Submit it back: POST /api/agent/evening-check with { relevant_facts, nudges, conflicts, filtered_out_count, filtering_summary }, using only fact ids from the bundle. A 400 names what to fix; fix it and submit again. Do this every evening you do the check, so the parent\'s ParentLoop never shows an older check than the one you told them. Your private context stays with you: never send it to ParentLoop — only the finished check goes back.',
           ],
         },
       },
     },
   },
   evening_routine: [
+    'Agent mode (generate): pull GET /api/agent/context, do the check, then POST /api/agent/evening-check — every evening, before the parent\'s evening email time — and tell the parent. Otherwise (relay):',
     'Each evening (around 6–8 PM in the family\'s time zone), GET /api/parent/latest with the token.',
     'If check is null or stale is true, POST /api/parent/run, then use its result.',
     'Tell the parent in a few lines: each nudge (title, action, deadline), each conflict, and the dated items for the next few days. If there is nothing open, say it is a calm evening.',
@@ -4036,6 +4276,47 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, agentContextBundle(bearerAuth.profile, sinceMs));
       return;
     }
+    // Brief 032: the agent hands its finished evening check back (agent
+    // check, style generate). Agent token only; stored as the family's saved
+    // check with provenance, so the Tonight page, GET /api/parent/latest and
+    // the evening email show it.
+    if (req.method === 'POST' && url.pathname === '/api/agent/evening-check') {
+      if (!bearerAuth) {
+        sendJson(res, 401, { ok: false, error: 'Submitting an evening check needs an agent token: send Authorization: Bearer <token>.' });
+        return;
+      }
+      const profile = bearerAuth.profile;
+      if (!profile || profile.is_demo) { sendJson(res, 403, { ok: false, error: 'The demo stays as it is.' }); return; }
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (err) {
+        sendJson(res, 400, { ok: false, error: 'The body must be JSON: { relevant_facts, nudges, conflicts, filtered_out_count, filtering_summary }.' });
+        return;
+      }
+      const facts = checkFactsFor(profile);
+      let result;
+      try {
+        result = buildAgentEveningCheck(body, facts);
+      } catch (err) {
+        if (err instanceof AgentCheckError) { sendJson(res, 400, { ok: false, error: err.message }); return; }
+        throw err;
+      }
+      const moment = eveningMoment(profile);
+      const submittedAt = nowIso();
+      store.saveEveningCheck(profile.id, {
+        result,
+        ran_at: submittedAt,
+        moment_label: moment.label,
+        fingerprint: eveningFingerprint(profile, facts, moment),
+        source: 'agent',
+        source_token_name: (bearerAuth.token && bearerAuth.token.name) || '',
+        submitted_at: submittedAt,
+      });
+      console.log(`evening check: agent-submitted check saved for family ${profile.id} (${result.nudges.length} nudges, ${result.conflicts.length} conflicts, ${result.relevant_count} relevant)`);
+      sendJson(res, 200, { ok: true, saved: true, ...latestEveningCheck(profile) });
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/parent/run') {
       const logs = [];
       try {
@@ -4055,7 +4336,7 @@ const server = http.createServer(async (req, res) => {
         // (bearerAuth resolved above; a bad token was already refused with
         // 401). Without a token the session viewer runs it, as before.
         const actor = bearerAuth ? bearerAuth.profile : currentViewer(session);
-        const result = await runParentAgent(logs, simulatedLabel, actor);
+        const result = await runParentAgent(logs, simulatedLabel, actor, bearerAuth ? 'agent_token' : 'parent');
         const moment = eveningMoment(actor, simulatedLabel);
         sendJson(res, 200, {
           ok: true,

@@ -749,6 +749,12 @@ async function initDb() {
     moment_label TEXT,
     fingerprint TEXT
   )`);
+  // Brief 032: who produced the saved check. 'app' = ParentLoop's own run;
+  // 'agent' = submitted by the family's agent (POST /api/agent/evening-check),
+  // with the submitting token's name and the submission time.
+  addColumnIfMissing('evening_checks', 'source', "source TEXT DEFAULT 'app'");
+  addColumnIfMissing('evening_checks', 'source_token_name', "source_token_name TEXT DEFAULT ''");
+  addColumnIfMissing('evening_checks', 'submitted_at', "submitted_at TEXT DEFAULT ''");
   // Audit trail for items dropped because their quote did not verify.
   run(`CREATE TABLE IF NOT EXISTS fact_rejections (
     id TEXT PRIMARY KEY,
@@ -3303,11 +3309,13 @@ function recordFactRejections(hubId, materialId, rejected) {
   return (rejected || []).length;
 }
 
-function saveEveningCheck(profileId, { result, ran_at, moment_label, fingerprint }) {
+function saveEveningCheck(profileId, { result, ran_at, moment_label, fingerprint, source, source_token_name, submitted_at }) {
   if (!profileId) return;
+  const agent = source === 'agent';
   run(
-    'INSERT OR REPLACE INTO evening_checks (profile_id, result_json, ran_at, moment_label, fingerprint) VALUES (?, ?, ?, ?, ?)',
-    [profileId, JSON.stringify(result || {}), ran_at || new Date().toISOString(), moment_label || '', fingerprint || '']
+    'INSERT OR REPLACE INTO evening_checks (profile_id, result_json, ran_at, moment_label, fingerprint, source, source_token_name, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [profileId, JSON.stringify(result || {}), ran_at || new Date().toISOString(), moment_label || '', fingerprint || '',
+      agent ? 'agent' : 'app', agent ? String(source_token_name || '') : '', agent ? String(submitted_at || '') : '']
   );
   persist();
 }
@@ -3318,7 +3326,15 @@ function getEveningCheck(profileId) {
   let result = null;
   try { result = JSON.parse(row.result_json); } catch { result = null; }
   if (!result) return null;
-  return { result, ran_at: row.ran_at, moment_label: row.moment_label || '', fingerprint: row.fingerprint || '' };
+  return {
+    result,
+    ran_at: row.ran_at,
+    moment_label: row.moment_label || '',
+    fingerprint: row.fingerprint || '',
+    source: row.source === 'agent' ? 'agent' : 'app',
+    source_token_name: row.source_token_name || '',
+    submitted_at: row.submitted_at || '',
+  };
 }
 
 // Evening email preferences. Kept out of rowToProfile on purpose: the

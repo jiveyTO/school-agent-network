@@ -82,6 +82,8 @@ function assertRealRoute(endpoint) {
     assert.ok(SERVER_SOURCE.includes("req.method === 'POST' && url.pathname === '/api/parent/run'"), 'evening check route exists');
   } else if (p === '/api/parent/latest' && method === 'GET') {
     assert.ok(SERVER_SOURCE.includes("req.method === 'GET' && url.pathname === '/api/parent/latest'"), 'latest evening check route exists');
+  } else if (p === '/api/agent/evening-check' && method === 'POST') {
+    assert.ok(SERVER_SOURCE.includes("req.method === 'POST' && url.pathname === '/api/agent/evening-check'"), 'submit evening check route exists');
   } else if (p === '/api/agent/context' && method === 'GET') {
     assert.ok(SERVER_SOURCE.includes("req.method === 'GET' && url.pathname === '/api/agent/context'"), 'context bundle route exists');
   } else {
@@ -105,6 +107,7 @@ const EXPECTED_ENDPOINTS = [
   ['POST', '/api/parent/run'],
   ['GET', '/api/parent/latest'],
   ['GET', '/api/agent/context'],
+  ['POST', '/api/agent/evening-check'],
 ];
 
 test('GET /api/agent manifest: shape, real routes, recipe, no data', async (t) => {
@@ -180,7 +183,11 @@ test('GET /api/agent manifest: shape, real routes, recipe, no data', async (t) =
     assert.ok(/local context/i.test(relay.summary), 'relay may add local context');
     const genText = generate.steps.join('\n');
     assert.ok(genText.includes('GET /api/agent/context') && genText.includes('?since='), 'generate fetches the bundle with since');
-    assert.ok(/never send them to ParentLoop/i.test(genText), 'private context stays with the agent');
+    assert.ok(/never send it to ParentLoop/i.test(genText), 'private context stays with the agent');
+    // Brief 032: agent mode is pull -> check -> submit back.
+    assert.equal(generate.steps.length, 3, 'three-step obligation');
+    assert.ok(generate.steps[0].includes('GET /api/agent/context') && generate.steps[2].includes('POST /api/agent/evening-check'), 'pull first, submit last');
+    assert.deepEqual(generate.endpoints, ['GET /api/agent/context', 'POST /api/agent/evening-check']);
     const bundle = manifest.endpoints.find((e) => e.path === '/api/agent/context');
     assert.ok(/source_quote/.test(bundle.description) && /cautions/.test(bundle.description), 'bundle documents quotes and cautions');
     assert.ok(bundle.query && bundle.query.since, 'since query documented');

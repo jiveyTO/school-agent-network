@@ -3895,7 +3895,11 @@
       if (data.check) {
         setEveningDoneMode(data);
         renderParentResult(data.check);
-        const updated = eveningUpdatedText(data.ran_at);
+        // Brief 032: a check the family's agent submitted says so.
+        const byAgent = data.provenance && data.provenance.source === 'agent'
+          ? 'Checked by your agent' + (data.provenance.token_name ? ' “' + data.provenance.token_name + '”' : '') + '. '
+          : '';
+        const updated = byAgent + eveningUpdatedText(data.ran_at);
         parentStatus.textContent = data.stale
           ? (updated ? updated + ' — ' : '') + 'there’s news since. Tap “Run my evening check” to refresh it.'
           : updated;
