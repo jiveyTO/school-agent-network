@@ -463,6 +463,13 @@ function normalizeFact(raw, extractedAt) {
   };
 }
 
+// Brief 031: what a child wears or brings on a given day (a theme day, wear
+// a poppy, a food-bank item) is tonight's preparation for the parent, so it
+// is an action, not background. A standing dress code with no day stays
+// informational (the rule above). Shared by every extraction prompt that
+// carries the fact rules.
+const PREP_DAY_RULE = '- Exception for wear-or-bring days: a fact saying what a child should WEAR or BRING on a specific day (a theme or dress-up day such as pajama day, pink shirt day, jersey day, or superhero day; wear a poppy; bring a food-bank item or another named item that day) is a preparation action: set action_required true and phrase action as what the parent makes happen (e.g. "Wear a poppy", "Dress in a superhero costume", "Bring a non-perishable food item"). Keep the fact\'s type and date as they are. A standing dress code or costume rule with no specific day stays informational.';
+
 function buildPrompt(newsletterText) {
   const system = [
     'You are the School Agent for Maple Grove Elementary (fictional demo school).',
@@ -481,6 +488,7 @@ function buildPrompt(newsletterText) {
     '- source_text must be copied verbatim from the newsletter for every fact.',
     '- group_label uses the newsletter’s own section wording, not a paraphrase.',
     '- Rules, dress codes, and conduct guidelines are informational facts, not actions: set action_required false for them unless the text names a form, an order, a payment, or a deadline.',
+    PREP_DAY_RULE,
     '- An event and its own cost are ONE fact: when the source gives the cost or payment for an event it describes, do not make a separate cost fact. Put the payment on the event fact (action_required true, action naming the amount, how to pay, and the deadline). A fee with no event of its own stays its own fact.',
     '- confidence reflects how certain the extraction is (1.0 = explicit in the text).',
     '- The newsletter covers the week of November 2-6, 2026 (Mon Nov 2 to Fri Nov 6, 2026).',
@@ -938,6 +946,7 @@ function buildImagePrompt(accompanyingText) {
     '- Only extract what the image or pasted text actually shows. Do not invent facts, dates, or details you cannot read.',
     '- source_text must be transcribed verbatim from the image or pasted text for every fact.',
     '- Rules, dress codes, and conduct guidelines are informational facts, not actions: set action_required false for them unless the source names a form, an order, a payment, or a deadline.',
+    PREP_DAY_RULE,
     '- An event and its own cost are ONE fact: when the source gives the cost or payment for an event it describes, do not make a separate cost fact. Put the payment on the event fact (action_required true, action naming the amount, how to pay, and the deadline). A fee with no event of its own stays its own fact.',
     '- confidence reflects how certain the extraction is (1.0 = clearly readable in the image).',
     '- Resolve relative dates ("Friday", "November 18") to ISO dates in 2026 when the source gives a year context; otherwise keep the clearest ISO date the source supports.',
@@ -1223,6 +1232,9 @@ async function extractIdentityFields(pageText, kind, opts) {
 
 function buildParentPrompt(profile, facts, moment, placementLines) {
   const when = moment || eveningMoment(profile);
+  // Brief 031: tomorrow as an ISO date (when the moment has a day) pins the
+  // tonight-prep rule to one date the model can match fact.date against.
+  const tomorrowIso = when.today ? isoPlusDays(when.today, 1) : '';
   const soul = profile.soul || {};
   const child = profile.child || {};
   const children = profile.children && profile.children.length ? profile.children : [child];
@@ -1255,6 +1267,7 @@ function buildParentPrompt(profile, facts, moment, placementLines) {
     'Shapes:',
     '- relevant_facts: array of objects {id, title} copied from the input facts, ONLY facts that apply to this family\'s children (school-wide, all grades, all students, the child\'s placement grade or class in the hub the fact came from, or a hub activity the family joined count as applying — hub membership means the activity applies; facts explicitly limited to other grades, groups, teams, places, or communities do not).',
     '- nudges: array of objects {fact_id, title, action, deadline, source}. Create a nudge ONLY for a fact with action_required=true whose tracked action state in profile.actions is still open. Open states: not_ordered, not_done, pending, open. Closed states (NO nudge): ordered, done, scheduled, completed, planning_to_attend. Match each action key to its fact by meaning (for example pizza_order -> the pizza orders fact, uniform_survey -> the uniform survey fact, hot_lunch -> a hot lunch ordering fact). Do NOT create nudges for untracked requirement facts in this evening check; keep them in relevant_facts only.',
+    `- Tonight-prep exception: ALSO create a nudge for a relevant fact dated tomorrow${tomorrowIso ? ` (${tomorrowIso})` : ''} that names something the child should WEAR or BRING that day (a theme or dress-up day, wear a poppy, jersey day, bring a food-bank item), even when its action_required is false and no tracked action names it. Its action says what the parent gets ready tonight (e.g. "Wear a poppy", "Dress in a superhero costume"). This applies ONLY when the fact names an item to wear or bring and its date is tomorrow: a plain event with nothing to prepare (a ceremony, an assembly, a dance, a picture day, a sale where items can be bought) does not nudge, and a wear-or-bring day dated today, in the past, or after tomorrow does not get this nudge.`,
     '- Each nudge action must say what to do in plain language; deadline must be the fact date; source must name the school newsletter source (use the fact source_document).',
     '- calendar_hold: ONE object {title, date, note} for the most urgent open deadline. If a pizza order fact is open, it must be the pizza order deadline (for the demo week, date "2026-11-06", Friday, November 6, 2026) and the note must mention the pizza order is not yet ordered. Otherwise use the earliest open action deadline, or null if there is none.',
     '- filtered_out_count: number of input facts NOT in relevant_facts.',
@@ -2553,6 +2566,7 @@ const AGENT_MANIFEST = {
             'GET /api/agent/context with the token (add ?since=<generated_at of your last fetch> to get only what is new, and keep what you fetched before).',
             'Keep the facts that apply to the family\'s children using hubs[].placements (grade and class) and each fact\'s scope; team hubs apply to the whole family.',
             'Nudge only for facts with action_required whose tracked state in family.actions is still open; flag events that overlap in time as conflicts.',
+            'Also nudge, as tonight-prep, a fact dated tomorrow that names something the child should wear or bring that day (a theme or dress-up day, wear a poppy, bring a food-bank item), even when action_required is false; word the action as what the parent gets ready tonight. A plain event with nothing to prepare (a ceremony, an assembly) does not nudge, nor does a wear-or-bring day that is not tomorrow.',
             'Quote source_quote when you cite an item, and tell the parent when a fact carries a caution (see caution_flags).',
             'Your private context and your finished check stay with you: never send them to ParentLoop.',
           ],
@@ -5036,4 +5050,5 @@ if (require.main === module) {
     });
 }
 
-module.exports = { normalizeParentResult, normalizeFact, buildParentPrompt, placementLinesForRun, deriveMaterialTitle, addDueSoonNudges, withDoneApplied, eveningMoment };
+module.exports = { normalizeParentResult, normalizeFact, buildParentPrompt, placementLinesForRun, deriveMaterialTitle, addDueSoonNudges, withDoneApplied, eveningMoment,
+  buildPrompt, buildImagePrompt, extractAndSaveFacts, routedEveningRead, AGENT_MANIFEST };
